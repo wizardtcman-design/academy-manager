@@ -1,0 +1,6 @@
+{
+  "name": "مدیریت آموزشگاه",
+  "description": "سیستم جامع و حرفه‌ای مدیریت آموزشگاه کامپیوتر، هنرجویان، دوره‌ها، پرداخت‌ها و تنظیمات",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

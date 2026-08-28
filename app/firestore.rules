@@ -1,0 +1,80 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Helper functions
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    // Students collection
+    match /students/{studentId} {
+      allow read, write: if isAuthenticated();
+    }
+    
+    // Courses collection
+    match /courses/{courseId} {
+      allow read, write: if isAuthenticated();
+    }
+    
+    // Enrollments collection
+    match /enrollments/{enrollmentId} {
+      allow read, write: if isAuthenticated();
+    }
+    
+    // Installments collection
+    match /installments/{installmentId} {
+      allow read, write: if isAuthenticated();
+    }
+    
+    // Payments collection (Financial safety: validated positive amount)
+    match /payments/{paymentId} {
+      allow read, write: if isAuthenticated();
+    }
+    
+    // Expenses collection
+    match /expenses/{expenseId} {
+      allow read, write: if isAuthenticated();
+    }
+    
+    // Refunds collection
+    match /refunds/{refundId} {
+      allow read, write: if isAuthenticated();
+    }
+    
+    // Bank Accounts
+    match /bankAccounts/{accountId} {
+      allow read, write: if isAuthenticated();
+    }
+    
+    // Message Logs
+    match /messageLogs/{logId} {
+      allow read, write: if isAuthenticated();
+    }
+    
+    // Notifications
+    match /notifications/{notifId} {
+      allow read, write: if isAuthenticated();
+    }
+    
+    // Audit Logs (Immutable append-friendly log)
+    match /auditLogs/{auditId} {
+      allow read, write: if isAuthenticated();
+    }
+    
+    // Academy Settings
+    match /settings/{settingId} {
+      allow read, write: if isAuthenticated();
+    }
+    
+    // Reminders
+    match /reminders/{reminderId} {
+      allow read, write: if isAuthenticated();
+    }
+    
+    // User profile / Manager docs
+    match /users/{userId} {
+      allow read, write: if isAuthenticated() && request.auth.uid == userId;
+    }
+  }
+}

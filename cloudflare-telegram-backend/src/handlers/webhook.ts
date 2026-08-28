@@ -1,0 +1,359 @@
+// ============================================================
+// Telegram Webhook Handler for Cloudflare Workers
+// ============================================================
+
+import { Env, TelegramUpdate, StudentRecord } from '../types';
+import { TelegramBotClient } from '../telegram';
+import { AcademyDatabase } from '../db';
+
+export async function handleTelegramWebhook(
+    request: Request,
+    env: Env
+): Promise<Response> {
+    if (request.method !== 'POST') {
+        return new Response('Method Not Allowed', { status: 405 });
+    }
+
+    // Verify Telegram Webhook Secret Token if configured
+    if (env.WEBHOOK_SECRET) {
+        const receivedToken = request.headers.get('X-Telegram-Bot-Api-Secret-Token');
+        if (receivedToken !== env.WEBHOOK_SECRET) {
+            return new Response('Unauthorized Webhook Source', { status: 401 });
+        }
+    }
+
+    const botToken = env.TELEGRAM_BOT_TOKEN;
+    if (!botToken) {
+        return new Response('Telegram Bot Token not configured on server', { status: 500 });
+    }
+
+    let update: TelegramUpdate;
+    try {
+        update = await request.json() as TelegramUpdate;
+    } catch (_) {
+        return new Response('Invalid JSON payload', { status: 400 });
+    }
+
+    const bot = new TelegramBotClient(botToken);
+    const db = new AcademyDatabase(env);
+
+    try {
+        await processUpdate(update, bot, db, env);
+    } catch (err: any) {
+        console.error('Error processing Telegram update:', err);
+    }
+
+    // Telegram requires 200 OK immediately
+    return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' }
+    });
+}
+
+async function processUpdate(
+    update: TelegramUpdate,
+    bot: TelegramBotClient,
+    db: AcademyDatabase,
+    env: Env
+): Promise<void> {
+    const message = update.message || update.edited_message;
+    if (!message || !message.chat) return;
+
+    const chatId = message.chat.id.toString();
+    const username = message.from?.username || message.chat.username || '';
+    const firstName = message.from?.first_name || message.chat.first_name || 'هنرجو';
+    const text = (message.text || message.caption || '').trim();
+
+    // ============================================================
+    // 1. Handle /start and Deep Links
+    // ============================================================
+    if (text.startsWith('/start')) {
+        const cleaned = text.replace('/start', '').trim();
+        const studentIdParam = cleaned.startsWith('=')
+            ? cleaned.substring(1).trim()
+            : cleaned.split(/\s+/)[0]?.trim() || '';
+
+        if (!studentIdParam) {
+            // User clicked /start without deep link parameter
+            const existingStudent = await db.getStudentByChatId(chatId);
+            if (existingStudent) {
+                const greeting = `سلام <b>${existingStudent.full_name}</b> عزیز! 👋\n\n` +
+                    `به پنل اختصاصی هنرجو در ربات آموزشگاه خوش آمدید.\n` +
+                    `از منوی زیر می‌توانید وضعیت مالی، اقساط و سوابق خود را مشاهده نمایید:`;
+                await bot.sendMessage({
+                    chatId,
+                    text: greeting,
+                    parseMode: 'HTML',
+                    replyMarkup: TelegramBotClient.getStudentReplyKeyboard()
+                });
+            } else {
+                const academyName = await db.getSetting('academy_name', 'آموزشگاه کامپیوتر پیشگامان');
+                const defaultMsg = `سلام ${firstName} عزیز! 👋\n\n` +
+                    `به ربات هوشمند <b>${academyName}</b> خوش آمدید.\n\n` +
+                    `جهت اتصال حساب کاربری و دریافت خودکار اعلان‌ها و اقساط، لطفاً از لینک اختصاصی ارسال‌شده توسط آموزشگاه وارد شوید.`;
+                await bot.sendMessage({ chatId, text: defaultMsg, parseMode: 'HTML' });
+            }
+            return;
+        }
+
+        // Student ID passed via Deep Link!
+        const student = await db.getStudentById(studentIdParam);
+        if (!student) {
+            const errorMsg = `❌ هنرجوی گرامی، شناسه کاربری (<code>${studentIdParam}</code>) در سیستم آموزشگاه یافت نشد.\nلطفاً با مدیریت آموزشگاه تماس حاصل فرمایید.`;
+            await bot.sendMessage({ chatId, text: errorMsg, parseMode: 'HTML' });
+            await db.logMessage({
+                id: crypto.randomUUID(),
+                student_id: studentIdParam,
+                student_name: firstName,
+                chat_id: chatId,
+                message_type: 'START_LINK_FAILED',
+                content: text,
+                status: 'FAILED',
+                error_message: 'Student ID not found in database',
+                timestamp_epoch: Date.now(),
+                timestamp_shamsi: ''
+            });
+            return;
+        }
+
+        // Prevent linking same Telegram Chat ID to a different student
+        const conflictingStudent = await db.getStudentByChatId(chatId);
+        if (conflictingStudent && conflictingStudent.id !== student.id) {
+            const conflictMsg = `⚠️ این حساب تلگرام قبلاً به هنرجوی دیگری (<b>${conflictingStudent.full_name}</b>) متصل شده است.\nجهت تغییر ابتدا باید اتصال قبلی در سیستم لغو گردد.`;
+            await bot.sendMessage({ chatId, text: conflictMsg, parseMode: 'HTML' });
+            return;
+        }
+
+        // Successfully link the student to Telegram Chat ID
+        await db.linkTelegramChat(student.id, chatId, username);
+
+        const welcomeMsg = `🎉 سلام <b>${student.full_name}</b> عزیز!\n\n` +
+            `اتصال حساب تلگرام شما به سامانه هوشمند آموزشگاه با موفقیت برقرار شد. ✅\n\n` +
+            `👤 <b>نام هنرجو:</b> ${student.full_name}\n` +
+            (student.student_code ? `🆔 <b>کد هنرجویی:</b> ${student.student_code}\n` : '') +
+            `\nاز منوی زیر می‌توانید وضعیت مالی، اقساط، سوابق پرداختی و قراردادهای آموزشی خود را مشاهده نمایید 👇`;
+
+        await bot.sendMessage({
+            chatId,
+            text: welcomeMsg,
+            parseMode: 'HTML',
+            replyMarkup: TelegramBotClient.getStudentReplyKeyboard()
+        });
+
+        await db.logMessage({
+            id: crypto.randomUUID(),
+            student_id: student.id,
+            student_name: student.full_name,
+            chat_id: chatId,
+            message_type: 'START_LINK_SUCCESS',
+            content: `Connected via Telegram Chat ID ${chatId} (@${username})`,
+            status: 'SUCCESS',
+            error_message: '',
+            timestamp_epoch: Date.now(),
+            timestamp_shamsi: ''
+        });
+        return;
+    }
+
+    // ============================================================
+    // 2. Handle Interactive Menu Buttons
+    // ============================================================
+    const student = await db.getStudentByChatId(chatId);
+    if (!student) {
+        const notLinked = `⚠️ حساب تلگرام شما هنوز به سیستم آموزشگاه متصل نشده است.\nلطفاً از طریق لینک اختصاصی ارسالی از آموزشگاه وارد شوید و دکمه Start را بزنید.`;
+        await bot.sendMessage({ chatId, text: notLinked, parseMode: 'HTML' });
+        return;
+    }
+
+    const normalized = text.trim();
+
+    if (normalized === '💰 وضعیت مالی' || normalized.includes('وضعیت مالی') || normalized === '/finance') {
+        await handleFinancialStatus(bot, db, student, chatId);
+    } else if (normalized === '📅 اقساط من' || normalized.includes('اقساط من') || normalized.includes('اقساط') || normalized === '/installments') {
+        await handleInstallments(bot, db, student, chatId);
+    } else if (normalized === '🧾 رسیدهای من' || normalized.includes('رسیدهای من') || normalized === '/receipts') {
+        await handleReceipts(bot, db, student, chatId);
+    } else if (normalized === '📄 قرارداد من' || normalized.includes('قرارداد من') || normalized === '/contract') {
+        await handleContract(bot, db, student, chatId);
+    } else if (normalized === '📞 تماس با آموزشگاه' || normalized.includes('تماس با آموزشگاه') || normalized === '/contact') {
+        await handleContactInfo(bot, db, chatId);
+    } else if (normalized === '🔄 بروزرسانی اطلاعات' || normalized.includes('بروزرسانی') || normalized === '/refresh') {
+        await handleRefresh(bot, db, student, chatId);
+    } else {
+        const menuMsg = `سلام <b>${student.full_name}</b> عزیز 🌸\n\nلطفاً یکی از گزینه‌های زیر را انتخاب فرمایید:`;
+        await bot.sendMessage({
+            chatId,
+            text: menuMsg,
+            parseMode: 'HTML',
+            replyMarkup: TelegramBotClient.getStudentReplyKeyboard()
+        });
+    }
+}
+
+// 💰 Financial Status Handler
+async function handleFinancialStatus(bot: TelegramBotClient, db: AcademyDatabase, student: StudentRecord, chatId: string) {
+    const summary = await db.getFinancialSummary(student.id);
+    const currency = await db.getSetting('currency_unit', 'تومان');
+
+    const totalTuition = summary?.total_tuition || 0;
+    const totalPaid = summary?.total_paid || 0;
+    const remaining = summary?.remaining_debt || 0;
+
+    let statusText = '⏳ دارای اقساط جاری در حال پرداخت';
+    if (remaining === 0 && totalTuition > 0) {
+        statusText = '✅ تسویه کامل شده (بدون بدهی)';
+    } else if (totalTuition === 0) {
+        statusText = 'ثبت‌نام جاری یا اطلاعات مالی در حال بررسی است';
+    }
+
+    const text = `📊 <b>وضعیت مالی و شهریه</b>\n` +
+        `━━━━━━━━━━━━━━━━━━━\n` +
+        `👤 <b>هنرجو:</b> ${student.full_name}\n` +
+        (student.student_code ? `🆔 <b>کد هنرجویی:</b> ${student.student_code}\n` : '') +
+        (summary?.courses_summary ? `📚 <b>دوره:</b> ${summary.courses_summary}\n` : '') +
+        `\n` +
+        `💳 <b>خلاصه مالی:</b>\n` +
+        `• کل شهریه: <b>${totalTuition.toLocaleString()} ${currency}</b>\n` +
+        `• پرداختی تا کنون: <b>${totalPaid.toLocaleString()} ${currency}</b>\n` +
+        `• مانده بدهی: <b>${remaining.toLocaleString()} ${currency}</b>\n` +
+        `• وضعیت: <b>${statusText}</b>\n` +
+        `━━━━━━━━━━━━━━━━━━━`;
+
+    await bot.sendMessage({
+        chatId,
+        text,
+        parseMode: 'HTML',
+        replyMarkup: TelegramBotClient.getStudentReplyKeyboard()
+    });
+}
+
+// 📅 Installments Handler
+async function handleInstallments(bot: TelegramBotClient, db: AcademyDatabase, student: StudentRecord, chatId: string) {
+    const installments = await db.getInstallmentsForStudent(student.id);
+    const currency = await db.getSetting('currency_unit', 'تومان');
+
+    if (!installments || installments.length === 0) {
+        const msg = `📅 <b>اقساط من</b>\n\nهنرجوی گرامی ${student.full_name}، در حال حاضر هیچ قسط فعالی در سامانه برای شما ثبت نشده است.`;
+        await bot.sendMessage({ chatId, text: msg, parseMode: 'HTML', replyMarkup: TelegramBotClient.getStudentReplyKeyboard() });
+        return;
+    }
+
+    const paidCount = installments.filter(i => i.is_paid === 1).length;
+    const pendingCount = installments.length - paidCount;
+
+    let res = `📅 <b>جدول و وضعیت اقساط</b>\n` +
+        `━━━━━━━━━━━━━━━━━━━\n` +
+        `👤 <b>هنرجو:</b> ${student.full_name}\n` +
+        `📊 کل اقساط: ${installments.length} (${paidCount} پرداخت‌شده | ${pendingCount} مانده)\n\n`;
+
+    installments.forEach((inst, idx) => {
+        const numStr = inst.total_installments > 0 ? `${inst.installment_number} از ${inst.total_installments}` : `${idx + 1}`;
+        const title = inst.course_title ? ` (${inst.course_title})` : '';
+        res += `🔹 <b>قسط شماره ${numStr}</b>${title}\n`;
+        res += `   💵 مبلغ: <b>${inst.amount.toLocaleString()} ${currency}</b>\n`;
+        res += `   📆 سررسید: <b>${inst.due_date_shamsi}</b>\n`;
+
+        if (inst.is_paid === 1) {
+            res += `   وضعیت: <b>✅ پرداخت شده</b>\n`;
+        } else if (inst.due_date_epoch > 0 && inst.due_date_epoch < Date.now()) {
+            const daysOverdue = Math.max(1, Math.floor((Date.now() - inst.due_date_epoch) / (1000 * 60 * 60 * 24)));
+            res += `   وضعیت: <b>🚨 سررسید گذشته (${daysOverdue} روز تاخیر)</b>\n`;
+        } else {
+            res += `   وضعیت: <b>⏳ در انتظار پرداخت</b>\n`;
+        }
+        res += `\n`;
+    });
+
+    res += `━━━━━━━━━━━━━━━━━━━\n💡 جهت پرداخت اقساط یا دریافت شماره شبا/کارت با آموزشگاه در تماس باشید.`;
+
+    await bot.sendMessage({
+        chatId,
+        text: res,
+        parseMode: 'HTML',
+        replyMarkup: TelegramBotClient.getStudentReplyKeyboard()
+    });
+}
+
+// 🧾 Receipts Handler
+async function handleReceipts(bot: TelegramBotClient, db: AcademyDatabase, student: StudentRecord, chatId: string) {
+    const summary = await db.getFinancialSummary(student.id);
+    const currency = await db.getSetting('currency_unit', 'تومان');
+    const totalPaid = summary?.total_paid || 0;
+
+    const res = `🧾 <b>رسیدهای پرداخت</b>\n` +
+        `━━━━━━━━━━━━━━━━━━━\n` +
+        `👤 <b>هنرجو:</b> ${student.full_name}\n` +
+        `💰 کل مبالغ واریز شده: <b>${totalPaid.toLocaleString()} ${currency}</b>\n\n` +
+        `📄 رسیدهای تفصیلی شما در اپلیکیشن آموزشگاه ثبت شده و پس از ثبت هر تراکنش مستقیماً ارسال می‌گردد.`;
+
+    await bot.sendMessage({
+        chatId,
+        text: res,
+        parseMode: 'HTML',
+        replyMarkup: TelegramBotClient.getStudentReplyKeyboard()
+    });
+}
+
+// 📄 Contract Handler
+async function handleContract(bot: TelegramBotClient, db: AcademyDatabase, student: StudentRecord, chatId: string) {
+    const summary = await db.getFinancialSummary(student.id);
+    const courseTitle = summary?.courses_summary || 'دوره‌های تخصصی';
+
+    const res = `📄 <b>قرارداد آموزشی</b>\n` +
+        `━━━━━━━━━━━━━━━━━━━\n` +
+        `👤 <b>هنرجو:</b> ${student.full_name}\n` +
+        `📚 <b>دوره:</b> ${courseTitle}\n\n` +
+        `✅ قرارداد رسمی شما در سیستم آموزشگاه ثبت گردیده است. جهت دریافت نسخه چاپی به دفتر آموزشگاه مراجعه فرمایید.`;
+
+    await bot.sendMessage({
+        chatId,
+        text: res,
+        parseMode: 'HTML',
+        replyMarkup: TelegramBotClient.getStudentReplyKeyboard()
+    });
+}
+
+// 📞 Contact Info Handler
+async function handleContactInfo(bot: TelegramBotClient, db: AcademyDatabase, chatId: string) {
+    const academyName = await db.getSetting('academy_name', 'آموزشگاه کامپیوتر پیشگامان');
+    const phone = await db.getSetting('phone', '۰۲۱-۸۸۸۸۹۹۹۹');
+    const address = await db.getSetting('address', 'تهران، میدان انقلاب، خیابان کارگر شمالی، پلاک ۱۲');
+
+    const res = `🏢 <b>${academyName}</b>\n` +
+        `━━━━━━━━━━━━━━━━━━━\n` +
+        `📞 <b>تلفن تماس:</b> <code>${phone}</code>\n` +
+        `📍 <b>نشانی:</b>\n${address}\n\n` +
+        `⏰ <b>ساعات کاری:</b> همه‌روزه از ۹:۰۰ الی ۲۰:۳۰\n` +
+        `━━━━━━━━━━━━━━━━━━━\n` +
+        `🌸 با افتخار پاسخگوی سوالات شما هنرجویان گرامی هستیم.`;
+
+    await bot.sendMessage({
+        chatId,
+        text: res,
+        parseMode: 'HTML',
+        replyMarkup: TelegramBotClient.getStudentReplyKeyboard()
+    });
+}
+
+// 🔄 Refresh Handler
+async function handleRefresh(bot: TelegramBotClient, db: AcademyDatabase, student: StudentRecord, chatId: string) {
+    const refreshed = await db.getStudentById(student.id) || student;
+    const summary = await db.getFinancialSummary(refreshed.id);
+    const currency = await db.getSetting('currency_unit', 'تومان');
+
+    const res = `🔄 <b>اطلاعات حساب کاربری شما به‌روزرسانی شد</b> ✅\n` +
+        `━━━━━━━━━━━━━━━━━━━\n` +
+        `👤 <b>نام:</b> ${refreshed.full_name}\n` +
+        (refreshed.student_code ? `🆔 <b>کد هنرجویی:</b> ${refreshed.student_code}\n` : '') +
+        (refreshed.phone ? `📱 <b>تلفن:</b> ${refreshed.phone}\n` : '') +
+        `💰 <b>مانده بدهی:</b> ${(summary?.remaining_debt || 0).toLocaleString()} ${currency}\n` +
+        `🟢 <b>وضعیت اتصال:</b> متصل و فعال\n` +
+        `━━━━━━━━━━━━━━━━━━━`;
+
+    await bot.sendMessage({
+        chatId,
+        text: res,
+        parseMode: 'HTML',
+        replyMarkup: TelegramBotClient.getStudentReplyKeyboard()
+    });
+}

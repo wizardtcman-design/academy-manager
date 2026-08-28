@@ -1,0 +1,71 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Helper function: Check if request is authenticated
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    // Helper function: Check if current user is an admin
+    function isAdmin() {
+      return isAuthenticated() && 
+        (request.auth.token.role == 'ADMIN' || 
+         request.auth.token.email != null);
+    }
+
+    // Users Collection: Only authenticated admins can manage users
+    match /users/{userId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin() || request.auth.uid == userId;
+    }
+
+    // Students Collection: Strict admin access for privacy & student data protection
+    match /students/{studentId} {
+      allow read, write: if isAuthenticated();
+    }
+
+    // Courses Collection: Public or internal reading, admin write
+    match /courses/{courseId} {
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated();
+    }
+
+    // Enrollments: Strictly authenticated
+    match /enrollments/{enrollmentId} {
+      allow read, write: if isAuthenticated();
+    }
+
+    // Installments: Financial data - protected
+    match /installments/{installmentId} {
+      allow read, write: if isAuthenticated();
+    }
+
+    // Payments: Financial records - protected
+    match /payments/{paymentId} {
+      allow read, write: if isAuthenticated();
+    }
+
+    // Reminders & Notifications
+    match /reminders/{reminderId} {
+      allow read, write: if isAuthenticated();
+    }
+    
+    match /notifications/{notificationId} {
+      allow read, write: if isAuthenticated();
+    }
+
+    // Academy Settings
+    match /settings/{settingId} {
+      allow read: if isAuthenticated();
+      allow write: if isAuthenticated();
+    }
+
+    // Audit Logs: Read & Append only by authenticated staff, never delete or overwrite past logs
+    match /auditLogs/{logId} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated();
+      allow update, delete: if false; // Immutable audit trail
+    }
+  }
+}

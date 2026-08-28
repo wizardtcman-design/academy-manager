@@ -1,0 +1,284 @@
+// ============================================================
+// Database & Storage Layer using Cloudflare D1 and KV
+// ============================================================
+
+import {
+    Env,
+    StudentRecord,
+    InstallmentRecord,
+    FinancialSummaryRecord,
+    ReminderRecord,
+    MessageLogRecord
+} from './types';
+
+export class AcademyDatabase {
+    private db: D1Database;
+    private kv: KVNamespace;
+
+    constructor(env: Env) {
+        this.db = env.DB;
+        this.kv = env.STUDENT_KV;
+    }
+
+    // ============================================================
+    // Student Methods
+    // ============================================================
+
+    async getStudentById(id: string): Promise<StudentRecord | null> {
+        // Fast-path: Check KV cache first
+        if (this.kv) {
+            try {
+                const cached = await this.kv.get(`student:${id}`, 'json');
+                if (cached) return cached as StudentRecord;
+            } catch (_) {}
+        }
+
+        const stmt = this.db.prepare('SELECT * FROM students WHERE id = ?').bind(id);
+        const record = await stmt.first<StudentRecord>();
+        if (record && this.kv) {
+            await this.kv.put(`student:${id}`, JSON.stringify(record), { expirationTtl: 3600 });
+        }
+        return record;
+    }
+
+    async getStudentByChatId(chatId: string): Promise<StudentRecord | null> {
+        if (!chatId) return null;
+        if (this.kv) {
+            try {
+                const studentId = await this.kv.get(`chat:${chatId}`);
+                if (studentId) {
+                    const student = await this.getStudentById(studentId);
+                    if (student) return student;
+                }
+            } catch (_) {}
+        }
+
+        const stmt = this.db.prepare('SELECT * FROM students WHERE telegram_chat_id = ?').bind(chatId);
+        const record = await stmt.first<StudentRecord>();
+        if (record && this.kv) {
+            await this.kv.put(`chat:${chatId}`, record.id, { expirationTtl: 3600 });
+        }
+        return record;
+    }
+
+    async upsertStudent(student: Partial<StudentRecord> & { id: string; full_name: string }): Promise<void> {
+        const now = Date.now();
+        const existing = await this.getStudentById(student.id);
+
+        const record: StudentRecord = {
+            id: student.id,
+            student_code: student.student_code ?? existing?.student_code ?? '',
+            full_name: student.full_name,
+            phone: student.phone ?? existing?.phone ?? '',
+            national_code: student.national_code ?? existing?.national_code ?? '',
+            telegram_chat_id: student.telegram_chat_id ?? existing?.telegram_chat_id ?? '',
+            telegram_username: student.telegram_username ?? existing?.telegram_username ?? '',
+            is_telegram_connected: student.is_telegram_connected ?? existing?.is_telegram_connected ?? 0,
+            linked_at_epoch: student.linked_at_epoch ?? existing?.linked_at_epoch ?? 0,
+            created_at_epoch: existing?.created_at_epoch ?? now,
+            updated_at_epoch: now
+        };
+
+        await this.db.prepare(`
+            INSERT INTO students (
+                id, student_code, full_name, phone, national_code,
+                telegram_chat_id, telegram_username, is_telegram_connected,
+                linked_at_epoch, created_at_epoch, updated_at_epoch
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                student_code = excluded.student_code,
+                full_name = excluded.full_name,
+                phone = excluded.phone,
+                national_code = excluded.national_code,
+                telegram_chat_id = excluded.telegram_chat_id,
+                telegram_username = excluded.telegram_username,
+                is_telegram_connected = excluded.is_telegram_connected,
+                linked_at_epoch = excluded.linked_at_epoch,
+                updated_at_epoch = excluded.updated_at_epoch
+        `).bind(
+            record.id, record.student_code, record.full_name, record.phone, record.national_code,
+            record.telegram_chat_id, record.telegram_username, record.is_telegram_connected,
+            record.linked_at_epoch, record.created_at_epoch, record.updated_at_epoch
+        ).run();
+
+        // Update KV cache
+        if (this.kv) {
+            await this.kv.put(`student:${record.id}`, JSON.stringify(record), { expirationTtl: 3600 });
+            if (record.telegram_chat_id) {
+                await this.kv.put(`chat:${record.telegram_chat_id}`, record.id, { expirationTtl: 3600 });
+            }
+        }
+    }
+
+    async linkTelegramChat(studentId: string, chatId: string, username: string): Promise<boolean> {
+        const student = await this.getStudentById(studentId);
+        if (!student) return false;
+
+        const now = Date.now();
+        await this.db.prepare(`
+            UPDATE students SET
+                telegram_chat_id = ?,
+                telegram_username = ?,
+                is_telegram_connected = 1,
+                linked_at_epoch = CASE WHEN linked_at_epoch > 0 THEN linked_at_epoch ELSE ? END,
+                updated_at_epoch = ?
+            WHERE id = ?
+        `).bind(chatId, username, now, now, studentId).run();
+
+        // Invalidate and refresh cache
+        if (this.kv) {
+            student.telegram_chat_id = chatId;
+            student.telegram_username = username;
+            student.is_telegram_connected = 1;
+            student.updated_at_epoch = now;
+            await this.kv.put(`student:${studentId}`, JSON.stringify(student), { expirationTtl: 3600 });
+            await this.kv.put(`chat:${chatId}`, studentId, { expirationTtl: 3600 });
+        }
+        return true;
+    }
+
+    // ============================================================
+    // Installments & Financial Summaries
+    // ============================================================
+
+    async getInstallmentsForStudent(studentId: string): Promise<InstallmentRecord[]> {
+        const stmt = this.db.prepare('SELECT * FROM installments WHERE student_id = ? ORDER BY due_date_epoch ASC, installment_number ASC').bind(studentId);
+        const { results } = await stmt.all<InstallmentRecord>();
+        return results || [];
+    }
+
+    async upsertInstallments(installments: InstallmentRecord[]): Promise<void> {
+        if (!installments || installments.length === 0) return;
+        const now = Date.now();
+
+        const stmts = installments.map(inst => this.db.prepare(`
+            INSERT INTO installments (
+                id, student_id, installment_number, total_installments, course_title,
+                amount, paid_amount, remaining_amount, due_date_shamsi, due_date_epoch,
+                is_paid, paid_date_shamsi, updated_at_epoch
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                installment_number = excluded.installment_number,
+                total_installments = excluded.total_installments,
+                course_title = excluded.course_title,
+                amount = excluded.amount,
+                paid_amount = excluded.paid_amount,
+                remaining_amount = excluded.remaining_amount,
+                due_date_shamsi = excluded.due_date_shamsi,
+                due_date_epoch = excluded.due_date_epoch,
+                is_paid = excluded.is_paid,
+                paid_date_shamsi = excluded.paid_date_shamsi,
+                updated_at_epoch = ?
+        `).bind(
+            inst.id, inst.student_id, inst.installment_number, inst.total_installments, inst.course_title,
+            inst.amount, inst.paid_amount, inst.remaining_amount, inst.due_date_shamsi, inst.due_date_epoch,
+            inst.is_paid, inst.paid_date_shamsi, now, now
+        ));
+
+        await this.db.batch(stmts);
+    }
+
+    async getFinancialSummary(studentId: string): Promise<FinancialSummaryRecord | null> {
+        const stmt = this.db.prepare('SELECT * FROM financial_summaries WHERE student_id = ?').bind(studentId);
+        return await stmt.first<FinancialSummaryRecord>();
+    }
+
+    async upsertFinancialSummary(summary: FinancialSummaryRecord): Promise<void> {
+        const now = Date.now();
+        await this.db.prepare(`
+            INSERT INTO financial_summaries (
+                student_id, total_tuition, total_paid, remaining_debt,
+                active_courses_count, courses_summary, settlement_status, updated_at_epoch
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(student_id) DO UPDATE SET
+                total_tuition = excluded.total_tuition,
+                total_paid = excluded.total_paid,
+                remaining_debt = excluded.remaining_debt,
+                active_courses_count = excluded.active_courses_count,
+                courses_summary = excluded.courses_summary,
+                settlement_status = excluded.settlement_status,
+                updated_at_epoch = excluded.updated_at_epoch
+        `).bind(
+            summary.student_id, summary.total_tuition, summary.total_paid, summary.remaining_debt,
+            summary.active_courses_count, summary.courses_summary, summary.settlement_status, now
+        ).run();
+    }
+
+    // ============================================================
+    // Reminders & Scheduled Messages Queue
+    // ============================================================
+
+    async addReminder(reminder: ReminderRecord): Promise<void> {
+        await this.db.prepare(`
+            INSERT INTO reminders (
+                id, student_id, student_name, chat_id, installment_id,
+                reminder_type, message_text, scheduled_epoch, scheduled_time_str,
+                status, error_message, retry_count, created_at_epoch, sent_at_epoch
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).bind(
+            reminder.id, reminder.student_id, reminder.student_name, reminder.chat_id, reminder.installment_id,
+            reminder.reminder_type, reminder.message_text, reminder.scheduled_epoch, reminder.scheduled_time_str,
+            reminder.status, reminder.error_message, reminder.retry_count, reminder.created_at_epoch, reminder.sent_at_epoch
+        ).run();
+    }
+
+    async getDueReminders(maxEpoch: number, limit: number = 50): Promise<ReminderRecord[]> {
+        const stmt = this.db.prepare(`
+            SELECT * FROM reminders
+            WHERE status = 'SCHEDULED' AND scheduled_epoch <= ?
+            ORDER BY scheduled_epoch ASC
+            LIMIT ?
+        `).bind(maxEpoch, limit);
+        const { results } = await stmt.all<ReminderRecord>();
+        return results || [];
+    }
+
+    async updateReminderStatus(id: string, status: 'SENT' | 'FAILED' | 'CANCELLED', errorMessage: string = ''): Promise<void> {
+        const now = Date.now();
+        await this.db.prepare(`
+            UPDATE reminders SET
+                status = ?,
+                error_message = ?,
+                sent_at_epoch = CASE WHEN ? = 'SENT' THEN ? ELSE sent_at_epoch END,
+                retry_count = retry_count + 1
+            WHERE id = ?
+        `).bind(status, errorMessage, status, now, id).run();
+    }
+
+    // ============================================================
+    // Logs & Settings
+    // ============================================================
+
+    async logMessage(log: MessageLogRecord): Promise<void> {
+        await this.db.prepare(`
+            INSERT INTO message_logs (
+                id, student_id, student_name, chat_id, message_type,
+                content, status, error_message, timestamp_epoch, timestamp_shamsi
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).bind(
+            log.id, log.student_id, log.student_name, log.chat_id, log.message_type,
+            log.content, log.status, log.error_message, log.timestamp_epoch, log.timestamp_shamsi
+        ).run();
+    }
+
+    async getRecentLogs(limit: number = 100): Promise<MessageLogRecord[]> {
+        const stmt = this.db.prepare('SELECT * FROM message_logs ORDER BY timestamp_epoch DESC LIMIT ?').bind(limit);
+        const { results } = await stmt.all<MessageLogRecord>();
+        return results || [];
+    }
+
+    async getSetting(key: string, defaultValue: string = ''): Promise<string> {
+        const stmt = this.db.prepare('SELECT value FROM academy_settings WHERE key = ?').bind(key);
+        const record = await stmt.first<{ value: string }>();
+        return record?.value ?? defaultValue;
+    }
+
+    async setSetting(key: string, value: string): Promise<void> {
+        const now = Date.now();
+        await this.db.prepare(`
+            INSERT INTO academy_settings (key, value, updated_at_epoch)
+            VALUES (?, ?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at_epoch = excluded.updated_at_epoch
+        `).bind(key, value, now).run();
+    }
+}
