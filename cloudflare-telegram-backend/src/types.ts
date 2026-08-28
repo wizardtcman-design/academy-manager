@@ -3,11 +3,11 @@
 // ============================================================
 
 export interface Env {
-    // Cloudflare Bindings
-    DB: D1Database;
-    STUDENT_KV: KVNamespace;
+    // Cloudflare Bindings (Optional - can be attached via Dashboard later)
+    DB?: D1Database;
+    STUDENT_KV?: KVNamespace;
 
-    // Secrets (configured via `wrangler secret put <KEY>`)
+    // Secrets (configured via `wrangler secret put <KEY>` or Cloudflare Dashboard)
     TELEGRAM_BOT_TOKEN: string; // Server-side secret Telegram Bot Token
     API_SECRET_KEY: string;      // Secret bearer key for Android App HTTPS API
     WEBHOOK_SECRET?: string;    // Secret for Telegram X-Telegram-Bot-Api-Secret-Token
