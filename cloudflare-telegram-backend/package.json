@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
+    "build": "tsc --noEmit",
     "types": "wrangler types",
     "d1:init": "wrangler d1 execute academy-telegram-db --file=schema.sql --remote",
     "d1:init:local": "wrangler d1 execute academy-telegram-db --file=schema.sql --local",

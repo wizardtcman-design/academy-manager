@@ -1,0 +1,30 @@
+{
+  "name": "academy-telegram-worker",
+  "version": "1.0.0",
+  "description": "Cloudflare Worker Backend for Telegram Bot Automation and Student Reminders",
+  "main": "cloudflare-telegram-backend/src/index.ts",
+  "scripts": {
+    "dev": "wrangler dev --config ./cloudflare-telegram-backend/wrangler.toml",
+    "deploy": "wrangler deploy --config ./cloudflare-telegram-backend/wrangler.toml",
+    "build": "tsc -p ./cloudflare-telegram-backend/tsconfig.json --noEmit",
+    "d1:init": "wrangler d1 execute academy-telegram-db --file=./cloudflare-telegram-backend/schema.sql --remote",
+    "d1:init:local": "wrangler d1 execute academy-telegram-db --file=./cloudflare-telegram-backend/schema.sql --local",
+    "secret:token": "wrangler secret put TELEGRAM_BOT_TOKEN",
+    "secret:apikey": "wrangler secret put API_SECRET_KEY",
+    "secret:webhook": "wrangler secret put WEBHOOK_SECRET"
+  },
+  "keywords": [
+    "cloudflare-workers",
+    "telegram-bot",
+    "d1",
+    "cron-triggers",
+    "student-reminders"
+  ],
+  "author": "Academy Management System",
+  "license": "MIT",
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20240909.0",
+    "typescript": "^5.5.4",
+    "wrangler": "^3.75.0"
+  }
+}
