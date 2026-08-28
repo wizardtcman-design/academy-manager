@@ -1,5 +1,5 @@
 {
-  "name": "academy-telegram-worker",
+  "name": "academy-manager1",
   "version": "1.0.0",
   "description": "Cloudflare Worker Backend for Telegram Bot Automation and Student Reminders",
   "main": "cloudflare-telegram-backend/src/index.ts",

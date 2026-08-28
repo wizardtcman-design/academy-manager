@@ -1,22 +1,11 @@
-name = "academy-telegram-worker"
+name = "academy-manager1"
 main = "cloudflare-telegram-backend/src/index.ts"
 compatibility_date = "2024-09-01"
 
 # Environment Variables (Non-sensitive)
 [vars]
 ENVIRONMENT = "production"
-BOT_USERNAME = "" # Optional fallback if not fetched automatically via getMe
-
-# Cloudflare D1 Database for Scalable Persistent Storage
-[[d1_databases]]
-binding = "DB"
-database_name = "academy-telegram-db"
-database_id = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx" # Replaced with your real D1 ID after running: wrangler d1 create academy-telegram-db
-
-# Cloudflare KV for High-Speed Caching & Quick Lookups
-[[kv_namespaces]]
-binding = "STUDENT_KV"
-id = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" # Replaced with your real KV ID after running: wrangler kv:namespace create STUDENT_KV
+BOT_USERNAME = ""
 
 # Cloudflare Cron Triggers for Background Automated Reminders
 # Runs every hour at minute 0 (09:00, 10:00, 11:00, etc.)
@@ -26,3 +15,4 @@ crons = ["0 * * * *"]
 # Observability and Logs
 [observability]
 enabled = true
+
