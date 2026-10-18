@@ -28,6 +28,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.filled.AccountBalance
 import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.Add
@@ -36,6 +37,7 @@ import androidx.compose.material.icons.filled.Backup
 import androidx.compose.material.icons.filled.BrightnessAuto
 import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.Chat
+import androidx.compose.material.icons.filled.SmartToy
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.CloudDone
@@ -160,7 +162,8 @@ fun SettingsScreen(
     onNavigateToAuditLogs: () -> Unit = {},
     onNavigateToReminders: () -> Unit = {},
     onOpenChangePassword: () -> Unit = {},
-    onLogout: () -> Unit = {}
+    onLogout: () -> Unit = {},
+    onOpenBotTab: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val settings by viewModel.settings.collectAsState()
@@ -207,11 +210,6 @@ fun SettingsScreen(
     var selectedThemeMode by remember(settings) { mutableStateOf(settings?.themeMode ?: "SYSTEM") }
 
     // Telegram Bot States
-    var telegramToken by remember(settings) { mutableStateOf(settings?.telegramBotToken ?: "") }
-    var telegramUsername by remember(settings) { mutableStateOf(settings?.telegramBotUsername ?: "") }
-    var isTelegramEnabled by remember(settings) { mutableStateOf(settings?.telegramEnabled ?: false) }
-    var isTestingBot by remember { mutableStateOf(false) }
-    var botTestResult by remember { mutableStateOf<Pair<Boolean, String>?>(null) }
 
     // Automation toggles & Times & Admin Notification Templates (Titles & Bodies)
     var remind7Days by remember(settings) { mutableStateOf(settings?.reminder7DaysEnabled ?: true) }
@@ -669,121 +667,47 @@ fun SettingsScreen(
                 }
             }
 
-            // 4. Telegram Bot Integration Card
+            // 4. Telegram bot credentials live in the Bot tab only.
             if (showBanks) Card(
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(18.dp))
+                    .clickable { onOpenBotTab() },
                 shape = RoundedCornerShape(18.dp),
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
                 elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
             ) {
-                Column(
+                Row(
                     modifier = Modifier.padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(14.dp)
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
+                    Box(
+                        modifier = Modifier
+                            .size(42.dp)
+                            .clip(RoundedCornerShape(14.dp))
+                            .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)),
+                        contentAlignment = Alignment.Center
                     ) {
-                        Column {
-                            Text(
-                                text = "اتصال ربات تلگرام (Telegram Bot)",
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.primary
-                            )
-                            Text(
-                                text = "ارسال خودکار پیامک، قبوض و یادآوری اقساط",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-
-                        Switch(
-                            checked = isTelegramEnabled,
-                            onCheckedChange = { isTelegramEnabled = it }
+                        Icon(Icons.Default.SmartToy, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                    }
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "تنظیمات ربات تلگرام",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = "توکن ربات، سرور Cloudflare، ضد اسپم و ساعات سکوت",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
-
-                    OutlinedTextField(
-                        value = telegramToken,
-                        onValueChange = { telegramToken = it },
-                        label = { Text("توکن ربات تلگرام (Bot Token)") },
-                        placeholder = { Text("مثلاً: 123456789:ABCdefGhIJKlmNoPQRstuVWXyz") },
-                        leadingIcon = { Icon(Icons.Default.Send, contentDescription = null) },
-                        shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier.fillMaxWidth()
+                    Icon(
+                        Icons.AutoMirrored.Filled.KeyboardArrowLeft,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
                     )
-
-                    OutlinedTextField(
-                        value = telegramUsername,
-                        onValueChange = { telegramUsername = it.replace("@", "") },
-                        label = { Text("نام کاربری ربات (بدون @)") },
-                        placeholder = { Text("مثلاً: my_academy_bot") },
-                        leadingIcon = { Icon(Icons.Default.Chat, contentDescription = null) },
-                        singleLine = true,
-                        shape = RoundedCornerShape(12.dp),
-                        modifier = Modifier.fillMaxWidth()
-                    )
-
-                    // Test Bot Button
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(10.dp)
-                    ) {
-                        OutlinedButton(
-                            onClick = {
-                                if (telegramToken.isBlank()) {
-                                    Toast.makeText(context, "لطفاً ابتدا توکن ربات را وارد کنید.", Toast.LENGTH_SHORT).show()
-                                    return@OutlinedButton
-                                }
-                                isTestingBot = true
-                                botTestResult = null
-                                viewModel.testTelegramBot(telegramToken) { success, msg ->
-                                    isTestingBot = false
-                                    botTestResult = Pair(success, msg)
-                                }
-                            },
-                            enabled = !isTestingBot && telegramToken.isNotBlank(),
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            if (isTestingBot) {
-                                CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text("در حال بررسی...")
-                            } else {
-                                Text("تست اتصال ربات تلگرام")
-                            }
-                        }
-                    }
-
-                    if (botTestResult != null) {
-                        val (success, message) = botTestResult!!
-                        Surface(
-                            shape = RoundedCornerShape(10.dp),
-                            color = if (success) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.4f),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(10.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Icon(
-                                    imageVector = if (success) Icons.Default.CheckCircle else Icons.Default.ErrorOutline,
-                                    contentDescription = null,
-                                    tint = if (success) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
-                                    modifier = Modifier.size(20.dp)
-                                )
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text(
-                                    text = message,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    fontWeight = FontWeight.Medium
-                                )
-                            }
-                        }
-                    }
                 }
             }
 
@@ -1292,9 +1216,6 @@ fun SettingsScreen(
                         currencyUnit = currencyUnit,
                         themeName = selectedThemeName,
                         themeMode = selectedThemeMode,
-                        telegramBotToken = telegramToken,
-                        telegramBotUsername = telegramUsername,
-                        telegramEnabled = isTelegramEnabled,
                         reminder7DaysEnabled = remind7Days,
                         reminder7DaysTime = remind7DaysTime,
                         reminder7DaysAdminTitle = adminTitle7Days,

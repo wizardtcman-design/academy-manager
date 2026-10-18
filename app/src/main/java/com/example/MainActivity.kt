@@ -272,7 +272,9 @@ fun MainAppScaffold(
     auditLogs: List<com.example.data.model.AuditLog>
 ) {
     var currentTab by remember { mutableStateOf<Screen>(Screen.Dashboard) }
+    // Settings is NOT a bottom tab: it opens full-screen from the gear in the top bar.
     var activeSubScreen by remember { mutableStateOf<Screen?>(null) }
+    var settingsOpen by remember { mutableStateOf(false) }
     var showQuickAddStudentDialog by remember { mutableStateOf(false) }
     var showChangePasswordDialog by remember { mutableStateOf(false) }
     var showQuickThemeDialog by remember { mutableStateOf(false) }
@@ -281,20 +283,20 @@ fun MainAppScaffold(
         availableThemeModels.find { it.id == (settings?.themeName ?: "BLUE") } ?: availableThemeModels.first()
     }
 
-    // Five bottom tabs only: every item of the old "More" tab now lives at the
-    // top of Settings, which replaces it here.
+    // Five bottom tabs, no "More": Settings lives in the top bar, every setting
+    // of the old More tab is inside it, and the bot/Cloudflare settings stay in Bot.
     val tabs = listOf(
         NavigationTabItem(Screen.Dashboard, "داشبورد", AppNavIcons.dashboard, "tab_dashboard"),
         NavigationTabItem(Screen.Students, "هنرجویان", AppNavIcons.students, "tab_students"),
         NavigationTabItem(Screen.Payments, "پرداخت‌ها", AppNavIcons.payments, "tab_payments"),
         NavigationTabItem(Screen.Bot, "ربات", AppNavIcons.bot, "tab_bot"),
-        NavigationTabItem(Screen.Settings, "تنظیمات", AppNavIcons.settings, "tab_settings")
+        NavigationTabItem(Screen.Reports, "گزارش‌ها", AppNavIcons.reports, "tab_reports")
     )
 
     // Handle back button on sub-screens
-    if (activeSubScreen != null) {
+    if (activeSubScreen != null || settingsOpen) {
         BackHandler {
-            activeSubScreen = null
+            if (activeSubScreen != null) activeSubScreen = null else settingsOpen = false
         }
     }
 
@@ -302,7 +304,7 @@ fun MainAppScaffold(
         contentWindowInsets = WindowInsets(0.dp),
         snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
-            if (activeSubScreen == null || activeSubScreen == Screen.Settings) {
+            if (activeSubScreen == null && !settingsOpen) {
                 TopAppBar(
                     title = {
                         Row(
@@ -398,7 +400,7 @@ fun MainAppScaffold(
                         }
                         // Quick Settings shortcut button
                         IconButton(
-                            onClick = { activeSubScreen = Screen.Settings },
+                            onClick = { settingsOpen = true },
                             modifier = Modifier.testTag("top_bar_settings_button")
                         ) {
                             Icon(
@@ -416,7 +418,7 @@ fun MainAppScaffold(
             }
         },
         bottomBar = {
-            if (activeSubScreen == null) {
+            if (activeSubScreen == null && !settingsOpen) {
                 FloatingNavBar(
                     items = tabs.map {
                         NavItem(
@@ -432,6 +434,7 @@ fun MainAppScaffold(
                         (nav.payload as? Screen)?.let { tab ->
                             currentTab = tab
                             activeSubScreen = null
+                            settingsOpen = false
                         }
                     }
                 )
@@ -444,7 +447,7 @@ fun MainAppScaffold(
                 .padding(innerPadding)
         ) {
             AnimatedContent(
-                targetState = activeSubScreen ?: currentTab,
+                targetState = if (settingsOpen) Screen.Settings else (activeSubScreen ?: currentTab),
                 transitionSpec = {
                     val forward = (initialState == null) || (targetState != null && initialState?.route != currentTab.route)
                     val enterFrom = if (forward) 1 else -1
@@ -464,7 +467,7 @@ fun MainAppScaffold(
                             onNavigateToCourses = { activeSubScreen = Screen.Courses },
                             onNavigateToPayments = { currentTab = Screen.Payments },
                             onNavigateToReports = { currentTab = Screen.Dashboard },
-                            onNavigateToSettings = { activeSubScreen = Screen.Settings },
+                            onNavigateToSettings = { settingsOpen = true },
                             onOpenAddStudent = { showQuickAddStudentDialog = true },
                             onLoadSampleData = { viewModel.loadSampleData() },
                             onClearSampleData = { viewModel.clearSampleData() }
@@ -523,12 +526,16 @@ fun MainAppScaffold(
                             viewModel = viewModel,
                             user = currentUser,
                             activeSubScreenHeader = false,
-                            onBack = { activeSubScreen = null },
+                            onBack = { settingsOpen = false },
                             onNavigateToCourses = { activeSubScreen = Screen.Courses },
                             onNavigateToAuditLogs = { activeSubScreen = Screen.AuditLogs },
                             onNavigateToReminders = { activeSubScreen = Screen.Reminders },
                             onOpenChangePassword = { showChangePasswordDialog = true },
-                            onLogout = { viewModel.logout() }
+                            onLogout = { viewModel.logout() },
+                            onOpenBotTab = {
+                                settingsOpen = false
+                                currentTab = Screen.Bot
+                            }
                         )
                     }
 
@@ -549,7 +556,7 @@ fun MainAppScaffold(
                             onNavigateToCourses = { activeSubScreen = Screen.Courses },
                             onNavigateToPayments = { currentTab = Screen.Payments },
                             onNavigateToReports = { currentTab = Screen.Reports },
-                            onNavigateToSettings = { activeSubScreen = Screen.Settings },
+                            onNavigateToSettings = { settingsOpen = true },
                             onOpenAddStudent = { showQuickAddStudentDialog = true },
                             onLoadSampleData = { viewModel.loadSampleData() },
                             onClearSampleData = { viewModel.clearSampleData() }
