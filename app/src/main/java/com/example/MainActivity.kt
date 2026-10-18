@@ -66,6 +66,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
@@ -275,6 +276,7 @@ fun MainAppScaffold(
     // Settings is NOT a bottom tab: it opens full-screen from the gear in the top bar.
     var activeSubScreen by remember { mutableStateOf<Screen?>(null) }
     var settingsOpen by remember { mutableStateOf(false) }
+    var updateOpen by remember { mutableStateOf(false) }
     var showQuickAddStudentDialog by remember { mutableStateOf(false) }
     var showChangePasswordDialog by remember { mutableStateOf(false) }
     var showQuickThemeDialog by remember { mutableStateOf(false) }
@@ -294,9 +296,26 @@ fun MainAppScaffold(
     )
 
     // Handle back button on sub-screens
-    if (activeSubScreen != null || settingsOpen) {
+    if (activeSubScreen != null || settingsOpen || updateOpen) {
         BackHandler {
-            if (activeSubScreen != null) activeSubScreen = null else settingsOpen = false
+            when {
+                activeSubScreen != null -> activeSubScreen = null
+                updateOpen -> updateOpen = false
+                else -> settingsOpen = false
+            }
+        }
+    }
+
+    // Offer a newer official release as soon as one exists (once per version).
+    val ctx = LocalContext.current
+    LaunchedEffect(Unit) {
+        com.example.update.UpdateCheckWorker.schedule(ctx)
+        if (com.example.update.UpdatePrefs.offeredVersion(ctx) != com.example.BuildConfig.VERSION_NAME) {
+            val update = com.example.update.UpdateManager.checkAndNotify(ctx)
+            if (update != null) {
+                com.example.update.UpdatePrefs.setOfferedVersion(ctx, com.example.BuildConfig.VERSION_NAME)
+                viewModel.showMessage("نسخهٔ ${update.version} آماده است — از تنظیمات، «به‌روزرسانی برنامه» را بزنید.")
+            }
         }
     }
 
@@ -304,7 +323,7 @@ fun MainAppScaffold(
         contentWindowInsets = WindowInsets(0.dp),
         snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
-            if (activeSubScreen == null && !settingsOpen) {
+            if (activeSubScreen == null && !settingsOpen && !updateOpen) {
                 TopAppBar(
                     title = {
                         Row(
@@ -418,7 +437,7 @@ fun MainAppScaffold(
             }
         },
         bottomBar = {
-            if (activeSubScreen == null && !settingsOpen) {
+            if (activeSubScreen == null && !settingsOpen && !updateOpen) {
                 FloatingNavBar(
                     items = tabs.map {
                         NavItem(
@@ -447,9 +466,16 @@ fun MainAppScaffold(
                 .padding(innerPadding)
         ) {
             AnimatedContent(
-                targetState = if (settingsOpen) Screen.Settings else (activeSubScreen ?: currentTab),
+                targetState = when {
+                    updateOpen -> "update"
+                    settingsOpen -> Screen.Settings
+                    else -> activeSubScreen ?: currentTab
+                },
                 transitionSpec = {
-                    val forward = (initialState == null) || (targetState != null && initialState?.route != currentTab.route)
+                    // Forward when opening something new; otherwise slide back.
+                    val forward = initialState == null ||
+                        (initialState is Screen && targetState !is Screen) ||
+                        (targetState is Screen && initialState !is Screen)
                     val enterFrom = if (forward) 1 else -1
                     (fadeIn(tween(240)) + slideInHorizontally(tween(320)) { it / 14 * enterFrom }) togetherWith
                         (fadeOut(tween(180)) + slideOutHorizontally(tween(320)) { -it / 18 * enterFrom })
@@ -457,6 +483,12 @@ fun MainAppScaffold(
                 label = "screen_transition"
             ) { destination ->
                 when (destination) {
+                    "update" -> {
+                        com.example.ui.screens.update.UpdateScreen(
+                            onClose = { updateOpen = false }
+                        )
+                    }
+
                     Screen.Dashboard -> {
                         DashboardScreen(
                             viewModel = viewModel,
@@ -466,7 +498,7 @@ fun MainAppScaffold(
                             onNavigateToStudents = { currentTab = Screen.Students },
                             onNavigateToCourses = { activeSubScreen = Screen.Courses },
                             onNavigateToPayments = { currentTab = Screen.Payments },
-                            onNavigateToReports = { currentTab = Screen.Dashboard },
+                            onNavigateToReports = { currentTab = Screen.Reports },
                             onNavigateToSettings = { settingsOpen = true },
                             onOpenAddStudent = { showQuickAddStudentDialog = true },
                             onLoadSampleData = { viewModel.loadSampleData() },
@@ -517,7 +549,8 @@ fun MainAppScaffold(
                             },
                             onDeleteCourse = { course ->
                                 viewModel.deleteCourse(course)
-                            }
+                            },
+                            onBack = { activeSubScreen = null }
                         )
                     }
 
@@ -535,6 +568,10 @@ fun MainAppScaffold(
                             onOpenBotTab = {
                                 settingsOpen = false
                                 currentTab = Screen.Bot
+                            },
+                            onOpenUpdate = {
+                                settingsOpen = false
+                                updateOpen = true
                             }
                         )
                     }

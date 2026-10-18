@@ -163,7 +163,8 @@ fun SettingsScreen(
     onNavigateToReminders: () -> Unit = {},
     onOpenChangePassword: () -> Unit = {},
     onLogout: () -> Unit = {},
-    onOpenBotTab: () -> Unit = {}
+    onOpenBotTab: () -> Unit = {},
+    onOpenUpdate: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val settings by viewModel.settings.collectAsState()
@@ -304,6 +305,7 @@ fun SettingsScreen(
                 onOpenInstallmentFormula = { hubDialog = "installments" },
                 onOpenCalendar = { hubDialog = "calendar" },
                 onOpenAbout = { hubDialog = "about" },
+                onOpenUpdate = onOpenUpdate,
                 onOpenBackup = { hubDialog = "backup" },
                 onOpenIntegrations = { hubDialog = "integrations" },
                 onLogout = onLogout,

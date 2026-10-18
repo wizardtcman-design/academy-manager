@@ -122,6 +122,10 @@ fun DashboardScreen(
     }
 
     var showEnrollDialog by remember { mutableStateOf(false) }
+    // Course definition opened from the enroll flow: pick a student first, then
+    // create the course, and land straight back in enrollment.
+    var showQuickCourseDialog by remember { mutableStateOf(false) }
+    var pendingStudentForEnroll by remember { mutableStateOf<Student?>(null) }
     var installmentToPay by remember { mutableStateOf<Pair<Student, Installment>?>(null) }
     var studentToMessage by remember { mutableStateOf<Pair<Student, Installment?>?>(null) }
     var paymentForReceipt by remember { mutableStateOf<Payment?>(null) }
@@ -443,7 +447,16 @@ fun DashboardScreen(
         EnrollStudentDialog(
             students = students,
             courses = courses,
-            onDismiss = { showEnrollDialog = false },
+            initialStudent = pendingStudentForEnroll,
+            onCreateCourse = {
+                pendingStudentForEnroll = null
+                showEnrollDialog = false
+                showQuickCourseDialog = true
+            },
+            onDismiss = {
+                showEnrollDialog = false
+                pendingStudentForEnroll = null
+            },
             onEnroll = { st, crs, startD, disc, count, amounts, firstD, paidNow, nts ->
                 viewModel.enrollStudent(
                     student = st,
@@ -457,6 +470,20 @@ fun DashboardScreen(
                     notes = nts
                 ) { success, _ ->
                     if (success) showEnrollDialog = false
+                }
+            }
+        )
+    }
+
+    if (showQuickCourseDialog) {
+        com.example.ui.screens.dialogs.AddEditCourseDialog(
+            courseToEdit = null,
+            currencyUnit = currencyUnit,
+            onDismiss = { showQuickCourseDialog = false },
+            onConfirm = { title, duration, fee, installments, desc, active ->
+                viewModel.addCourse(title, duration, fee, installments, desc, active) { _, _ ->
+                    showQuickCourseDialog = false
+                    showEnrollDialog = true
                 }
             }
         )

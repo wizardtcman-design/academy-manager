@@ -33,6 +33,7 @@ import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.School
 import androidx.compose.material.icons.filled.Security
+import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material3.Icon
@@ -74,6 +75,7 @@ fun SettingsHubSection(
     onOpenInstallmentFormula: () -> Unit,
     onOpenCalendar: () -> Unit,
     onOpenAbout: () -> Unit,
+    onOpenUpdate: () -> Unit,
     onOpenBackup: () -> Unit,
     onOpenIntegrations: () -> Unit,
     onLogout: () -> Unit,
@@ -195,7 +197,8 @@ fun SettingsHubSection(
         HubRow("پشتیبان‌گیری و خروجی JSON", "نسخه پشتیبان کامل از هنرجویان و تراکنش‌ها", Icons.Default.Backup, MaterialTheme.colorScheme.tertiary) { onOpenBackup() }
         HubRow("تست اعلان اندروید", "اطمینان از کارکرد یادآوری‌ها و نوتیفیکیشن‌ها", Icons.Default.NotificationsActive, Color(0xFFFBBF24)) { onTestNotification() }
         HubRow("تقویم جلالی", "${PersianDateUtil.getDayOfWeekPersian()} ${PersianDateUtil.currentShamsiFullString()}", Icons.Default.CalendarMonth, MaterialTheme.colorScheme.secondary) { onOpenCalendar() }
-        HubRow("درباره برنامه", "نسخه $versionName · تقویم جلالی و قوانین مالی", Icons.Default.Info, MaterialTheme.colorScheme.primary, last = true) { onOpenAbout() }
+        HubRow("درباره برنامه", "نسخه $versionName · تقویم جلالی و قوانین مالی", Icons.Default.Info, MaterialTheme.colorScheme.primary) { onOpenAbout() }
+        HubRow("به‌روزرسانی برنامه", "بررسی نسخهٔ تازه و نصب مستقیم داخل برنامه", Icons.Default.SystemUpdate, MaterialTheme.colorScheme.secondary, last = true) { onOpenUpdate() }
     }
 
     Spacer(Modifier.height(14.dp))
