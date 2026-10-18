@@ -8,9 +8,12 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.togetherWith
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
-import androidx.compose.animation.togetherWith
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -92,6 +95,8 @@ import com.example.ui.screens.reports.ReportsScreen
 import com.example.ui.screens.settings.SettingsScreen
 import com.example.ui.screens.settings.availableThemeModels
 import com.example.ui.screens.students.StudentsScreen
+import com.example.ui.components.FloatingNavBar
+import com.example.ui.components.NavItem
 import com.example.ui.theme.MyApplicationTheme
 import com.example.ui.viewmodel.MainViewModel
 import androidx.compose.material.icons.filled.Settings
@@ -410,39 +415,24 @@ fun MainAppScaffold(
         },
         bottomBar = {
             if (activeSubScreen == null) {
-                NavigationBar(
-                    containerColor = MaterialTheme.colorScheme.surface,
-                    tonalElevation = 6.dp
-                ) {
-                    tabs.forEach { tab ->
-                        val selected = (currentTab == tab.screen)
-                        NavigationBarItem(
-                            selected = selected,
-                            onClick = {
-                                currentTab = tab.screen
-                                activeSubScreen = null
-                            },
-                            icon = {
-                                Icon(
-                                    imageVector = tab.icon,
-                                    contentDescription = tab.title
-                                )
-                            },
-                            label = {
-                                Text(
-                                    text = tab.title,
-                                    fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal
-                                )
-                            },
-                            colors = NavigationBarItemDefaults.colors(
-                                selectedIconColor = MaterialTheme.colorScheme.primary,
-                                selectedTextColor = MaterialTheme.colorScheme.primary,
-                                indicatorColor = MaterialTheme.colorScheme.primaryContainer
-                            ),
-                            modifier = Modifier.testTag(tab.testTag)
+                FloatingNavBar(
+                    items = tabs.map {
+                        NavItem(
+                            key = it.screen.route,
+                            title = it.title,
+                            icon = it.icon,
+                            testTag = it.testTag,
+                            payload = it.screen
                         )
+                    },
+                    selectedKey = currentTab.route,
+                    onSelect = { nav ->
+                        (nav.payload as? Screen)?.let { tab ->
+                            currentTab = tab
+                            activeSubScreen = null
+                        }
                     }
-                }
+                )
             }
         }
     ) { innerPadding ->
@@ -453,7 +443,12 @@ fun MainAppScaffold(
         ) {
             AnimatedContent(
                 targetState = activeSubScreen ?: currentTab,
-                transitionSpec = { fadeIn() togetherWith fadeOut() },
+                transitionSpec = {
+                    val forward = (initialState == null) || (targetState != null && initialState?.route != currentTab.route)
+                    val enterFrom = if (forward) 1 else -1
+                    (fadeIn(tween(240)) + slideInHorizontally(tween(320)) { it / 14 * enterFrom }) togetherWith
+                        (fadeOut(tween(180)) + slideOutHorizontally(tween(320)) { -it / 18 * enterFrom })
+                },
                 label = "screen_transition"
             ) { destination ->
                 when (destination) {

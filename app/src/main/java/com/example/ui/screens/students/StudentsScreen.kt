@@ -4,6 +4,8 @@ import android.content.Intent
 import android.net.Uri
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -19,6 +21,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -56,6 +59,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.scale
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
@@ -276,8 +282,9 @@ fun StudentsScreen(
                     contentPadding = PaddingValues(bottom = 120.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    items(filteredStudents, key = { it.id }) { student ->
+                    itemsIndexed(filteredStudents, key = { _, st -> st.id }) { index, student ->
                         val summary = viewModel.getStudentFinancialSummary(student.id)
+                        com.example.ui.components.RevealItem(index = index) {
                         StudentItemCard(
                             student = student,
                             totalTuition = summary.totalTuition,
@@ -293,6 +300,7 @@ fun StudentsScreen(
                                 studentForMessage = Pair(student, summary.nearestDueInstallment)
                             }
                         )
+                        }
                     }
                 }
             }
@@ -490,14 +498,36 @@ private fun StudentItemCard(
     onCall: () -> Unit,
     onMessage: () -> Unit
 ) {
-    Card(
+    val interaction = remember { MutableInteractionSource() }
+    val pressed by interaction.collectIsPressedAsState()
+    val press by androidx.compose.animation.core.animateFloatAsState(
+        targetValue = if (pressed) 0.98f else 1f,
+        animationSpec = androidx.compose.animation.core.spring(dampingRatio = 0.6f, stiffness = 900f),
+        label = "studentPress"
+    )
+    Surface(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable { onClick() }
+            .scale(press)
+            .clickable(
+                interactionSource = interaction,
+                indication = null,
+                onClick = onClick
+            )
             .testTag("student_card_${student.id}"),
-        shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        elevation = CardDefaults.cardElevation(defaultElevation = 1.5.dp)
+        shape = RoundedCornerShape(18.dp),
+        color = MaterialTheme.colorScheme.surfaceContainer,
+        shadowElevation = if (pressed) 2.dp else 7.dp,
+        border = androidx.compose.foundation.BorderStroke(
+            1.dp,
+            Brush.linearGradient(
+                listOf(
+                    MaterialTheme.colorScheme.primary.copy(alpha = 0.40f),
+                    MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.45f),
+                    MaterialTheme.colorScheme.secondary.copy(alpha = 0.20f)
+                )
+            )
+        )
     ) {
         Column(
             modifier = Modifier

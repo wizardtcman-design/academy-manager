@@ -111,6 +111,16 @@ import androidx.compose.ui.unit.sp
 import com.example.data.model.AcademySettings
 import com.example.data.model.BankAccount
 import com.example.data.model.MessageTemplate
+import com.example.ui.theme.AmberDarkColorScheme
+import com.example.ui.theme.BlueDarkColorScheme
+import com.example.ui.theme.ForestDarkColorScheme
+import com.example.ui.theme.GreenDarkColorScheme
+import com.example.ui.theme.NavyDarkColorScheme
+import com.example.ui.theme.OrangeDarkColorScheme
+import com.example.ui.theme.PurpleDarkColorScheme
+import com.example.ui.theme.RoseDarkColorScheme
+import com.example.ui.theme.SlateDarkColorScheme
+import com.example.ui.theme.TealDarkColorScheme
 import com.example.ui.screens.dialogs.AddEditBankAccountDialog
 import com.example.ui.viewmodel.MainViewModel
 
@@ -123,16 +133,16 @@ data class ThemeModelItem(
 )
 
 val availableThemeModels = listOf(
-    ThemeModelItem("BLUE", "آبی حرفه‌ای", "Professional Blue", Color(0xFF1D4ED8), Color(0xFF0284C7)),
-    ThemeModelItem("GREEN", "سبز زمردی", "Emerald Green", Color(0xFF059669), Color(0xFF0D9488)),
-    ThemeModelItem("PURPLE", "بنفش سلطنتی", "Royal Purple", Color(0xFF7C3AED), Color(0xFF9333EA)),
-    ThemeModelItem("ORANGE", "نارنجی پرانرژی", "Sunset Orange", Color(0xFFEA580C), Color(0xFFD97706)),
-    ThemeModelItem("NAVY", "سرمه‌ای مدرن", "Deep Navy", Color(0xFF0F172A), Color(0xFF334155)),
-    ThemeModelItem("TEAL", "فیروزه‌ای ایرانی", "Persian Teal", Color(0xFF0D9488), Color(0xFF0284C7)),
-    ThemeModelItem("ROSE", "زرشکی و رزگلد", "Crimson Rose", Color(0xFFE11D48), Color(0xFFDB2777)),
-    ThemeModelItem("AMBER", "طلایی و کهربایی", "Golden Amber", Color(0xFFD97706), Color(0xFFCA8A04)),
-    ThemeModelItem("SLATE", "نوک‌مدادی گرافیتی", "Slate Graphite", Color(0xFF475569), Color(0xFF64748B)),
-    ThemeModelItem("FOREST", "سبز زیتونی جنگلی", "Forest Olive", Color(0xFF3F6212), Color(0xFF65A30D))
+    ThemeModelItem("BLUE", "آبی حرفه‌ای", "Professional Blue", BlueDarkColorScheme.primary, BlueDarkColorScheme.tertiary),
+    ThemeModelItem("GREEN", "سبز زمردی", "Emerald Green", GreenDarkColorScheme.primary, GreenDarkColorScheme.tertiary),
+    ThemeModelItem("PURPLE", "بنفش سلطنتی", "Royal Purple", PurpleDarkColorScheme.primary, PurpleDarkColorScheme.tertiary),
+    ThemeModelItem("ORANGE", "نارنجی پرانرژی", "Sunset Orange", OrangeDarkColorScheme.primary, OrangeDarkColorScheme.tertiary),
+    ThemeModelItem("NAVY", "سرمه‌ای مدرن", "Deep Navy", NavyDarkColorScheme.primary, NavyDarkColorScheme.tertiary),
+    ThemeModelItem("TEAL", "فیروزه‌ای ایرانی", "Persian Teal", TealDarkColorScheme.primary, TealDarkColorScheme.tertiary),
+    ThemeModelItem("ROSE", "زرشکی و رزگلد", "Crimson Rose", RoseDarkColorScheme.primary, RoseDarkColorScheme.tertiary),
+    ThemeModelItem("AMBER", "طلایی و کهربایی", "Golden Amber", AmberDarkColorScheme.primary, AmberDarkColorScheme.tertiary),
+    ThemeModelItem("SLATE", "نوک‌مدادی گرافیتی", "Slate Graphite", SlateDarkColorScheme.primary, SlateDarkColorScheme.tertiary),
+    ThemeModelItem("FOREST", "سبز زیتونی جنگلی", "Forest Olive", ForestDarkColorScheme.primary, ForestDarkColorScheme.tertiary)
 )
 
 @OptIn(

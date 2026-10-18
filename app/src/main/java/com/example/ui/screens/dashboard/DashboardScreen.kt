@@ -1,6 +1,11 @@
 package com.example.ui.screens.dashboard
 
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -56,6 +61,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.scale
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -80,6 +86,8 @@ import com.example.ui.theme.StatusError
 import com.example.ui.theme.StatusSuccess
 import com.example.ui.theme.StatusWarning
 import com.example.ui.theme.TealSecondary
+import com.example.ui.components.HeroCard
+import com.example.ui.components.StatCardPro
 import com.example.ui.viewmodel.MainViewModel
 
 @Composable
@@ -127,93 +135,12 @@ fun DashboardScreen(
     ) {
         // Academy Header Card
         item {
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(20.dp),
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.primary
-                ),
-                elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
-            ) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .background(
-                            brush = Brush.linearGradient(
-                                colors = listOf(
-                                    MaterialTheme.colorScheme.primary,
-                                    MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.8f)
-                                )
-                            )
-                        )
-                        .padding(18.dp)
-                ) {
-                    Column {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Column {
-                                Text(
-                                    text = settings?.academyName ?: "آموزشگاه کامپیوتر",
-                                    style = MaterialTheme.typography.titleLarge,
-                                    fontWeight = FontWeight.Bold,
-                                    color = Color.White
-                                )
-                                Spacer(modifier = Modifier.height(4.dp))
-                                Text(
-                                    text = "خوش‌آمدید، ${user?.fullName ?: "مدیر آموزشگاه"}",
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = Color.White.copy(alpha = 0.85f)
-                                )
-                            }
-
-                            Surface(
-                                modifier = Modifier
-                                    .size(44.dp)
-                                    .clip(CircleShape),
-                                color = Color.White.copy(alpha = 0.2f)
-                            ) {
-                                Box(contentAlignment = Alignment.Center) {
-                                    Icon(
-                                        imageVector = Icons.Default.School,
-                                        contentDescription = null,
-                                        tint = Color.White,
-                                        modifier = Modifier.size(24.dp)
-                                    )
-                                }
-                            }
-                        }
-
-                        Spacer(modifier = Modifier.height(14.dp))
-
-                        // Date banner inside header
-                        Surface(
-                            shape = RoundedCornerShape(12.dp),
-                            color = Color.Black.copy(alpha = 0.2f)
-                        ) {
-                            Row(
-                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Default.CalendarToday,
-                                    contentDescription = null,
-                                    tint = Color.White,
-                                    modifier = Modifier.size(16.dp)
-                                )
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text(
-                                    text = "$dayOfWeek، $currentShamsiFull",
-                                    style = MaterialTheme.typography.labelMedium,
-                                    color = Color.White
-                                )
-                            }
-                        }
-                    }
-                }
-            }
+            HeroCard(
+                academyName = settings?.academyName ?: "آموزشگاه کامپیوتر",
+                managerName = user?.fullName ?: "مدیر آموزشگاه",
+                dateLine = "$dayOfWeek، $currentShamsiFull",
+                onClick = onNavigateToSettings
+            )
         }
 
         // Quick Actions Section
@@ -277,43 +204,49 @@ fun DashboardScreen(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    StatCard(
+                    StatCardPro(
                         title = "تعداد کل هنرجویان",
-                        value = "${PersianDateUtil.toPersianDigits(stats.totalStudents.toString())} نفر",
+                        revealIndex = 0,
+                        value = "",
                         icon = Icons.Default.People,
                         tint = MaterialTheme.colorScheme.primary,
+                        numericValue = stats.totalStudents,
+                        numericLabel = " نفر",
                         modifier = Modifier
                             .weight(1f)
                             .clickable { onNavigateToStudents() }
                     )
-
-                    StatCard(
+                    StatCardPro(
                         title = "تعداد دوره‌ها",
-                        value = "${PersianDateUtil.toPersianDigits(stats.totalCourses.toString())} دوره",
+                        revealIndex = 1,
+                        value = "",
                         icon = Icons.Default.School,
                         tint = TealSecondary,
+                        numericValue = stats.totalCourses,
+                        numericLabel = " دوره",
                         modifier = Modifier
                             .weight(1f)
                             .clickable { onNavigateToCourses() }
                     )
                 }
-
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    StatCard(
+                    StatCardPro(
                         title = "دریافتی امروز",
+                        revealIndex = 2,
                         value = PersianDateUtil.formatCurrency(stats.todayReceipts, currencyUnit),
                         icon = Icons.Default.TrendingUp,
                         tint = StatusSuccess,
+                        progress = if (stats.totalDebt + stats.todayReceipts > 0) (stats.todayReceipts.toFloat() / (stats.totalDebt + stats.todayReceipts).toFloat()) else 0f,
                         modifier = Modifier
                             .weight(1f)
                             .clickable { onNavigateToPayments() }
                     )
-
-                    StatCard(
+                    StatCardPro(
                         title = "بدهی کل هنرجویان",
+                        revealIndex = 3,
                         value = PersianDateUtil.formatCurrency(stats.totalDebt, currencyUnit),
                         icon = Icons.Default.AccountBalanceWallet,
                         tint = StatusWarning,
@@ -322,26 +255,30 @@ fun DashboardScreen(
                             .clickable { onNavigateToPayments() }
                     )
                 }
-
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
-                    StatCard(
+                    StatCardPro(
                         title = "اقساط سررسیدشده",
-                        value = "${PersianDateUtil.toPersianDigits(stats.dueInstallmentsCount.toString())} مورد",
+                        revealIndex = 4,
+                        value = "",
                         icon = Icons.Default.EventNote,
                         tint = StatusWarning,
+                        numericValue = stats.dueInstallmentsCount,
+                        numericLabel = " مورد",
                         modifier = Modifier
                             .weight(1f)
                             .clickable { onNavigateToPayments() }
                     )
-
-                    StatCard(
+                    StatCardPro(
                         title = "اقساط معوقه و عقب‌افتاده",
-                        value = "${PersianDateUtil.toPersianDigits(stats.overdueInstallmentsCount.toString())} مورد",
+                        revealIndex = 5,
+                        value = "",
                         icon = Icons.Default.AssignmentLate,
                         tint = StatusError,
+                        numericValue = stats.overdueInstallmentsCount,
+                        numericLabel = " مورد",
                         modifier = Modifier
                             .weight(1f)
                             .clickable { onNavigateToPayments() }
@@ -581,64 +518,6 @@ fun DashboardScreen(
 }
 
 @Composable
-private fun StatCard(
-    title: String,
-    value: String,
-    icon: ImageVector,
-    tint: Color,
-    modifier: Modifier = Modifier
-) {
-    Card(
-        modifier = modifier,
-        shape = RoundedCornerShape(16.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
-    ) {
-        Column(
-            modifier = Modifier.padding(14.dp)
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Surface(
-                    shape = RoundedCornerShape(10.dp),
-                    color = tint.copy(alpha = 0.12f),
-                    modifier = Modifier.size(36.dp)
-                ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Icon(
-                            imageVector = icon,
-                            contentDescription = null,
-                            tint = tint,
-                            modifier = Modifier.size(20.dp)
-                        )
-                    }
-                }
-            }
-
-            Spacer(modifier = Modifier.height(10.dp))
-
-            Text(
-                text = title,
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-
-            Spacer(modifier = Modifier.height(4.dp))
-
-            Text(
-                text = value,
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.onSurface
-            )
-        }
-    }
-}
-
-@Composable
 private fun QuickActionButton(
     title: String,
     icon: ImageVector,
@@ -646,32 +525,70 @@ private fun QuickActionButton(
     modifier: Modifier = Modifier,
     onClick: () -> Unit
 ) {
-    Card(
-        onClick = onClick,
-        modifier = modifier,
-        shape = RoundedCornerShape(14.dp),
-        colors = CardDefaults.cardColors(containerColor = color.copy(alpha = 0.1f)),
-        elevation = CardDefaults.cardElevation(defaultElevation = 0.dp)
+    val interaction = remember { MutableInteractionSource() }
+    val pressed by interaction.collectIsPressedAsState()
+    val press by animateFloatAsState(
+        targetValue = if (pressed) 0.955f else 1f,
+        animationSpec = spring(dampingRatio = 0.55f, stiffness = 900f),
+        label = "quickPress"
+    )
+    Surface(
+        shape = RoundedCornerShape(16.dp),
+        color = MaterialTheme.colorScheme.surfaceContainer,
+        border = BorderStroke(
+            1.dp,
+            Brush.linearGradient(listOf(color.copy(alpha = 0.45f), color.copy(alpha = 0.08f)))
+        ),
+        shadowElevation = if (pressed) 2.dp else 7.dp,
+        modifier = modifier
+            .scale(press)
+            .clickable(
+                interactionSource = interaction,
+                indication = null,
+                onClick = onClick
+            )
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(vertical = 12.dp, horizontal = 8.dp),
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
-            Icon(
-                imageVector = icon,
-                contentDescription = null,
-                tint = color,
-                modifier = Modifier.size(26.dp)
+        Box {
+            Box(
+                modifier = Modifier
+                    .matchParentSize()
+                    .background(
+                        Brush.verticalGradient(
+                            listOf(color.copy(alpha = 0.16f), Color.Transparent),
+                            endY = 220f
+                        )
+                    )
             )
-            Spacer(modifier = Modifier.height(6.dp))
-            Text(
-                text = title,
-                style = MaterialTheme.typography.labelMedium,
-                fontWeight = FontWeight.Bold,
-                color = color
-            )
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 12.dp, horizontal = 8.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(36.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(
+                            Brush.linearGradient(listOf(color, color.copy(alpha = 0.65f)))
+                        ),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = icon,
+                        contentDescription = null,
+                        tint = Color.White,
+                        modifier = Modifier.size(19.dp)
+                    )
+                }
+                Spacer(modifier = Modifier.height(7.dp))
+                Text(
+                    text = title,
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+            }
         }
     }
 }

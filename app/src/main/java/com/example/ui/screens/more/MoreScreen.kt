@@ -1,7 +1,10 @@
 package com.example.ui.screens.more
 
 import android.widget.Toast
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -64,7 +67,10 @@ import com.example.data.model.AcademySettings
 import com.example.data.model.User
 import com.example.data.util.PersianDateUtil
 import com.example.service.NotificationHelper
+import com.example.ui.components.HeaderCard
 import com.example.ui.theme.AmberTertiary
+import com.example.ui.theme.StatusInfo
+import com.example.ui.theme.StatusSuccess
 import com.example.ui.theme.IndigoPrimary
 import com.example.ui.theme.StatusError
 import com.example.ui.theme.TealSecondary
@@ -97,11 +103,10 @@ fun MoreScreen(
     ) {
         // User Profile Summary Card
         item {
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(20.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+            HeaderCard(
+                title = "حساب مدیر",
+                subtitle = "دسترسی کامل به سامانه",
+                icon = Icons.Default.AccountCircle
             ) {
                 Row(
                     modifier = Modifier
@@ -162,6 +167,9 @@ fun MoreScreen(
         item {
             CategoryCard(
                 title = "۱. مدیریت آموزشگاه",
+                icon = Icons.Default.School,
+                accent = MaterialTheme.colorScheme.primary,
+                accent2 = MaterialTheme.colorScheme.tertiary,
                 items = listOf(
                     CategoryItemData(
                         title = "مشخصات آموزشگاه",
@@ -185,6 +193,9 @@ fun MoreScreen(
         item {
             CategoryCard(
                 title = "۲. هنرجویان و دوره‌ها",
+                icon = Icons.Default.School,
+                accent = IndigoPrimary,
+                accent2 = TealSecondary,
                 items = listOf(
                     CategoryItemData(
                         title = "مدیریت دوره‌های آموزشی",
@@ -208,6 +219,9 @@ fun MoreScreen(
         item {
             CategoryCard(
                 title = "۳. مالی و حسابداری",
+                icon = Icons.Default.AccountBalance,
+                accent = TealSecondary,
+                accent2 = MaterialTheme.colorScheme.primary,
                 items = listOf(
                     CategoryItemData(
                         title = "تنظیمات حساب‌های بانکی و مالی",
@@ -224,6 +238,9 @@ fun MoreScreen(
         item {
             CategoryCard(
                 title = "۴. پیام‌ها و یادآوری‌ها",
+                icon = Icons.Default.Message,
+                accent = MaterialTheme.colorScheme.primary,
+                accent2 = AmberTertiary,
                 items = listOf(
                     CategoryItemData(
                         title = "مرکز قالب‌های پیام و اعلان‌ها",
@@ -240,6 +257,9 @@ fun MoreScreen(
         item {
             CategoryCard(
                 title = "۵. اعلان‌ها و یادآورهای سیستم",
+                icon = Icons.Default.Notifications,
+                accent = AmberTertiary,
+                accent2 = MaterialTheme.colorScheme.secondary,
                 items = listOf(
                     CategoryItemData(
                         title = "تست و بررسی نوتیفیکیشن اندروید",
@@ -268,6 +288,9 @@ fun MoreScreen(
         item {
             CategoryCard(
                 title = "۶. امنیت و دسترسی",
+                icon = Icons.Default.Security,
+                accent = MaterialTheme.colorScheme.primary,
+                accent2 = StatusInfo,
                 items = listOf(
                     CategoryItemData(
                         title = "نام کاربری و قفل برنامه (App Lock)",
@@ -291,6 +314,9 @@ fun MoreScreen(
         item {
             CategoryCard(
                 title = "۷. ظاهر و پوسته برنامه",
+                icon = Icons.Default.Palette,
+                accent = IndigoPrimary,
+                accent2 = MaterialTheme.colorScheme.tertiary,
                 items = listOf(
                     CategoryItemData(
                         title = "انتخاب رنگ تم و حالت شب/روز",
@@ -307,6 +333,9 @@ fun MoreScreen(
         item {
             CategoryCard(
                 title = "۸. پشتیبان‌گیری و اطلاعات",
+                icon = Icons.Default.Backup,
+                accent = TealSecondary,
+                accent2 = StatusSuccess,
                 items = listOf(
                     CategoryItemData(
                         title = "خروجی و پشتیبان‌گیری دیتابیس",
@@ -323,6 +352,9 @@ fun MoreScreen(
         item {
             CategoryCard(
                 title = "۹. اتصالات و سرویس‌ها",
+                icon = Icons.Default.Share,
+                accent = MaterialTheme.colorScheme.secondary,
+                accent2 = TealSecondary,
                 items = listOf(
                     CategoryItemData(
                         title = "ربات تلگرام و پیام‌رسان‌ها",
@@ -339,6 +371,9 @@ fun MoreScreen(
         item {
             CategoryCard(
                 title = "۱۰. درباره برنامه و خروج",
+                icon = Icons.Default.Info,
+                accent = MaterialTheme.colorScheme.primary,
+                accent2 = AmberTertiary,
                 items = listOf(
                     CategoryItemData(
                         title = "درباره سامانه مدیریت آموزشگاه",
@@ -580,22 +615,18 @@ private data class CategoryItemData(
 @Composable
 private fun CategoryCard(
     title: String,
-    items: List<CategoryItemData>
+    items: List<CategoryItemData>,
+    icon: ImageVector = Icons.Default.School,
+    accent: Color = MaterialTheme.colorScheme.primary,
+    accent2: Color = MaterialTheme.colorScheme.secondary
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        Text(
-            text = title,
-            style = MaterialTheme.typography.titleSmall,
-            fontWeight = FontWeight.Bold,
-            color = MaterialTheme.colorScheme.primary,
-            modifier = Modifier.padding(horizontal = 4.dp)
-        )
-
-        Card(
-            modifier = Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(18.dp),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-            elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
+        HeaderCard(
+            title = title,
+            icon = icon,
+            accent = accent,
+            accent2 = accent2,
+            shape = RoundedCornerShape(18.dp)
         ) {
             Column {
                 items.forEachIndexed { index, item ->
@@ -628,10 +659,21 @@ private fun MoreMenuItem(
     isDestructive: Boolean = false,
     onClick: () -> Unit
 ) {
+    val interaction = remember { MutableInteractionSource() }
+    val pressed by interaction.collectIsPressedAsState()
+    val bg by androidx.compose.animation.animateColorAsState(
+        targetValue = if (pressed) iconTint.copy(alpha = 0.10f) else Color.Transparent,
+        label = "rowBg"
+    )
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable { onClick() }
+            .background(bg)
+            .clickable(
+                interactionSource = interaction,
+                indication = null,
+                onClick = onClick
+            )
             .padding(horizontal = 16.dp, vertical = 14.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
