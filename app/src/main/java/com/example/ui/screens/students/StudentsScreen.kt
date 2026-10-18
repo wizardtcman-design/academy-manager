@@ -109,13 +109,19 @@ fun StudentsScreen(
     var paymentForReceipt by remember { mutableStateOf<Payment?>(null) }
     var paymentToReverse by remember { mutableStateOf<Payment?>(null) }
 
+    // The three most used filters stay as chips; the rest are grouped in the
+    // filter sheet so the row always fits a phone screen.
     val filterOptions = listOf(
-        "ALL" to "همه",
-        "ACTIVE" to "فعال",
-        "DEBTOR" to "بدهکار",
-        "SETTLED" to "تسویه کامل",
-        "FINISHED" to "پایان دوره",
-        "WITHDRAWN" to "انصراف داده"
+        com.example.ui.components.FilterOption("ALL", "همه"),
+        com.example.ui.components.FilterOption("ACTIVE", "فعال"),
+        com.example.ui.components.FilterOption("DEBTOR", "بدهکار"),
+        com.example.ui.components.FilterOption("SETTLED", "تسویه کامل"),
+        com.example.ui.components.FilterOption("FINISHED", "پایان دوره"),
+        com.example.ui.components.FilterOption("WITHDRAWN", "انصراف داده")
+    )
+    val filterGroups = listOf(
+        com.example.ui.components.FilterGroup("وضعیت مالی", listOf(filterOptions[0], filterOptions[2], filterOptions[3])),
+        com.example.ui.components.FilterGroup("وضعیت دوره", listOf(filterOptions[1], filterOptions[4], filterOptions[5]))
     )
 
     val filteredStudents = remember(students, statusFilter, enrollments, installments, payments) {
@@ -164,7 +170,20 @@ fun StudentsScreen(
                 .padding(innerPadding)
                 .padding(horizontal = 16.dp)
         ) {
-            Spacer(modifier = Modifier.height(16.dp))
+            Spacer(modifier = Modifier.height(12.dp))
+
+            Text(
+                text = "هنرجویان آموزشگاه",
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onBackground
+            )
+            Text(
+                text = "جستجو، فیلتر و مدیریت پرونده هنرجویان",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(bottom = 12.dp)
+            )
 
             // Search Bar
             OutlinedTextField(
@@ -198,21 +217,13 @@ fun StudentsScreen(
 
             Spacer(modifier = Modifier.height(10.dp))
 
-            // Filter Chips
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                filterOptions.forEach { option ->
-                    FilterChip(
-                        selected = statusFilter == option.first,
-                        onClick = { statusFilter = option.first },
-                        label = { Text(option.second, style = MaterialTheme.typography.bodySmall) }
-                    )
-                }
-            }
+            // Collapsible, grouped filters
+            com.example.ui.components.FilterBar(
+                options = filterOptions,
+                selectedKey = statusFilter,
+                onSelect = { statusFilter = it },
+                groups = filterGroups
+            )
 
             Spacer(modifier = Modifier.height(10.dp))
 
@@ -223,20 +234,20 @@ fun StudentsScreen(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = "هنرجویان آموزشگاه",
+                    text = "فهرست هنرجویان",
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold
                 )
 
                 Surface(
                     shape = RoundedCornerShape(10.dp),
-                    color = MaterialTheme.colorScheme.primaryContainer
+                    color = MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)
                 ) {
                     Text(
                         text = "${PersianDateUtil.toPersianDigits(filteredStudents.size.toString())} هنرجو",
                         style = MaterialTheme.typography.labelMedium,
                         fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onPrimaryContainer,
+                        color = MaterialTheme.colorScheme.primary,
                         modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
                     )
                 }
@@ -542,15 +553,27 @@ private fun StudentItemCard(
                 Surface(
                     modifier = Modifier
                         .size(46.dp)
-                        .clip(CircleShape),
-                    color = MaterialTheme.colorScheme.primaryContainer
+                        .clip(RoundedCornerShape(15.dp)),
+                    color = Color.Transparent
                 ) {
-                    Box(contentAlignment = Alignment.Center) {
+                    Box(
+                        modifier = Modifier
+                            .background(
+                                Brush.linearGradient(
+                                    listOf(
+                                        MaterialTheme.colorScheme.primary,
+                                        MaterialTheme.colorScheme.tertiary
+                                    )
+                                )
+                            )
+                            .fillMaxSize(),
+                        contentAlignment = Alignment.Center
+                    ) {
                         Text(
                             text = if (student.fullName.isNotEmpty()) student.fullName.take(1) else "ه",
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.primary
+                            color = Color.White
                         )
                     }
                 }

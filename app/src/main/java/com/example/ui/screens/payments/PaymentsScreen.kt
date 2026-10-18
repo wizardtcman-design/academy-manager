@@ -103,7 +103,13 @@ fun PaymentsScreen(
     val settings by viewModel.settings.collectAsState()
 
     var selectedTab by remember { mutableIntStateOf(0) }
-    val tabTitles = listOf("تراکنش‌های واریزی", "بدهکاران و معوقات", "تقویم اقساط", "حساب‌ها و کارت‌ها")
+    val tabTitles = listOf("واریزی‌ها", "بدهکاران", "تقویم", "حساب‌ها")
+    val tabIcons = listOf(
+        androidx.compose.material.icons.Icons.Default.Receipt,
+        androidx.compose.material.icons.Icons.Default.People,
+        androidx.compose.material.icons.Icons.Default.CalendarMonth,
+        androidx.compose.material.icons.Icons.Default.CreditCard
+    )
 
     // Dialog States
     var showRecordPaymentDialog by remember { mutableStateOf(false) }
@@ -158,34 +164,26 @@ fun PaymentsScreen(
             Spacer(modifier = Modifier.height(16.dp))
 
             Text(
-                text = "مدیریت مالی، اقساط و واریزی‌ها",
+                text = "مدیریت مالی",
                 style = MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.Bold,
                 color = MaterialTheme.colorScheme.onBackground
             )
+            Text(
+                text = "اقساط، واریزی‌ها و حساب‌های آموزشگاه",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
 
             Spacer(modifier = Modifier.height(10.dp))
 
-            // Tab Bar
-            ScrollableTabRow(
-                selectedTabIndex = selectedTab,
-                edgePadding = 0.dp,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                tabTitles.forEachIndexed { index, title ->
-                    Tab(
-                        selected = selectedTab == index,
-                        onClick = { selectedTab = index },
-                        text = {
-                            Text(
-                                text = title,
-                                style = MaterialTheme.typography.bodySmall,
-                                fontWeight = if (selectedTab == index) FontWeight.Bold else FontWeight.Normal
-                            )
-                        }
-                    )
-                }
-            }
+            // Segmented sections (fits every phone width)
+            com.example.ui.components.SegmentedTabs(
+                labels = tabTitles,
+                selectedIndex = selectedTab,
+                onSelect = { selectedTab = it },
+                icons = tabIcons
+            )
 
             Spacer(modifier = Modifier.height(12.dp))
 
@@ -530,29 +528,26 @@ private fun DebtorsTab(
     }
 
     Column(modifier = Modifier.fillMaxSize()) {
-        // Sorting Row
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .horizontalScroll(rememberScrollState()),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            FilterChip(
-                selected = sortBy == "DEBT",
-                onClick = { sortBy = "DEBT" },
-                label = { Text("بیشترین بدهی", style = MaterialTheme.typography.bodySmall) }
+        // Sorting options, grouped in the filter sheet to fit narrow screens
+        com.example.ui.components.FilterBar(
+            options = listOf(
+                com.example.ui.components.FilterOption("DEBT", "بیشترین بدهی"),
+                com.example.ui.components.FilterOption("OVERDUE", "بیشترین دیرکرد"),
+                com.example.ui.components.FilterOption("DUE_DATE", "نزدیک‌ترین سررسید")
+            ),
+            selectedKey = sortBy,
+            onSelect = { sortBy = it },
+            groups = listOf(
+                com.example.ui.components.FilterGroup(
+                    "ترتیب نمایش",
+                    listOf(
+                        com.example.ui.components.FilterOption("DEBT", "بیشترین بدهی"),
+                        com.example.ui.components.FilterOption("OVERDUE", "بیشترین دیرکرد"),
+                        com.example.ui.components.FilterOption("DUE_DATE", "نزدیک‌ترین سررسید")
+                    )
+                )
             )
-            FilterChip(
-                selected = sortBy == "OVERDUE",
-                onClick = { sortBy = "OVERDUE" },
-                label = { Text("بیشترین دیرکرد", style = MaterialTheme.typography.bodySmall) }
-            )
-            FilterChip(
-                selected = sortBy == "DUE_DATE",
-                onClick = { sortBy = "DUE_DATE" },
-                label = { Text("نزدیک‌ترین سررسید", style = MaterialTheme.typography.bodySmall) }
-            )
-        }
+        )
 
         Spacer(modifier = Modifier.height(10.dp))
 

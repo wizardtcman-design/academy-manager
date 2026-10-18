@@ -153,7 +153,14 @@ val availableThemeModels = listOf(
 @Composable
 fun SettingsScreen(
     viewModel: MainViewModel,
-    onBack: () -> Unit
+    user: com.example.data.model.User? = null,
+    activeSubScreenHeader: Boolean = true,
+    onBack: () -> Unit,
+    onNavigateToCourses: () -> Unit = {},
+    onNavigateToAuditLogs: () -> Unit = {},
+    onNavigateToReminders: () -> Unit = {},
+    onOpenChangePassword: () -> Unit = {},
+    onLogout: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val settings by viewModel.settings.collectAsState()
@@ -162,6 +169,17 @@ fun SettingsScreen(
     val isSyncing by viewModel.isSyncing.collectAsState()
     val lastSyncSummary by viewModel.lastSyncSummary.collectAsState()
     val isOnline by viewModel.isOnline.collectAsState()
+
+    // Footer hub state: which settings detail tab is open, and which hub dialog is showing.
+    var settingsTab by remember { mutableStateOf(0) }
+    var messageTab by remember { mutableStateOf(0) }
+    var hubDialog by remember { mutableStateOf<String?>(null) }
+
+    // Hub shortcuts that jump straight into the matching section
+    fun jumpToMessageTab(tab: Int) {
+        messageTab = tab
+        settingsTab = 2
+    }
 
     var showRestoreDialog by remember { mutableStateOf(false) }
     var restoreJsonInput by remember { mutableStateOf("") }
@@ -177,6 +195,14 @@ fun SettingsScreen(
     var currencyUnit by remember(settings) { mutableStateOf(settings?.currencyUnit ?: "تومان") }
 
     // Theme & Appearance States
+    // 0 ظاهر، 1 آموزشگاه و بانک، 2 پیام‌ها، 3 امنیت، 4 داده‌ها
+    val showTheme = settingsTab == 0
+    val showAcademy = settingsTab == 1
+    val showBanks = settingsTab == 1
+    val showMessages = settingsTab == 2
+    val showSecurity = settingsTab == 3
+    val showData = settingsTab == 4
+
     var selectedThemeName by remember(settings) { mutableStateOf(settings?.themeName ?: "BLUE") }
     var selectedThemeMode by remember(settings) { mutableStateOf(settings?.themeMode ?: "SYSTEM") }
 
@@ -237,15 +263,19 @@ fun SettingsScreen(
         topBar = {
             TopAppBar(
                 title = {
-                    Text(
-                        text = "تنظیمات آموزشگاه و پیام‌رسان‌ها",
-                        style = MaterialTheme.typography.titleLarge,
-                        fontWeight = FontWeight.Bold
-                    )
+                    if (activeSubScreenHeader) {
+                        Text(
+                            text = "تنظیمات",
+                            style = MaterialTheme.typography.titleLarge,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
                 },
                 navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "بازگشت")
+                    if (activeSubScreenHeader) {
+                        IconButton(onClick = onBack) {
+                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "بازگشت")
+                        }
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
@@ -262,8 +292,40 @@ fun SettingsScreen(
                 .padding(horizontal = 16.dp, vertical = 8.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
+            // 0. Hub: everything that used to be in the "More" tab, grouped.
+            SettingsHubSection(
+                user = user,
+                settings = settings,
+                versionName = com.example.BuildConfig.VERSION_NAME,
+                selectedTab = settingsTab,
+                onSelectTab = { settingsTab = it },
+                onNavigateToCourses = onNavigateToCourses,
+                onNavigateToAuditLogs = onNavigateToAuditLogs,
+                onNavigateToReminders = onNavigateToReminders,
+                onOpenChangePassword = onOpenChangePassword,
+                onOpenInstallmentFormula = { hubDialog = "installments" },
+                onOpenCalendar = { hubDialog = "calendar" },
+                onOpenAbout = { hubDialog = "about" },
+                onOpenBackup = { hubDialog = "backup" },
+                onOpenIntegrations = { hubDialog = "integrations" },
+                onLogout = onLogout,
+                onTestNotification = {
+                    val helper = com.example.service.NotificationHelper(context)
+                    helper.showInstallmentDueNotification(
+                        notificationId = 9999,
+                        studentName = "علی محمدی (تست)",
+                        amountFormatted = "۱,۵۰۰,۰۰۰ تومان",
+                        dueDateShamsi = com.example.data.util.PersianDateUtil.currentShamsiString(),
+                        dueCategory = "امروز",
+                        customTitle = "🔔 تست اعلان سررسید قسط",
+                        customMessage = "سامانه یادآوری اقساط آموزشگاه با موفقیت فعال است."
+                    )
+                    Toast.makeText(context, "اعلان آزمایشی ارسال شد.", Toast.LENGTH_SHORT).show()
+                }
+            )
+
             // 1. Appearance & Theme Selection Card (بخش ظاهر برنامه و تم‌ها)
-            Card(
+            if (showTheme) Card(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(18.dp),
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -436,7 +498,7 @@ fun SettingsScreen(
             }
 
             // 2. Academy Profile Card
-            Card(
+            if (showAcademy) Card(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(18.dp),
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -487,7 +549,7 @@ fun SettingsScreen(
             }
 
             // 3. Bank Accounts & Payment Cards Card
-            Card(
+            if (showBanks) Card(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(18.dp),
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -608,7 +670,7 @@ fun SettingsScreen(
             }
 
             // 4. Telegram Bot Integration Card
-            Card(
+            if (showBanks) Card(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(18.dp),
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -726,7 +788,7 @@ fun SettingsScreen(
             }
 
             // Notification Permission Status (Android 13+)
-            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+            if (showMessages && android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
                 val notifPermissionState = com.google.accompanist.permissions.rememberPermissionState(
                     android.Manifest.permission.POST_NOTIFICATIONS
                 )
@@ -781,9 +843,11 @@ fun SettingsScreen(
             }
 
             // 4. Dedicated Message & Reminder Center (مرکز تنظیم پیام‌ها و یادآوری‌ها)
-            MessageSettingsSection(
+            if (showMessages) MessageSettingsSection(
                 viewModel = viewModel,
                 settings = settings,
+                selectedTab = messageTab,
+                onSelectedTabChange = { messageTab = it },
                 remind7Days = remind7Days,
                 remind7DaysTime = remind7DaysTime,
                 adminTitle7Days = adminTitle7Days,
@@ -847,7 +911,7 @@ fun SettingsScreen(
             )
 
             // Testing and Reschedule Notification Action Buttons Card
-            Card(
+            if (showMessages) Card(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(14.dp),
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f))
@@ -890,7 +954,7 @@ fun SettingsScreen(
             }
 
             // 5. Cloud Sync & Backup Data Card
-            Card(
+            if (showData) Card(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(18.dp),
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -1081,7 +1145,7 @@ fun SettingsScreen(
             }
 
             // 6. Security & App Lock Card
-            Card(
+            if (showSecurity) Card(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(18.dp),
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -1362,6 +1426,14 @@ fun SettingsScreen(
             }
         )
     }
+
+    SettingsHubDialogs(
+        which = hubDialog,
+        settings = settings,
+        versionName = com.example.BuildConfig.VERSION_NAME,
+        onClose = { hubDialog = null },
+        onGoToBotSettings = { settingsTab = 1 }
+    )
 
     // Restore Backup Dialog
     if (showRestoreDialog) {

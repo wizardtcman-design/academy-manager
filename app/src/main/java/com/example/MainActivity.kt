@@ -88,7 +88,6 @@ import com.example.ui.screens.dashboard.DashboardScreen
 import com.example.ui.screens.dialogs.AddEditStudentDialog
 import com.example.ui.screens.dialogs.ChangePasswordDialog
 import com.example.ui.screens.dialogs.QuickThemeDialog
-import com.example.ui.screens.more.MoreScreen
 import com.example.ui.screens.payments.PaymentsScreen
 import com.example.ui.screens.reminders.RemindersScreen
 import com.example.ui.screens.reports.ReportsScreen
@@ -97,6 +96,7 @@ import com.example.ui.screens.settings.availableThemeModels
 import com.example.ui.screens.students.StudentsScreen
 import com.example.ui.components.FloatingNavBar
 import com.example.ui.components.NavItem
+import com.example.ui.components.AppNavIcons
 import com.example.ui.theme.MyApplicationTheme
 import com.example.ui.viewmodel.MainViewModel
 import androidx.compose.material.icons.filled.Settings
@@ -281,13 +281,14 @@ fun MainAppScaffold(
         availableThemeModels.find { it.id == (settings?.themeName ?: "BLUE") } ?: availableThemeModels.first()
     }
 
+    // Five bottom tabs only: every item of the old "More" tab now lives at the
+    // top of Settings, which replaces it here.
     val tabs = listOf(
-        NavigationTabItem(Screen.Dashboard, "داشبورد", Icons.Default.Dashboard, "tab_dashboard"),
-        NavigationTabItem(Screen.Students, "هنرجویان", Icons.Default.People, "tab_students"),
-        NavigationTabItem(Screen.Payments, "پرداخت‌ها", Icons.Default.Payment, "tab_payments"),
-        NavigationTabItem(Screen.Bot, "ربات", Icons.Default.SmartToy, "tab_bot"),
-        NavigationTabItem(Screen.Reports, "گزارش‌ها", Icons.Default.Assessment, "tab_reports"),
-        NavigationTabItem(Screen.More, "بیشتر", Icons.Default.MoreHoriz, "tab_more")
+        NavigationTabItem(Screen.Dashboard, "داشبورد", AppNavIcons.dashboard, "tab_dashboard"),
+        NavigationTabItem(Screen.Students, "هنرجویان", AppNavIcons.students, "tab_students"),
+        NavigationTabItem(Screen.Payments, "پرداخت‌ها", AppNavIcons.payments, "tab_payments"),
+        NavigationTabItem(Screen.Bot, "ربات", AppNavIcons.bot, "tab_bot"),
+        NavigationTabItem(Screen.Settings, "تنظیمات", AppNavIcons.settings, "tab_settings")
     )
 
     // Handle back button on sub-screens
@@ -301,7 +302,7 @@ fun MainAppScaffold(
         contentWindowInsets = WindowInsets(0.dp),
         snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
-            if (activeSubScreen == null) {
+            if (activeSubScreen == null || activeSubScreen == Screen.Settings) {
                 TopAppBar(
                     title = {
                         Row(
@@ -337,6 +338,7 @@ fun MainAppScaffold(
                                     color = MaterialTheme.colorScheme.primary
                                 )
                             }
+                            Spacer(modifier = Modifier.weight(1f))
                         }
                     },
                     actions = {
@@ -461,7 +463,7 @@ fun MainAppScaffold(
                             onNavigateToStudents = { currentTab = Screen.Students },
                             onNavigateToCourses = { activeSubScreen = Screen.Courses },
                             onNavigateToPayments = { currentTab = Screen.Payments },
-                            onNavigateToReports = { currentTab = Screen.Reports },
+                            onNavigateToReports = { currentTab = Screen.Dashboard },
                             onNavigateToSettings = { activeSubScreen = Screen.Settings },
                             onOpenAddStudent = { showQuickAddStudentDialog = true },
                             onLoadSampleData = { viewModel.loadSampleData() },
@@ -493,19 +495,6 @@ fun MainAppScaffold(
                         )
                     }
 
-                    Screen.More -> {
-                        MoreScreen(
-                            user = currentUser,
-                            settings = settings,
-                            onNavigateToCourses = { activeSubScreen = Screen.Courses },
-                            onNavigateToSettings = { activeSubScreen = Screen.Settings },
-                            onNavigateToAuditLogs = { activeSubScreen = Screen.AuditLogs },
-                            onNavigateToReminders = { activeSubScreen = Screen.Reminders },
-                            onOpenChangePassword = { showChangePasswordDialog = true },
-                            onLogout = { viewModel.logout() }
-                        )
-                    }
-
                     Screen.Reminders -> {
                         RemindersScreen(
                             viewModel = viewModel,
@@ -532,7 +521,14 @@ fun MainAppScaffold(
                     Screen.Settings -> {
                         SettingsScreen(
                             viewModel = viewModel,
-                            onBack = { activeSubScreen = null }
+                            user = currentUser,
+                            activeSubScreenHeader = false,
+                            onBack = { activeSubScreen = null },
+                            onNavigateToCourses = { activeSubScreen = Screen.Courses },
+                            onNavigateToAuditLogs = { activeSubScreen = Screen.AuditLogs },
+                            onNavigateToReminders = { activeSubScreen = Screen.Reminders },
+                            onOpenChangePassword = { showChangePasswordDialog = true },
+                            onLogout = { viewModel.logout() }
                         )
                     }
 

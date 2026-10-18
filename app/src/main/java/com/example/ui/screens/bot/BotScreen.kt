@@ -1,5 +1,6 @@
 package com.example.ui.screens.bot
 
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -137,48 +138,22 @@ fun BotScreen(
                 .fillMaxSize()
                 .padding(paddingValues)
         ) {
-            // Scrollable Tab Row for the 7 sections
-            ScrollableTabRow(
-                selectedTabIndex = currentSection.index,
-                edgePadding = 16.dp,
-                containerColor = MaterialTheme.colorScheme.surface,
-                contentColor = MaterialTheme.colorScheme.primary,
-                indicator = { tabPositions ->
-                    TabRowDefaults.SecondaryIndicator(
-                        modifier = Modifier.tabIndicatorOffset(tabPositions[currentSection.index]),
-                        color = MaterialTheme.colorScheme.primary,
-                        height = 3.dp
-                    )
-                },
+            // Section pills, horizontally scrollable so nothing is cut off
+            Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .testTag("bot_sections_tab_row")
+                    .horizontalScroll(rememberScrollState())
+                    .padding(horizontal = 16.dp, vertical = 10.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 botTabItems.forEach { tabItem ->
-                    val isSelected = currentSection == tabItem.section
-                    Tab(
-                        selected = isSelected,
+                    com.example.ui.components.FilterChipPro(
+                        label = tabItem.section.title,
+                        selected = currentSection == tabItem.section,
                         onClick = { currentSection = tabItem.section },
-                        text = {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                                modifier = Modifier.padding(vertical = 8.dp)
-                            ) {
-                                Icon(
-                                    imageVector = tabItem.icon,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(16.dp),
-                                    tint = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                                Text(
-                                    text = tabItem.section.title,
-                                    style = MaterialTheme.typography.labelMedium,
-                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
-                                    color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                        }
+                        icon = tabItem.icon,
+                        compact = true,
+                        modifier = Modifier.testTag("bot_sections_tab_row")
                     )
                 }
             }

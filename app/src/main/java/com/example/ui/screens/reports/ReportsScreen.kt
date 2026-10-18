@@ -167,40 +167,31 @@ fun ReportsScreen(
             )
         }
 
-        // Period Filter Chips
+        // Period filter: grouped in a sheet so all options fit narrow screens
         item {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                FilterChip(
-                    selected = selectedPeriod == "DAILY",
-                    onClick = { selectedPeriod = "DAILY" },
-                    label = { Text("روزانه (امروز)", style = MaterialTheme.typography.bodySmall) }
+            com.example.ui.components.FilterBar(
+                options = listOf(
+                    com.example.ui.components.FilterOption("DAILY", "امروز"),
+                    com.example.ui.components.FilterOption("WEEKLY", "۷ روز"),
+                    com.example.ui.components.FilterOption("MONTHLY", "ماه جاری"),
+                    com.example.ui.components.FilterOption("QUARTERLY", "فصلی"),
+                    com.example.ui.components.FilterOption("ANNUAL", "سالانه")
+                ),
+                selectedKey = selectedPeriod,
+                onSelect = { selectedPeriod = it },
+                groups = listOf(
+                    com.example.ui.components.FilterGroup(
+                        "بازه زمانی گزارش",
+                        listOf(
+                            com.example.ui.components.FilterOption("DAILY", "روزانه (امروز)"),
+                            com.example.ui.components.FilterOption("WEEKLY", "۷ روز اخیر"),
+                            com.example.ui.components.FilterOption("MONTHLY", "ماه جاری"),
+                            com.example.ui.components.FilterOption("QUARTERLY", "فصلی (۳ ماهه)"),
+                            com.example.ui.components.FilterOption("ANNUAL", "سالانه")
+                        )
+                    )
                 )
-                FilterChip(
-                    selected = selectedPeriod == "WEEKLY",
-                    onClick = { selectedPeriod = "WEEKLY" },
-                    label = { Text("۷ روز اخیر", style = MaterialTheme.typography.bodySmall) }
-                )
-                FilterChip(
-                    selected = selectedPeriod == "MONTHLY",
-                    onClick = { selectedPeriod = "MONTHLY" },
-                    label = { Text("ماه جاری", style = MaterialTheme.typography.bodySmall) }
-                )
-                FilterChip(
-                    selected = selectedPeriod == "QUARTERLY",
-                    onClick = { selectedPeriod = "QUARTERLY" },
-                    label = { Text("فصلی (۳ ماهه)", style = MaterialTheme.typography.bodySmall) }
-                )
-                FilterChip(
-                    selected = selectedPeriod == "ANNUAL",
-                    onClick = { selectedPeriod = "ANNUAL" },
-                    label = { Text("سالانه", style = MaterialTheme.typography.bodySmall) }
-                )
-            }
+            )
         }
 
         // Income Hero Card

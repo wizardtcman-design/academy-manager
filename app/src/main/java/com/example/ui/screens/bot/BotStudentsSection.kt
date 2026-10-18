@@ -195,45 +195,26 @@ fun BotStudentsSection(
             singleLine = true
         )
 
-        // Filter chips
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            FilterChip(
-                selected = selectedFilter == "ALL",
-                onClick = { selectedFilter = "ALL" },
-                label = { Text("همه (${students.size})") },
-                shape = RoundedCornerShape(10.dp),
-                colors = FilterChipDefaults.filterChipColors(
-                    selectedContainerColor = MaterialTheme.colorScheme.primaryContainer
+        // Filter chips: short labels so three fit on any phone width
+        com.example.ui.components.FilterBar(
+            options = listOf(
+                com.example.ui.components.FilterOption("ALL", "همه (${students.size})"),
+                com.example.ui.components.FilterOption("CONNECTED", "متصل ($connectedCount)"),
+                com.example.ui.components.FilterOption("UNCONNECTED", "غیرمتصل ($unconnectedCount)")
+            ),
+            selectedKey = selectedFilter,
+            onSelect = { selectedFilter = it },
+            groups = listOf(
+                com.example.ui.components.FilterGroup(
+                    "وضعیت اتصال به ربات",
+                    listOf(
+                        com.example.ui.components.FilterOption("ALL", "همه (${students.size})"),
+                        com.example.ui.components.FilterOption("CONNECTED", "متصل به ربات ($connectedCount)"),
+                        com.example.ui.components.FilterOption("UNCONNECTED", "غیرمتصل ($unconnectedCount)")
+                    )
                 )
             )
-            FilterChip(
-                selected = selectedFilter == "CONNECTED",
-                onClick = { selectedFilter = "CONNECTED" },
-                label = { Text("متصل به ربات ($connectedCount)") },
-                shape = RoundedCornerShape(10.dp),
-                leadingIcon = {
-                    Icon(Icons.Default.Link, contentDescription = null, modifier = Modifier.size(16.dp), tint = StatusSuccess)
-                },
-                colors = FilterChipDefaults.filterChipColors(
-                    selectedContainerColor = StatusSuccess.copy(alpha = 0.2f)
-                )
-            )
-            FilterChip(
-                selected = selectedFilter == "UNCONNECTED",
-                onClick = { selectedFilter = "UNCONNECTED" },
-                label = { Text("غیرمتصل ($unconnectedCount)") },
-                shape = RoundedCornerShape(10.dp),
-                leadingIcon = {
-                    Icon(Icons.Default.LinkOff, contentDescription = null, modifier = Modifier.size(16.dp), tint = AmberTertiary)
-                },
-                colors = FilterChipDefaults.filterChipColors(
-                    selectedContainerColor = AmberTertiary.copy(alpha = 0.2f)
-                )
-            )
-        }
+        )
 
         // Student list
         if (filteredStudents.isEmpty()) {

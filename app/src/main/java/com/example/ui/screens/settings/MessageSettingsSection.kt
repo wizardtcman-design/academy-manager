@@ -120,11 +120,14 @@ fun MessageSettingsSection(
     onAdmin3DaysAfterChange: (Boolean, String, String, String) -> Unit,
 
     // Direct save callback for instant single card save
-    onSaveSingleAdminReminder: (AcademySettings) -> Unit = {}
+    onSaveSingleAdminReminder: (AcademySettings) -> Unit = {},
+
+    // Externally driven selected tab so the settings hub can jump here
+    selectedTab: Int = 0,
+    onSelectedTabChange: (Int) -> Unit = {}
 ) {
     val context = LocalContext.current
     val templates by viewModel.messageTemplates.collectAsState()
-    var selectedTab by remember { mutableIntStateOf(0) } // 0: پیام‌های مدیر, 1: پیام‌های هنرجویان
 
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -177,7 +180,7 @@ fun MessageSettingsSection(
             ) {
                 Tab(
                     selected = selectedTab == 0,
-                    onClick = { selectedTab = 0 },
+                    onClick = { onSelectedTabChange(0) },
                     text = {
                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                             Icon(Icons.Default.NotificationsActive, contentDescription = null, modifier = Modifier.size(16.dp))
@@ -187,7 +190,7 @@ fun MessageSettingsSection(
                 )
                 Tab(
                     selected = selectedTab == 1,
-                    onClick = { selectedTab = 1 },
+                    onClick = { onSelectedTabChange(1) },
                     text = {
                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                             Icon(Icons.Default.Send, contentDescription = null, modifier = Modifier.size(16.dp))
