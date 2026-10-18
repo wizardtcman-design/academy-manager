@@ -17,3 +17,9 @@ local.properties
 .env
 debug.keystore
 node_modules/
+
+# release signing material (never commit the real keystore)
+academy-release.p12
+academy-release.jks
+*.jks
+!debug.keystore

@@ -43,6 +43,11 @@ jobs:
         with:
           gradle-version: '9.3.1'
 
+      - name: Restore release keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        run: echo "$KEYSTORE_BASE64" | base64 -d > academy-release.p12
+
       - name: Create debug keystore for AI-Studio signing config
         run: |
           keytool -genkeypair -keystore debug.keystore -storepass android -keypass android \
@@ -52,8 +57,13 @@ jobs:
       - name: Unit tests (pure JVM)
         run: gradle testDebugUnitTest --tests "com.example.ValidationUtilTest" --tests "com.example.CredentialHasherTest" --stacktrace
 
-      - name: Build debug APK
-        run: gradle assembleDebug --stacktrace
+      - name: Build signed release APK
+        env:
+          STORE_PASSWORD: ${{ secrets.STORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+          KEY_ALIAS: upload
+          KEYSTORE_PATH: ${{ github.workspace }}/academy-release.p12
+        run: gradle assembleRelease --stacktrace
 
       - name: Read version
         id: ver
@@ -66,8 +76,14 @@ jobs:
       - name: Rename APK
         run: |
           mkdir -p out
-          cp app/build/outputs/apk/debug/app-debug.apk \
-             "out/AcademyManager-v${{ steps.ver.outputs.name }}-${{ github.run_number }}.apk"
+          cp app/build/outputs/apk/release/app-release.apk \
+             "out/AcademyManager-v${{ steps.ver.outputs.name }}.apk"
+          sha256sum out/*.apk | tee out/SHA256.txt
+
+      - name: Verify signature
+        run: |
+          APKSIGNER=$(find "$ANDROID_HOME/build-tools" -name apksigner | head -1)
+          "$APKSIGNER" verify --print-certs out/*.apk | head -20
 
       - name: Publish release with APK
         uses: softprops/action-gh-release@v2
@@ -75,7 +91,10 @@ jobs:
           tag_name: ${{ steps.ver.outputs.tag }}
           name: نسخه ${{ steps.ver.outputs.name }} (بیلد ${{ github.run_number }})
           body: |
-            ساخت خودکار APK از آخرین کد شاخه main.
-            نصب: فایل APK را دانلود و روی گوشی اندروید نصب کنید.
+            ساخت خودکار APK امضاشده از آخرین کد شاخه main.
+
+            **نصب:** فایل APK را دانلود و روی گوشی اندروید نصب کنید.
+            اگر نسخهٔ قبلی (ساخته‌شده در AI Studio) نصب است، آن را یک بار حذف و
+            این نسخه را نصب کنید؛ از این به بعد آپدیت‌ها به‌صورت عادی نصب می‌شوند.
           files: out/*.apk
           generate_release_notes: true
