@@ -370,9 +370,10 @@ fun UpdateScreen(onClose: () -> Unit) {
                         }
 
                         UpdateViewModel.Phase.ERROR -> UpdateCard {
+                            val checkFailed = state.update == null
                             Column(modifier = Modifier.padding(18.dp)) {
                                 Text(
-                                    text = "مشکل در دانلود",
+                                    text = if (checkFailed) "بررسی نسخه انجام نشد" else "مشکل در دانلود",
                                     style = MaterialTheme.typography.titleMedium,
                                     fontWeight = FontWeight.Bold
                                 )
@@ -383,7 +384,12 @@ fun UpdateScreen(onClose: () -> Unit) {
                                     color = MaterialTheme.colorScheme.error
                                 )
                                 Spacer(Modifier.height(12.dp))
-                                Button(onClick = { vm.download() }, modifier = Modifier.fillMaxWidth()) {
+                                Button(
+                                    onClick = {
+                                        if (checkFailed) vm.check(force = true) else vm.download()
+                                    },
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
                                     Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
                                     Spacer(Modifier.width(8.dp))
                                     Text("تلاش دوباره")

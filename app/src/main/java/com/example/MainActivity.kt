@@ -308,18 +308,43 @@ fun MainAppScaffold(
 
     // Offer a newer official release as soon as one exists. The check is cheap
     // and interval-gated inside UpdateManager (15 min), so it runs on every
-    // launch; only the snackbar is limited to once per offered version.
+    // launch. The offer is a persistent, tappable banner (not a snackbar that
+    // vanishes in seconds) and it is only skipped when the user dismissed it
+    // for that exact version.
     val ctx = LocalContext.current
+    var offered by remember { mutableStateOf<com.example.update.UpdateInfo?>(null) }
+    var bannerDismissed by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) {
         com.example.update.UpdateCheckWorker.schedule(ctx)
         val update = com.example.update.UpdateManager.checkAndNotify(ctx)
-        val seenKey = update?.version
-        if (update != null &&
-            com.example.update.UpdatePrefs.offeredVersion(ctx) != seenKey
-        ) {
-            com.example.update.UpdatePrefs.setOfferedVersion(ctx, seenKey!!)
-            viewModel.showMessage("نسخهٔ ${update.version} آماده است — از تنظیمات، «به‌روزرسانی برنامه» را بزنید.")
+        if (update != null && !com.example.update.UpdatePrefs.isRunningSkipped(ctx)) {
+            offered = update
         }
+    }
+
+    // One-time "اپ به‌روز شد" note per version: if the running version has not
+    // been announced to this user yet, fetch its release notes and show the
+    // dialog once, then remember it so it never appears again.
+    var whatsVersion by remember { mutableStateOf<String?>(null) }
+    var whatsNotes by remember { mutableStateOf("") }
+    LaunchedEffect(Unit) {
+        val current = com.example.BuildConfig.VERSION_NAME
+        if (com.example.update.UpdatePrefs.whatsNewShownVersion(ctx) != current) {
+            whatsNotes = com.example.update.GitHubReleaseClient
+                .fetchNotesForVersion(current).orEmpty()
+            whatsVersion = current
+        }
+    }
+    whatsVersion?.let { v ->
+        com.example.ui.components.WhatsNewDialog(
+            appName = "مدیریت آموزشگاه",
+            version = v,
+            notes = whatsNotes,
+            onDismiss = {
+                com.example.update.UpdatePrefs.setWhatsNewShownVersion(ctx, v)
+                whatsVersion = null
+            }
+        )
     }
 
     Scaffold(
@@ -468,6 +493,17 @@ fun MainAppScaffold(
                 .fillMaxSize()
                 .padding(innerPadding)
         ) {
+            val banner = offered
+            if (banner != null && !bannerDismissed &&
+                activeSubScreen == null && !settingsOpen && !updateOpen
+            ) {
+                com.example.ui.components.UpdateBanner(
+                    version = banner.version,
+                    onClick = { updateOpen = true },
+                    onDismiss = { bannerDismissed = true },
+                    modifier = Modifier.align(Alignment.TopCenter)
+                )
+            }
             AnimatedContent(
                 targetState = when {
                     updateOpen -> "update"

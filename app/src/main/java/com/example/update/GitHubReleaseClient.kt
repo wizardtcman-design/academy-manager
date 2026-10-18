@@ -20,6 +20,15 @@ object GitHubReleaseClient {
     /** Owner/repo of the official source, matches the app's package owner. */
     const val REPO = "wizardtcman-design/academy-manager"
 
+    /**
+     * True when the last [fetchLatest] call failed because of the network or an
+     * unexpected GitHub answer. The UI uses it to show "بررسی ناموفق بود" and a
+     * retry button instead of a misleading "برنامه به‌روز است".
+     */
+    @Volatile
+    var lastFailure: String? = null
+        private set
+
     private const val LATEST_URL =
         "https://api.github.com/repos/$REPO/releases/latest"
 
@@ -34,6 +43,7 @@ object GitHubReleaseClient {
      * an update check must never disturb the app.
      */
     suspend fun fetchLatest(): UpdateInfo? = withContext(Dispatchers.IO) {
+        lastFailure = null
         try {
             val req = Request.Builder()
                 .url(LATEST_URL)
@@ -41,11 +51,17 @@ object GitHubReleaseClient {
                 .header("User-Agent", "academy-manager-update")
                 .build()
             http.newCall(req).execute().use { resp ->
-                if (!resp.isSuccessful) return@withContext null
+                if (!resp.isSuccessful) {
+                    lastFailure = "GitHub پاسخ ${resp.code} داد"
+                    return@withContext null
+                }
                 val body = resp.body?.string() ?: return@withContext null
-                parseRelease(JSONObject(body))
+                parseRelease(JSONObject(body)).also {
+                    if (it == null) lastFailure = "پاسخ GitHub قابل خواندن نبود"
+                }
             }
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            lastFailure = e.message ?: "شبکه در دسترس نیست"
             null
         }
     }

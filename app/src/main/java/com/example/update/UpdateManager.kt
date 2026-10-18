@@ -79,6 +79,9 @@ object UpdateManager {
     suspend fun checkForUpdate(ctx: Context, force: Boolean = false): UpdateInfo? =
         checkMutex.withLock { runCheckLocked(ctx, force) }
 
+    /** True when the most recent [checkForUpdate] could not reach GitHub at all. */
+    fun lastCheckFailed(): Boolean = GitHubReleaseClient.lastFailure != null
+
     /**
      * Like [checkForUpdate] but also posts the notification once per version.
      * Used from the background worker, on app launch and on every resume.

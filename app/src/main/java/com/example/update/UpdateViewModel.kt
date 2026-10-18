@@ -42,7 +42,12 @@ class UpdateViewModel(app: Application) : AndroidViewModel(app) {
         _state.value = _state.value.copy(phase = Phase.CHECKING, message = null)
         viewModelScope.launch {
             val latest = UpdateManager.checkForUpdate(ctx, force = force)
-            _state.value = if (latest == null) {
+            _state.value = if (latest == null && UpdateManager.lastCheckFailed()) {
+                _state.value.copy(
+                    phase = Phase.ERROR, update = null,
+                    message = "بررسی نسخهٔ تازه انجام نشد. اینترنت را چک کنید و دوباره بزنید."
+                )
+            } else if (latest == null) {
                 _state.value.copy(phase = Phase.UP_TO_DATE, update = null)
             } else {
                 // Point at a file we may already have from a previous attempt.
