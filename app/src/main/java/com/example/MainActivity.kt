@@ -306,16 +306,19 @@ fun MainAppScaffold(
         }
     }
 
-    // Offer a newer official release as soon as one exists (once per version).
+    // Offer a newer official release as soon as one exists. The check is cheap
+    // and interval-gated inside UpdateManager (15 min), so it runs on every
+    // launch; only the snackbar is limited to once per offered version.
     val ctx = LocalContext.current
     LaunchedEffect(Unit) {
         com.example.update.UpdateCheckWorker.schedule(ctx)
-        if (com.example.update.UpdatePrefs.offeredVersion(ctx) != com.example.BuildConfig.VERSION_NAME) {
-            val update = com.example.update.UpdateManager.checkAndNotify(ctx)
-            if (update != null) {
-                com.example.update.UpdatePrefs.setOfferedVersion(ctx, com.example.BuildConfig.VERSION_NAME)
-                viewModel.showMessage("نسخهٔ ${update.version} آماده است — از تنظیمات، «به‌روزرسانی برنامه» را بزنید.")
-            }
+        val update = com.example.update.UpdateManager.checkAndNotify(ctx)
+        val seenKey = update?.version
+        if (update != null &&
+            com.example.update.UpdatePrefs.offeredVersion(ctx) != seenKey
+        ) {
+            com.example.update.UpdatePrefs.setOfferedVersion(ctx, seenKey!!)
+            viewModel.showMessage("نسخهٔ ${update.version} آماده است — از تنظیمات، «به‌روزرسانی برنامه» را بزنید.")
         }
     }
 

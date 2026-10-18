@@ -26,7 +26,9 @@ class UpdateViewModel(app: Application) : AndroidViewModel(app) {
         val downloadedBytes: Long = 0L,
         val totalBytes: Long = 0L,
         val message: String? = null,
-        val readyFile: File? = null
+        val readyFile: File? = null,
+        /** Set once a fresh download finished so the screen launches the installer. */
+        val autoInstallPending: Boolean = false
     )
 
     private val _state = MutableStateFlow(UiState())
@@ -77,15 +79,27 @@ class UpdateViewModel(app: Application) : AndroidViewModel(app) {
             }
             _state.value = when (result) {
                 is ApkDownloader.Result.Success ->
-                    _state.value.copy(phase = Phase.READY, readyFile = result.file, percent = 100)
+                    _state.value.copy(
+                        phase = Phase.READY,
+                        readyFile = result.file,
+                        percent = 100,
+                        autoInstallPending = true
+                    )
                 is ApkDownloader.Result.Cancelled ->
-                    _state.value.copy(phase = Phase.AVAILABLE, percent = 0)
+                    _state.value.copy(phase = Phase.AVAILABLE, percent = 0, autoInstallPending = false)
                 is ApkDownloader.Result.Failed ->
-                    _state.value.copy(phase = Phase.ERROR, message = result.message)
+                    _state.value.copy(phase = Phase.ERROR, message = result.message, autoInstallPending = false)
             }
         }
     }
 
+
+    /** Clears the one-shot auto-install flag after the screen has acted on it. */
+    fun consumeAutoInstall() {
+        if (_state.value.autoInstallPending) {
+            _state.value = _state.value.copy(autoInstallPending = false)
+        }
+    }
 
     /** Cancels an in-flight download. */
     fun cancelDownload() {

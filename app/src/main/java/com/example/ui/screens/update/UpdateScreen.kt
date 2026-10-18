@@ -78,6 +78,28 @@ private fun publishedDate(ms: Long): String {
     }
 }
 
+/** Verifies and hands the APK to Android's installer; returns a Persian error or null. */
+private fun launchInstaller(
+    ctx: android.content.Context,
+    file: java.io.File?
+): String? {
+    val problem = if (file == null) {
+        "فایل نصب پیدا نشد؛ دوباره دانلود کنید."
+    } else {
+        ApkDownloader.verifyApk(ctx, file)
+    }
+    if (problem != null) return problem
+    return when (ApkInstaller.install(ctx, file!!)) {
+        ApkInstaller.Result.STARTED -> null
+        ApkInstaller.Result.NO_PERMISSION -> {
+            ApkInstaller.openInstallPermissionSettings(ctx)
+            "برای نصب، اجازهٔ «نصب برنامه‌های ناشناس» را به این برنامه بدهید و دوباره بزنید."
+        }
+        ApkInstaller.Result.NO_INSTALLER -> "نصب‌کنندهٔ برنامه روی این دستگاه پیدا نشد."
+        ApkInstaller.Result.FAILED -> "باز کردن نصب‌کننده ممکن نشد؛ دوباره تلاش کنید."
+    }
+}
+
 /**
  * In-app updates: reads the newest official release from GitHub, shows its
  * Persian changelog, downloads the APK with progress and hands it to Android's
@@ -110,6 +132,15 @@ fun UpdateScreen(onClose: () -> Unit) {
     }
 
     LaunchedEffect(Unit) { vm.check(force = true) }
+
+    // As soon as the download finishes, open Android's own installer so the
+    // user only has to press «نصب» on the system screen.
+    LaunchedEffect(state.autoInstallPending) {
+        if (state.autoInstallPending) {
+            installError = launchInstaller(ctx, state.readyFile)
+            vm.consumeAutoInstall()
+        }
+    }
 
     Scaffold(
         topBar = {
@@ -311,8 +342,8 @@ fun UpdateScreen(onClose: () -> Unit) {
                                 )
                                 Spacer(Modifier.height(6.dp))
                                 Text(
-                                    text = "فایل دانلود و امضایش با نسخهٔ رسمی بررسی شد. " +
-                                        "با زدن دکمه، نصب‌کنندهٔ اندروید باز می‌شود؛ تأیید کنید. اطلاعات حفظ می‌شود.",
+                                    text = "دانلود تمام شد و امضای فایل با نسخهٔ رسمی یکی است. " +
+                                        "صفحهٔ نصب اندروید خودکار باز می‌شود؛ دکمهٔ «نصب» را بزنید. اطلاعات حفظ می‌شود.",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -327,33 +358,13 @@ fun UpdateScreen(onClose: () -> Unit) {
                                 Spacer(Modifier.height(14.dp))
                                 Button(
                                     onClick = {
-                                        installError = null
-                                        val file = state.readyFile
-                                        val problem = if (file == null) {
-                                            "فایل نصب پیدا نشد؛ دوباره دانلود کنید."
-                                        } else {
-                                            ApkDownloader.verifyApk(ctx, file)
-                                        }
-                                        if (problem != null) {
-                                            installError = problem
-                                        } else when (ApkInstaller.install(ctx, file!!)) {
-                                            ApkInstaller.Result.STARTED -> Unit
-                                            ApkInstaller.Result.NO_PERMISSION -> {
-                                                ApkInstaller.openInstallPermissionSettings(ctx)
-                                                installError =
-                                                    "برای نصب، اجازهٔ «نصب برنامه‌های ناشناس» را به این برنامه بدهید و دوباره بزنید."
-                                            }
-                                            ApkInstaller.Result.NO_INSTALLER ->
-                                                installError = "نصب‌کنندهٔ برنامه روی این دستگاه پیدا نشد."
-                                            ApkInstaller.Result.FAILED ->
-                                                installError = "باز کردن نصب‌کننده ممکن نشد؛ دوباره تلاش کنید."
-                                        }
+                                        installError = launchInstaller(ctx, state.readyFile)
                                     },
                                     modifier = Modifier.fillMaxWidth()
                                 ) {
                                     Icon(Icons.Default.CheckCircle, contentDescription = null, modifier = Modifier.size(18.dp))
                                     Spacer(Modifier.width(8.dp))
-                                    Text("نصب به‌روزرسانی")
+                                    Text("باز کردن صفحهٔ نصب")
                                 }
                             }
                         }

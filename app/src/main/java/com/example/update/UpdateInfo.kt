@@ -30,16 +30,28 @@ data class UpdateInfo(
 
 /**
  * Compares dotted version strings the way the app's versionName is built
- * ("1.0.82"). Missing parts count as zero, so "1.1" is newer than "1.0.9" and
- * equal to "1.1.0". Any non-numeric suffix on a part is ignored, so a tag like
- * "1.0.82-beta" compares as 1.0.82.
+ * ("2.4"). Missing parts count as zero, so "1.1" is newer than "1.0.9" and
+ * equal to "1.1.0". Everything from the first "-"/"+"/space is dropped, so the
+ * CI build suffix in tags like "v2.4-12" never affects the comparison.
  */
 object VersionCompare {
 
-    fun parse(v: String): List<Int> =
-        v.trim().removePrefix("v").removePrefix("V")
-            .split('.')
+    /**
+     * The numeric core of a version, e.g. "2.4" from "2.4", "v2.4-12" or
+     * "2.4.1-3". GitHub tags in this repo carry the CI build number after a
+     * dash ("v2.4-12"); that suffix is NOT part of the version, because the
+     * app's own versionName is bumped by hand ("2.4"). Treating it as a 4th
+     * number made "2.4-12" look older than "2.4" and hid every update.
+     */
+    fun parse(v: String): List<Int> {
+        val core = v.trim()
+            .removePrefix("v").removePrefix("V")
+            .substringBefore('-')
+            .substringBefore('+')
+            .substringBefore(' ')
+        return core.split('.')
             .map { part -> part.takeWhile { it.isDigit() }.toIntOrNull() ?: 0 }
+    }
 
     /** True when [candidate] is strictly newer than [current]. */
     fun isNewer(candidate: String, current: String): Boolean =
