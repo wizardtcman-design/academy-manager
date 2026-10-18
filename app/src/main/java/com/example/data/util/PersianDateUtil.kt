@@ -202,6 +202,22 @@ object PersianDateUtil {
         return if (month in 1..12) names[month - 1] else ""
     }
 
+    /**
+     * Groups a digit string in threes with the Persian thousands separator, so
+     * inputs read "۴٬۲۳۳٬۳۳۴" instead of a wall of digits. Non-digits are
+     * dropped first; an empty input stays empty (so the placeholder shows).
+     */
+    fun groupDigits(input: String): String {
+        val digits = input.filter { it.isDigit() }
+        if (digits.isEmpty()) return ""
+        val grouped = StringBuilder()
+        digits.forEachIndexed { i, ch ->
+            if (i > 0 && (digits.length - i) % 3 == 0) grouped.append("٬")
+            grouped.append(ch)
+        }
+        return toPersianDigits(grouped.toString())
+    }
+
     fun formatCurrency(amount: Long, unit: String = "تومان"): String {
         val formatter = DecimalFormat("#,###")
         val formatted = formatter.format(amount)

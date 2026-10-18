@@ -109,16 +109,23 @@ fun EnrollStudentDialog(
         mutableIntStateOf(selectedCourse?.installmentCount?.coerceIn(1, 12) ?: 3)
     }
 
+    var blockMessage by remember { mutableStateOf<String?>(null) }
+
     val customAmounts = remember { mutableStateListOf<Long>() }
+    // Grouped text shown in each installment box; index-aligned with customAmounts.
+    val customAmountTexts = remember { mutableStateListOf<String>() }
 
     // When course or discount or count changes, recalculate default split
     fun recalculateAmounts(count: Int, total: Long) {
         customAmounts.clear()
+        customAmountTexts.clear()
         if (count <= 0 || total <= 0) return
         val base = total / count
         val rem = total % count
         for (i in 0 until count) {
-            customAmounts.add(if (i == 0) base + rem else base)
+            val v = if (i == 0) base + rem else base
+            customAmounts.add(v)
+            customAmountTexts.add(PersianDateUtil.groupDigits(v.toString()))
         }
     }
 
@@ -138,7 +145,11 @@ fun EnrollStudentDialog(
         onConfirm = {
             val st = selectedStudent
             val crs = selectedCourse
-            if (st != null && crs != null && isSumValid) {
+            if (st == null || crs == null) {
+                blockMessage = "اول هنرجو و دوره را انتخاب کنید."
+            } else if (!isSumValid) {
+                blockMessage = "جمع اقساط با شهریهٔ قابل پرداخت برابر نیست؛ یکی از اقساط را اصلاح کنید."
+            } else {
                 onEnroll(
                     st,
                     crs,
@@ -152,7 +163,7 @@ fun EnrollStudentDialog(
                 )
             }
         },
-        confirmEnabled = selectedStudent != null && selectedCourse != null && isSumValid,
+        confirmEnabled = true,
         maxHeight = 760,
         testTag = "enroll_student_dialog"
     ) {
@@ -348,7 +359,14 @@ fun EnrollStudentDialog(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text("شهریه مصوب:", style = MaterialTheme.typography.bodySmall)
-                Text(PersianDateUtil.formatCurrency(baseTuition), fontWeight = FontWeight.Bold)
+                Column(horizontalAlignment = Alignment.End) {
+                    Text(
+                        PersianDateUtil.formatCurrency(baseTuition),
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 15.sp
+                    )
+                    AmountInWordsHint(baseTuition)
+                }
             }
             if (discount > 0) {
                 Row(
@@ -368,11 +386,15 @@ fun EnrollStudentDialog(
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
                 Text("قابل پرداخت:", style = MaterialTheme.typography.bodySmall)
-                Text(
-                    PersianDateUtil.formatCurrency(finalFee),
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.primary
-                )
+                Column(horizontalAlignment = Alignment.End) {
+                    Text(
+                        PersianDateUtil.formatCurrency(finalFee),
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 15.sp,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    AmountInWordsHint(finalFee)
+                }
             }
 
             HorizontalDivider()
@@ -414,7 +436,10 @@ fun EnrollStudentDialog(
                 }
             }
 
-            customAmounts.forEachIndexed { index, amount ->
+            // Each installment is edited as a raw number string so the grouped
+            // display ("۴٬۲۳۳٬۳۳۴") never fights the cursor: the field shows
+            // thousands separators while typing but stores plain digits.
+            customAmountTexts.forEachIndexed { index, text ->
                 val dateParts = firstInstallmentDateShamsi.split("/").mapNotNull { it.toIntOrNull() }
                 val jalali = if (dateParts.size == 3) {
                     PersianDateUtil.JalaliDate(dateParts[0], dateParts[1], dateParts[2]).addMonths(index).format()
@@ -424,7 +449,7 @@ fun EnrollStudentDialog(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Column(modifier = Modifier.width(96.dp)) {
+                    Column(modifier = Modifier.width(86.dp)) {
                         Text(
                             text = "قسط ${PersianDateUtil.toPersianDigits((index + 1).toString())}",
                             style = MaterialTheme.typography.bodySmall,
@@ -437,15 +462,38 @@ fun EnrollStudentDialog(
                         )
                     }
                     OutlinedTextField(
-                        value = amount.toString(),
+                        value = text,
                         onValueChange = { newText ->
-                            customAmounts[index] = newText.toLongOrNull() ?: 0L
+                            val digits = newText.filter { it.isDigit() }.take(15).toString()
+                            customAmountTexts[index] = PersianDateUtil.groupDigits(digits)
+                            customAmounts[index] = digits.toLongOrNull() ?: 0L
                         },
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                         singleLine = true,
                         shape = RoundedCornerShape(12.dp),
                         colors = com.example.ui.components.FormTextFieldColors(),
-                        modifier = Modifier.weight(1f)
+                        textStyle = androidx.compose.ui.text.TextStyle(
+                            fontSize = 16.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                        ),
+                        modifier = Modifier.weight(1f),
+                        suffix = {
+                            Text("تومان", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    )
+                }
+            }
+
+            if (installmentCount > 0) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text("هر قسط حدوداً:", style = MaterialTheme.typography.bodySmall)
+                    Text(
+                        PersianDateUtil.formatCurrency(finalFee / installmentCount),
+                        fontWeight = FontWeight.SemiBold
                     )
                 }
             }
@@ -474,6 +522,36 @@ fun EnrollStudentDialog(
                 maxLines = 3
             )
         }
+        blockMessage?.let { msg ->
+            Text(
+                text = PersianDateUtil.toPersianDigits(msg),
+                color = MaterialTheme.colorScheme.error,
+                style = MaterialTheme.typography.bodySmall,
+                fontWeight = FontWeight.Bold
+            )
+        }
         Spacer(Modifier.height(4.dp))
     }
+}
+
+/**
+ * A small "= ۴٫۲ میلیون تومان" line under a big amount, so a number like
+ * 12,700,000 is instantly readable at a glance.
+ */
+@Composable
+private fun AmountInWordsHint(amount: Long) {
+    if (amount < 1_000_000) return
+    val millions = amount / 100_000L / 10.0
+    val text = if (millions % 1.0 == 0.0) {
+        "${PersianDateUtil.toPersianDigits(millions.toLong().toString())} میلیون تومان"
+    } else {
+        val whole = millions.toLong()
+        val frac = ((millions - whole) * 10).toLong()
+        "${PersianDateUtil.toPersianDigits(whole.toString())}٫${PersianDateUtil.toPersianDigits(frac.toString())} میلیون تومان"
+    }
+    Text(
+        text = "= $text",
+        fontSize = 10.5.sp,
+        color = MaterialTheme.colorScheme.onSurfaceVariant
+    )
 }

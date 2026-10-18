@@ -143,10 +143,12 @@ fun AddEditStudentDialog(
             icon = Icons.Default.Phone,
             accent = MaterialTheme.colorScheme.tertiary
         ) {
+            // Phone and national code are stacked, not side by side: on a
+            // narrow screen the pair was cramped and one field disappeared.
             com.example.ui.components.FormTextField(
                 value = phone,
                 onValueChange = { phone = it; phoneError = false },
-                label = "شماره موبایل *",
+                label = "شماره موبایل (۰۹…) *",
                 leadingIcon = Icons.Default.Phone,
                 isError = phoneError,
                 supportingText = if (phoneError) phoneErrorText else null,
@@ -154,24 +156,26 @@ fun AddEditStudentDialog(
                     keyboardType = KeyboardType.Phone,
                     imeAction = ImeAction.Next
                 ),
-                modifier = Modifier.weight(1f),
                 testTag = "student_phone_input"
             )
             com.example.ui.components.FormTextField(
                 value = nationalCode,
                 onValueChange = {
-                    val digits = it.filter { ch -> ch.isDigit() }.take(10)
-                    nationalCode = digits
+                    nationalCode = it.map { ch -> if (ch in '۰'..'۹') '0' + (ch - '۰') else ch }
+                        .filter { ch -> ch.isDigit() }
+                        .take(10)
+                        .joinToString("")
                     nationalCodeError = false
                 },
-                label = "کد ملی *",
+                label = "کد ملی (۱۰ رقم) *",
                 leadingIcon = Icons.Default.Badge,
                 isError = nationalCodeError,
                 supportingText = if (nationalCodeError) nationalCodeErrorText else null,
                 keyboardOptions = KeyboardOptions(
                     keyboardType = KeyboardType.Phone,
                     imeAction = ImeAction.Next
-                )
+                ),
+                testTag = "student_national_code_input"
             )
         }
 

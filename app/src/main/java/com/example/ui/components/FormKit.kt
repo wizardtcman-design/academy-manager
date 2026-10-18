@@ -21,6 +21,8 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -39,6 +41,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.style.TextDirection
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.withStyle
@@ -151,28 +154,34 @@ fun AppFormDialog(
                     content = content
                 )
 
-                // Footer
+                // Footer, always pinned outside the scrolling body: a user who
+                // scrolled to the bottom must never lose the way out.
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f))
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(16.dp),
+                        .padding(start = 16.dp, end = 16.dp, top = 12.dp, bottom = 16.dp),
                     horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     OutlinedButton(
                         onClick = onDismiss,
                         modifier = Modifier
                             .weight(1f)
-                            .height(48.dp),
-                        shape = RoundedCornerShape(14.dp)
+                            .height(50.dp),
+                        shape = RoundedCornerShape(14.dp),
+                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.55f)),
+                        colors = ButtonDefaults.outlinedButtonColors(
+                            contentColor = MaterialTheme.colorScheme.error
+                        )
                     ) {
-                        Text(dismissText)
+                        Text(dismissText, fontWeight = FontWeight.SemiBold)
                     }
                     Button(
                         onClick = onConfirm,
                         enabled = confirmEnabled,
                         modifier = Modifier
-                            .weight(1.4f)
-                            .height(48.dp),
+                            .weight(1.45f)
+                            .height(50.dp),
                         shape = RoundedCornerShape(14.dp)
                     ) {
                         Text(confirmText, fontWeight = FontWeight.Bold)
@@ -271,7 +280,10 @@ fun FormTextField(
     trailing: (@Composable () -> Unit)? = null,
     testTag: String = ""
 ) {
-    Column(modifier = modifier.fillMaxWidth()) {
+    // The caller's modifier (e.g. Modifier.weight in a Row) must win over
+    // fillMaxWidth: applying both made a side-by-side field take the whole row
+    // and push its neighbour out of the dialog.
+    Column(modifier = modifier) {
         FieldCaption(label = label, required = label.contains("*"), isError = isError)
         Spacer(Modifier.height(4.dp))
         OutlinedTextField(
@@ -287,8 +299,9 @@ fun FormTextField(
             maxLines = maxLines,
             isError = isError,
             textStyle = TextStyle(
-                fontSize = 13.5.sp,
-                fontWeight = FontWeight.Medium
+                fontSize = 15.sp,
+                fontWeight = FontWeight.SemiBold,
+                textDirection = TextDirection.Ltr
             ),
             keyboardOptions = keyboardOptions,
             shape = RoundedCornerShape(14.dp),
@@ -328,7 +341,7 @@ fun FieldCaption(label: String, required: Boolean = false, isError: Boolean = fa
                 }
             },
             style = MaterialTheme.typography.labelMedium.copy(
-                fontSize = 11.sp,
+                fontSize = 12.sp,
                 color = if (isError) MaterialTheme.colorScheme.error
                 else MaterialTheme.colorScheme.onSurfaceVariant,
                 fontWeight = FontWeight.Medium
