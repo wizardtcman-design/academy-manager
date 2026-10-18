@@ -109,9 +109,50 @@ class MainActivity : ComponentActivity() {
 
     private val viewModel: MainViewModel by viewModels()
 
+    private val notificationPermissionLauncher =
+        registerForActivityResult(androidx.activity.result.contract.ActivityResultContracts.RequestPermission()) { granted ->
+            if (granted) requestExactAlarmPermissionIfNeeded()
+        }
+
+    /**
+     * Android 13+ needs runtime permission for notifications; without it every
+     * installment reminder is silently dropped by the system.
+     */
+    private fun requestRuntimeNotificationPermission() {
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU &&
+            checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) !=
+            android.content.pm.PackageManager.PERMISSION_GRANTED
+        ) {
+            notificationPermissionLauncher.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+        } else {
+            requestExactAlarmPermissionIfNeeded()
+        }
+    }
+
+    /**
+     * Android 12+ can deny exact alarms. Ask once; if denied, ReminderScheduler
+     * falls back to inexact alarms (still delivered, just not to the minute).
+     */
+    private fun requestExactAlarmPermissionIfNeeded() {
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+            val am = getSystemService(android.app.AlarmManager::class.java)
+            if (am != null && !am.canScheduleExactAlarms()) {
+                try {
+                    startActivity(
+                        android.content.Intent(android.provider.Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM)
+                            .setData(android.net.Uri.parse("package:$packageName"))
+                    )
+                } catch (_: Exception) {
+                }
+            }
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        requestRuntimeNotificationPermission()
+        com.example.service.SyncWorker.schedule(this)
 
         setContent {
             val settings by viewModel.settings.collectAsState()

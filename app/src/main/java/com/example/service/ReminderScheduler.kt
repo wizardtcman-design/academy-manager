@@ -8,6 +8,7 @@ import android.os.Build
 import android.util.Log
 import com.example.data.local.AppDatabase
 import com.example.data.model.AcademySettings
+import com.example.service.messaging.BotCloudBridge
 import com.example.data.model.Installment
 import com.example.data.model.Reminder
 import com.example.data.util.PersianDateUtil
@@ -77,7 +78,13 @@ class ReminderScheduler(private val context: Context) {
      * Schedules all enabled reminders for a specific installment according to current settings.
      */
     suspend fun scheduleRemindersForInstallment(installment: Installment, settings: AcademySettings) = withContext(Dispatchers.IO) {
-        if (installment.isPaid || installment.dueDateShamsi.isBlank()) return@withContext
+        scheduleLocalRemindersForInstallment(installment, settings)
+        // Publish the same reminders to the Cloudflare Worker so they are sent even when the app is closed
+        runCatching { BotCloudBridge(context).pushAll() }
+    }
+
+    private suspend fun scheduleLocalRemindersForInstallment(installment: Installment, settings: AcademySettings) {
+        if (installment.isPaid || installment.dueDateShamsi.isBlank()) return
 
         val db = AppDatabase.getDatabase(context)
         val reminderDao = db.reminderDao()
@@ -165,20 +172,26 @@ class ReminderScheduler(private val context: Context) {
         )
 
         try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                alarmManager.setExactAndAllowWhileIdle(
-                    AlarmManager.RTC_WAKEUP,
-                    reminder.scheduledTimeEpoch,
-                    pendingIntent
-                )
-            } else {
-                alarmManager.setExact(
-                    AlarmManager.RTC_WAKEUP,
-                    reminder.scheduledTimeEpoch,
-                    pendingIntent
-                )
+            val canExact = Build.VERSION.SDK_INT < Build.VERSION_CODES.S ||
+                alarmManager.canScheduleExactAlarms()
+            when {
+                canExact && Build.VERSION.SDK_INT >= Build.VERSION_CODES.M ->
+                    alarmManager.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, reminder.scheduledTimeEpoch, pendingIntent)
+                canExact -> alarmManager.setExact(AlarmManager.RTC_WAKEUP, reminder.scheduledTimeEpoch, pendingIntent)
+                else -> {
+                    // Exact alarm permission was revoked (Android 12+). Fall back to an
+                    // inexact alarm instead of silently losing the reminder.
+                    alarmManager.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, reminder.scheduledTimeEpoch, pendingIntent)
+                    Log.w("ReminderScheduler", "Exact alarms unavailable - scheduled inexact reminder for ${reminder.studentName}")
+                }
             }
             Log.d("ReminderScheduler", "Successfully scheduled alarm for ${reminder.studentName} at ${reminder.scheduledTimeEpoch}")
+        } catch (e: SecurityException) {
+            try {
+                alarmManager.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, reminder.scheduledTimeEpoch, pendingIntent)
+            } catch (inner: Exception) {
+                Log.e("ReminderScheduler", "Failed to schedule fallback alarm: ${inner.message}", inner)
+            }
         } catch (e: Exception) {
             Log.e("ReminderScheduler", "Failed to schedule alarm: ${e.message}", e)
         }
@@ -214,6 +227,7 @@ class ReminderScheduler(private val context: Context) {
             error = "توسط مدیر لغو شد.",
             isCompleted = true
         )
+        runCatching { BotCloudBridge(context).cancelInstallmentReminders(reminder.installmentId) }
     }
 
     /**
@@ -320,7 +334,10 @@ class ReminderScheduler(private val context: Context) {
         val unpaidInstallments = db.installmentDao().getAllInstallments().firstOrNull()?.filter { !it.isPaid } ?: emptyList()
 
         for (installment in unpaidInstallments) {
-            scheduleRemindersForInstallment(installment, settings)
+            scheduleLocalRemindersForInstallment(installment, settings)
+        }
+        if (unpaidInstallments.isNotEmpty()) {
+            runCatching { BotCloudBridge(context).pushAll() }
         }
     }
 }

@@ -21,8 +21,15 @@ class ReminderBroadcastReceiver : BroadcastReceiver() {
         val action = intent.action
         Log.d("ReminderReceiver", "Received intent action: $action")
 
-        if (action == Intent.ACTION_BOOT_COMPLETED) {
-            // Re-schedule all pending reminders after reboot
+        val shouldReschedule = action == Intent.ACTION_BOOT_COMPLETED ||
+            action == Intent.ACTION_MY_PACKAGE_REPLACED ||
+            action == Intent.ACTION_TIME_CHANGED ||
+            action == Intent.ACTION_TIMEZONE_CHANGED ||
+            action == "android.app.action.SCHEDULE_EXACT_ALARM_PERMISSION_STATE_CHANGED"
+
+        if (shouldReschedule) {
+            // Restore every pending alarm after reboot, app update, clock/timezone change
+            // (AlarmManager drops all alarms on these events).
             val pendingResult = goAsync()
             CoroutineScope(Dispatchers.IO).launch {
                 try {
@@ -30,7 +37,7 @@ class ReminderBroadcastReceiver : BroadcastReceiver() {
                     val reminderScheduler = com.example.service.ReminderScheduler(context)
                     reminderScheduler.rescheduleAllPendingReminders()
                 } catch (e: Exception) {
-                    Log.e("ReminderReceiver", "Error rescheduling on boot: ${e.message}", e)
+                    Log.e("ReminderReceiver", "Error rescheduling alarms ($action): ${e.message}", e)
                 } finally {
                     pendingResult.finish()
                 }

@@ -26,6 +26,7 @@ import kotlinx.coroutines.withContext
 import android.util.Log
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
@@ -304,6 +305,8 @@ class AcademyRepository(
     suspend fun deleteStudent(student: Student): Result<Unit> {
         studentDao.deleteStudent(student)
         firebaseManager.deleteStudentFromFirestore(student.id)
+        // Remove from the bot server on the next sync (stored as a pending tombstone)
+        database.studentDao().insertStudentDeletion(com.example.data.model.PendingStudentDeletion(student.id, System.currentTimeMillis()))
 
         logAction(
             entityType = "STUDENT",
@@ -1575,6 +1578,7 @@ class AcademyRepository(
             val sMap = s.toMap().toMutableMap()
             if (!includeSensitiveSecrets) {
                 sMap["telegramLinkToken"] = ""
+                sMap["telegramChatId"] = ""
             }
             studentsArray.put(JSONObject(sMap))
         }
@@ -1655,10 +1659,15 @@ class AcademyRepository(
         if (settings != null) {
             val setMap = settings.toMap().toMutableMap()
             if (!includeSensitiveSecrets) {
-                // Sanitize sensitive credentials from public backups
+                // Public backups never contain credentials, tokens or verifiers
                 setMap["telegramBotToken"] = ""
                 setMap["rubikaBotToken"] = ""
+                setMap["telegramApiSecret"] = ""
+                setMap["telegramWorkerUrl"] = ""
                 setMap["appLockPin"] = ""
+                // Do not leak student personal data in a shareable file
+                setMap["phone"] = ""
+                setMap["address"] = ""
             }
             root.put("settings", JSONObject(setMap))
         }
@@ -1849,7 +1858,9 @@ class AcademyRepository(
                 val finalSettings = importedSettings.copy(
                     telegramBotToken = if (importedSettings.telegramBotToken.isNotBlank()) importedSettings.telegramBotToken else currentLocalSettings.telegramBotToken,
                     rubikaBotToken = if (importedSettings.rubikaBotToken.isNotBlank()) importedSettings.rubikaBotToken else currentLocalSettings.rubikaBotToken,
-                    appLockPin = if (importedSettings.appLockPin.isNotBlank()) importedSettings.appLockPin else currentLocalSettings.appLockPin
+                    // A public backup has an empty PIN on purpose; never let it disable the local lock
+                    appLockPin = currentLocalSettings.appLockPin.ifBlank { importedSettings.appLockPin },
+                    telegramApiSecret = currentLocalSettings.telegramApiSecret.ifBlank { importedSettings.telegramApiSecret },
                 )
                 settingsDao.insertOrUpdate(finalSettings)
                 restoredCount += 1
@@ -1887,6 +1898,19 @@ class AcademyRepository(
     // ==========================================
     // 13. CLOUD SYNC (Room <-> Firestore Two-Way)
     // ==========================================
+    /** Drops ids that were deleted locally but reappear in a cloud pull. */
+    private suspend fun <T> skipLocallyDeleted(remote: List<T>, idSelector: (T) -> String): List<T> {
+        val deletedIds = try {
+            val rows: List<com.example.data.model.PendingDeletion> =
+                database.pendingDeletionDao().getByType("STUDENT").first()
+            rows.map { it.entityId }.toSet()
+        } catch (_: Exception) {
+            emptySet()
+        }
+        if (deletedIds.isEmpty()) return remote
+        return remote.filter { idSelector(it) !in deletedIds }
+    }
+
     private fun <T> mergeEntities(
         local: List<T>,
         remote: List<T>,
@@ -1937,7 +1961,7 @@ class AcademyRepository(
             val remoteStudents = firebaseManager.fetchStudentsFromFirestore()
             val mergedStudents = mergeEntities(
                 local = localStudents,
-                remote = remoteStudents,
+                remote = skipLocallyDeleted(remoteStudents) { it.id },
                 idSelector = { it.id },
                 timestampSelector = { it.updatedAt }
             )

@@ -213,7 +213,11 @@ fun SettingsScreen(
     // Security & App Lock States
     var managerUsername by remember(settings) { mutableStateOf(settings?.managerUsername ?: "admin") }
     var appLockEnabled by remember(settings) { mutableStateOf(settings?.appLockEnabled ?: false) }
-    var appLockPin by remember(settings) { mutableStateOf(settings?.appLockPin ?: "") }
+    var appLockPin by remember(settings) {
+        mutableStateOf(
+            if (com.example.data.security.CredentialHasher.isHashed(settings?.appLockPin)) "" else (settings?.appLockPin ?: "")
+        )
+    }
     var appLockTimeoutMinutes by remember(settings) { mutableIntStateOf(settings?.appLockTimeoutMinutes ?: 5) }
     var showPinText by remember { mutableStateOf(false) }
 
@@ -1243,7 +1247,11 @@ fun SettingsScreen(
                         reminder3DaysAfterAdminTemplate = adminTemplate3DaysAfter,
                         managerUsername = managerUsername.trim(),
                         appLockEnabled = appLockEnabled,
-                        appLockPin = appLockPin,
+                        appLockPin = when {
+                            appLockPin.isBlank() -> (settings?.appLockPin ?: "")
+                            com.example.data.security.CredentialHasher.isHashed(appLockPin) -> appLockPin
+                            else -> com.example.data.security.CredentialHasher.hash(appLockPin)
+                        },
                         appLockTimeoutMinutes = appLockTimeoutMinutes
                     )
                     viewModel.updateSettings(updated) { success ->

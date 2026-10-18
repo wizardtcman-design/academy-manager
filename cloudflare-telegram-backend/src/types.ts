@@ -11,6 +11,7 @@ export interface Env {
     TELEGRAM_BOT_TOKEN: string; // Server-side secret Telegram Bot Token
     API_SECRET_KEY: string;      // Secret bearer key for Android App HTTPS API
     WEBHOOK_SECRET?: string;    // Secret for Telegram X-Telegram-Bot-Api-Secret-Token
+    ADMIN_CHAT_ID?: string;     // Telegram chat id of the academy manager (admin commands)
 
     // Non-sensitive environment variables
     ENVIRONMENT?: string;

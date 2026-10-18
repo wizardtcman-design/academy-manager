@@ -61,6 +61,9 @@ fun AppLockScreen(
     correctPin: String,
     onUnlock: () -> Unit
 ) {
+    val isHashed = com.example.data.security.CredentialHasher.isHashed(correctPin)
+    // A hashed PIN has no visible length, so evaluate every 4+ digits
+    val expectedLength = if (isHashed) 8 else correctPin.length
     var enteredPin by remember { mutableStateOf("") }
     var isError by remember { mutableStateOf(false) }
     var errorMessage by remember { mutableStateOf("") }
@@ -90,16 +93,22 @@ fun AppLockScreen(
     }
 
     fun onDigitPress(digit: String) {
-        if (enteredPin.length >= correctPin.length || isError) return
+        if (enteredPin.length >= expectedLength || isError) return
         val newPin = enteredPin + digit
         enteredPin = newPin
 
-        if (newPin.length == correctPin.length) {
-            if (newPin == correctPin) {
-                onUnlock()
-            } else {
-                triggerShake()
-            }
+        val matches = if (isHashed) {
+            newPin.length >= 4 && com.example.data.security.CredentialHasher.verify(newPin, correctPin)
+        } else {
+            newPin.length == correctPin.length && newPin == correctPin
+        }
+
+        if (matches) {
+            onUnlock()
+        } else if (!isHashed && newPin.length == correctPin.length) {
+            triggerShake()
+        } else if (isHashed && newPin.length == expectedLength) {
+            triggerShake()
         }
     }
 
@@ -176,7 +185,7 @@ fun AppLockScreen(
                     horizontalArrangement = Arrangement.spacedBy(16.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    val totalDigits = correctPin.length.coerceAtLeast(4)
+                    val totalDigits = if (isHashed) 8 else correctPin.length.coerceAtLeast(4)
                     for (i in 0 until totalDigits) {
                         val isFilled = i < enteredPin.length
                         val dotColor = when {

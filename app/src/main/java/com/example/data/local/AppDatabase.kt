@@ -36,9 +36,11 @@ import com.example.data.model.Student
         MessageLog::class,
         Expense::class,
         Refund::class,
-        ExpenseCategory::class
+        ExpenseCategory::class,
+        com.example.data.model.PendingDeletion::class,
+        com.example.data.model.PendingStudentDeletion::class
     ],
-    version = 4,
+    version = 5,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -57,10 +59,34 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun expenseDao(): ExpenseDao
     abstract fun refundDao(): RefundDao
     abstract fun expenseCategoryDao(): ExpenseCategoryDao
+    abstract fun pendingDeletionDao(): PendingDeletionDao
 
     companion object {
         @Volatile
         private var INSTANCE: AppDatabase? = null
+
+        /** v5 adds deletion tombstones for offline-safe sync. */
+        val MIGRATION_4_5 = object : androidx.room.migration.Migration(4, 5) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL(
+                    """CREATE TABLE IF NOT EXISTS `pending_student_deletions` (
+                        `studentId` TEXT NOT NULL,
+                        `createdAt` INTEGER NOT NULL,
+                        PRIMARY KEY(`studentId`))"""
+                )
+                db.execSQL(
+                    """CREATE TABLE IF NOT EXISTS `pending_deletions` (
+                        `id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                        `entityType` TEXT NOT NULL,
+                        `entityId` TEXT NOT NULL,
+                        `createdAt` INTEGER NOT NULL)"""
+                )
+                db.execSQL(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS `index_pending_deletions_entityType_entityId` " +
+                        "ON `pending_deletions` (`entityType`, `entityId`)"
+                )
+            }
+        }
 
         fun getDatabase(context: Context): AppDatabase {
             return INSTANCE ?: synchronized(this) {
@@ -69,7 +95,9 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "academy_manager_database"
                 )
-                    .fallbackToDestructiveMigration()
+                    // Real migrations only. Never wipe the academy data silently:
+                    // a missing migration is a build-time bug, not a user problem.
+                    .addMigrations(MIGRATION_4_5)
                     .build()
                 INSTANCE = instance
                 instance

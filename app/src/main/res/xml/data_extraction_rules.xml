@@ -1,19 +1,15 @@
-<?xml version="1.0" encoding="utf-8"?><!--
-   Sample data extraction rules file; uncomment and customize as necessary.
-   See https://developer.android.com/about/versions/12/backup-restore#xml-changes
-   for details.
--->
+<?xml version="1.0" encoding="utf-8"?>
 <data-extraction-rules>
     <cloud-backup>
-        <!-- TODO: Use <include> and <exclude> to control what is backed up.
-        <include .../>
-        <exclude .../>
-        -->
+        <!-- Never upload the academy database or the auth preferences to Google Drive.
+             They contain student personal data, bot tokens and PIN hashes. -->
+        <exclude domain="database" path="academy_manager_database" />
+        <exclude domain="database" path="academy_manager_database-wal" />
+        <exclude domain="database" path="academy_manager_database-shm" />
+        <exclude domain="sharedpref" path="academy_auth_prefs.xml" />
+        <exclude domain="file" path="." />
     </cloud-backup>
-    <!--
     <device-transfer>
-        <include .../>
-        <exclude .../>
+        <exclude domain="sharedpref" path="academy_auth_prefs.xml" />
     </device-transfer>
-    -->
 </data-extraction-rules>

@@ -52,6 +52,8 @@ fun AddEditStudentDialog(
     var firstNameError by remember { mutableStateOf(false) }
     var lastNameError by remember { mutableStateOf(false) }
     var phoneError by remember { mutableStateOf(false) }
+    var phoneErrorText by remember { mutableStateOf("شماره موبایل الزامی است") }
+    var nationalCodeError by remember { mutableStateOf(false) }
 
     val scrollState = rememberScrollState()
 
@@ -122,7 +124,7 @@ fun AddEditStudentDialog(
                     leadingIcon = { Icon(Icons.Default.Phone, contentDescription = null) },
                     singleLine = true,
                     isError = phoneError,
-                    supportingText = if (phoneError) { { Text("شماره موبایل الزامی است") } } else null,
+                    supportingText = if (phoneError) { { Text(phoneErrorText) } } else null,
                     keyboardOptions = KeyboardOptions(
                         keyboardType = KeyboardType.Phone,
                         imeAction = ImeAction.Next
@@ -136,8 +138,10 @@ fun AddEditStudentDialog(
                 // National Code (Optional)
                 OutlinedTextField(
                     value = nationalCode,
-                    onValueChange = { nationalCode = it },
+                    onValueChange = { if (it.length <= 10) { nationalCode = it; nationalCodeError = false } },
                     label = { Text("کد ملی (اختیاری)") },
+                    isError = nationalCodeError,
+                    supportingText = if (nationalCodeError) { { Text("کد ملی وارد شده معتبر نیست") } } else null,
                     leadingIcon = { Icon(Icons.Default.Badge, contentDescription = null) },
                     singleLine = true,
                     keyboardOptions = KeyboardOptions(
@@ -175,10 +179,25 @@ fun AddEditStudentDialog(
                     }
                     if (phone.isBlank()) {
                         phoneError = true
+                        phoneErrorText = "شماره موبایل الزامی است"
+                        hasError = true
+                    } else if (!com.example.data.util.ValidationUtil.isValidMobile(phone)) {
+                        phoneError = true
+                        phoneErrorText = "شماره موبایل معتبر نیست (مثال: 09121234567)"
+                        hasError = true
+                    }
+                    if (nationalCode.isNotBlank() && !com.example.data.util.ValidationUtil.isValidNationalCode(nationalCode)) {
+                        nationalCodeError = true
                         hasError = true
                     }
                     if (!hasError) {
-                        onConfirm(firstName, lastName, phone, nationalCode, notes)
+                        onConfirm(
+                            firstName,
+                            lastName,
+                            com.example.data.util.ValidationUtil.normalizePhone(phone),
+                            nationalCode.trim(),
+                            notes
+                        )
                     }
                 },
                 shape = RoundedCornerShape(10.dp),

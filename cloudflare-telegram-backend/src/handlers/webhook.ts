@@ -6,6 +6,9 @@ import { Env, TelegramUpdate, StudentRecord } from '../types';
 import { TelegramBotClient } from '../telegram';
 import { AcademyDatabase } from '../db';
 
+/** Telegram stops retrying an update after ~1 minute; finish sending before then. */
+const SEND_TIMEOUT_MS = 25_000;
+
 export async function handleTelegramWebhook(
     request: Request,
     env: Env
@@ -38,7 +41,12 @@ export async function handleTelegramWebhook(
     const db = new AcademyDatabase(env);
 
     try {
-        await processUpdate(update, bot, db, env);
+        // Bounded processing: never let Telegram see a timeout and retry the update,
+        // which would send the same reply twice.
+        await Promise.race([
+            processUpdate(update, bot, db, env),
+            new Promise<void>((resolve) => setTimeout(resolve, SEND_TIMEOUT_MS))
+        ]);
     } catch (err: any) {
         console.error('Error processing Telegram update:', err);
     }
@@ -179,6 +187,9 @@ async function processUpdate(
         await handleContactInfo(bot, db, chatId);
     } else if (normalized === '🔄 بروزرسانی اطلاعات' || normalized.includes('بروزرسانی') || normalized === '/refresh') {
         await handleRefresh(bot, db, student, chatId);
+    } else if (isAdmin(chatId, env)) {
+        // Admin commands (only from the chat id configured in ADMIN_CHAT_ID)
+        await handleAdminCommand(normalized, bot, db, chatId, env);
     } else {
         const menuMsg = `سلام <b>${student.full_name}</b> عزیز 🌸\n\nلطفاً یکی از گزینه‌های زیر را انتخاب فرمایید:`;
         await bot.sendMessage({
@@ -188,6 +199,116 @@ async function processUpdate(
             replyMarkup: TelegramBotClient.getStudentReplyKeyboard()
         });
     }
+}
+
+function isAdmin(chatId: string, env: Env): boolean {
+    const admin = (env.ADMIN_CHAT_ID || '').trim();
+    return admin !== '' && admin === chatId;
+}
+
+// 🛠 Admin commands: /admin, /stats, /status, /broadcast <متن>
+async function handleAdminCommand(
+    text: string,
+    bot: TelegramBotClient,
+    db: AcademyDatabase,
+    chatId: string,
+    env: Env
+): Promise<void> {
+    const [command, ...rest] = text.split(/\s+/);
+    const cmd = command.toLowerCase();
+
+    if (cmd === '/admin' || cmd === '/help') {
+        await bot.sendMessage({
+            chatId,
+            text: `🛠 <b>دستورات مدیر</b>\n` +
+                `━━━━━━━━━━━━━━━━━━━\n` +
+                `/stats — آمار کلی ربات\n` +
+                `/status — وضعیت سرور و اتصال تلگرام\n` +
+                `/broadcast متن — ارسال پیام به همهٔ هنرجویان متصل\n` +
+                `/link کد ، شماره — وضعیت اتصال یک هنرجو`,
+            parseMode: 'HTML'
+        });
+        return;
+    }
+
+    if (cmd === '/status') {
+        const me = await bot.getMe();
+        await bot.sendMessage({
+            chatId,
+            text: `🟢 <b>وضعیت سرور</b>\n` +
+                `━━━━━━━━━━━━━━━━━━━\n` +
+                `🤖 ربات: ${me.ok ? '@' + (me.result?.username || '') : '❌ خطا در ارتباط'}\n` +
+                `🗄 پایگاه‌داده D1: ${db.isD1Configured() ? '✅ متصل' : '⚠️ متصل نیست (حافظه موقت)'}\n` +
+                `⚡ KV: ${db.isKVConfigured() ? '✅ متصل' : '➖ غیرفعال'}\n` +
+                `🌐 محیط: ${env.ENVIRONMENT || 'production'}\n` +
+                `🕒 زمان سرور (UTC): ${new Date().toISOString()}`,
+            parseMode: 'HTML'
+        });
+        return;
+    }
+
+    if (cmd === '/stats') {
+        const logs = await db.getRecentLogs(200);
+        const todayStart = new Date();
+        todayStart.setUTCHours(0, 0, 0, 0);
+        const sentToday = logs.filter(l => l.status === 'SUCCESS' && l.timestamp_epoch >= todayStart.getTime()).length;
+        const failedToday = logs.filter(l => l.status === 'FAILED' && l.timestamp_epoch >= todayStart.getTime()).length;
+
+        await bot.sendMessage({
+            chatId,
+            text: `📊 <b>آمار ربات</b>\n` +
+                `━━━━━━━━━━━━━━━━━━━\n` +
+                `✅ پیام موفق امروز: <b>${sentToday}</b>\n` +
+                `❌ پیام ناموفق امروز: <b>${failedToday}</b>\n` +
+                `📜 مجموع لاگ‌های اخیر: ${logs.length}`,
+            parseMode: 'HTML'
+        });
+        return;
+    }
+
+    if (cmd === '/broadcast') {
+        const body = rest.join(' ').trim();
+        if (!body) {
+            await bot.sendMessage({ chatId, text: '⚠️ متن پیام را بعد از /broadcast بنویسید.', parseMode: 'HTML' });
+            return;
+        }
+        // Broadcast is intentionally limited to students already listed in the DB.
+        const students = await db.getAllConnectedStudents();
+        let sent = 0;
+        for (const s of students) {
+            const res = await bot.sendMessage({ chatId: s.telegram_chat_id, text: body, parseMode: 'HTML' });
+            if (res.ok) sent++;
+        }
+        await bot.sendMessage({
+            chatId,
+            text: `📣 پیام به ${sent} از ${students.length} هنرجوی متصل ارسال شد.`,
+            parseMode: 'HTML'
+        });
+        return;
+    }
+
+    if (cmd === '/link') {
+        const code = rest.join(' ').trim();
+        if (!code) {
+            await bot.sendMessage({ chatId, text: '⚠️ کد هنرجو یا شناسه را وارد کنید.', parseMode: 'HTML' });
+            return;
+        }
+        const student = await db.getStudentById(code) || await db.getStudentByCode(code);
+        if (!student) {
+            await bot.sendMessage({ chatId, text: '❌ هنرجو پیدا نشد.', parseMode: 'HTML' });
+            return;
+        }
+        await bot.sendMessage({
+            chatId,
+            text: `👤 <b>${student.full_name}</b>\n` +
+                `کد: ${student.student_code || '-'}\n` +
+                `اتصال تلگرام: ${student.is_telegram_connected === 1 ? `✅ متصل (${student.telegram_chat_id})` : '➖ متصل نیست'}`,
+            parseMode: 'HTML'
+        });
+        return;
+    }
+
+    await bot.sendMessage({ chatId, text: 'دستور ناشناخته. /help را بزنید.', parseMode: 'HTML' });
 }
 
 // 💰 Financial Status Handler

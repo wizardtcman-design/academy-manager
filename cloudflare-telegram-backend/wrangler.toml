@@ -2,17 +2,31 @@ name = "academy-manager1"
 main = "src/index.ts"
 compatibility_date = "2024-09-01"
 
-# Environment Variables (Non-sensitive)
+# Non-sensitive environment variables.
+# Secrets (set with `wrangler secret put <NAME>`):
+#   TELEGRAM_BOT_TOKEN, API_SECRET_KEY, WEBHOOK_SECRET, ADMIN_CHAT_ID
 [vars]
 ENVIRONMENT = "production"
 BOT_USERNAME = ""
 
-# Cloudflare Cron Triggers for Background Automated Reminders
-# Runs every hour at minute 0 (09:00, 10:00, 11:00, etc.)
-[triggers]
-crons = ["0 * * * *"]
+# D1 relational DB (required for a bot that keeps working while the app is closed)
+# Create it once:  wrangler d1 create academy-manager
+# Then uncomment and put the database_id printed by that command:
+# [[d1_databases]]
+# binding = "DB"
+# database_name = "academy-manager"
+# database_id = "<YOUR_D1_DATABASE_ID>"
+# migrations_dir = "migrations"
 
-# Observability and Logs
+# KV cache (optional, speeds up student lookup by chat id)
+# [[kv_namespaces]]
+# binding = "STUDENT_KV"
+# id = "<YOUR_KV_NAMESPACE_ID>"
+
+# Background reminder dispatch. Every minute, so the reminder time set in the
+# app ("10:00") is honored within ~1 minute even with the app closed.
+[triggers]
+crons = ["* * * * *"]
+
 [observability]
 enabled = true
-

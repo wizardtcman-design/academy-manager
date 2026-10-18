@@ -250,12 +250,71 @@ export async function handleApiRequest(
         }
     }
 
+    // Bulk upsert of reminders (used by the app to publish ALL upcoming
+    // reminders to the server, so they are still sent while the app is closed)
+    if (path === '/api/schedule-reminders' && request.method === 'POST') {
+        try {
+            const body = await request.json() as { reminders?: ScheduleReminderRequest[] };
+            const list = Array.isArray(body.reminders) ? body.reminders : [];
+            let upserted = 0;
+            let skippedPast = 0;
+            const now = Date.now();
+
+            for (const item of list) {
+                if (!item.scheduledEpoch || item.scheduledEpoch <= now - 60 * 60 * 1000) {
+                    skippedPast++;
+                    continue;
+                }
+                await db.addReminder({
+                    id: item.id || crypto.randomUUID(),
+                    student_id: item.studentId || '',
+                    student_name: item.studentName || '',
+                    chat_id: item.chatId || '',
+                    installment_id: item.installmentId || '',
+                    reminder_type: item.reminderType || 'INSTALLMENT',
+                    message_text: item.message || '',
+                    scheduled_epoch: item.scheduledEpoch,
+                    scheduled_time_str: item.scheduledTimeStr || '',
+                    status: 'SCHEDULED',
+                    error_message: '',
+                    retry_count: 0,
+                    created_at_epoch: now,
+                    sent_at_epoch: 0
+                });
+                upserted++;
+            }
+
+            return jsonResponse({
+                success: true,
+                message: `${upserted} یادآوری روی سرور ثبت شد${skippedPast ? ` (${skippedPast} مورد گذشته نادیده گرفته شد)` : ''}.`,
+                data: { upserted, skippedPast }
+            });
+        } catch (err: any) {
+            return jsonResponse({ success: false, message: `خطا: ${err.message}`, errorCode: 500 }, 500);
+        }
+    }
+
+    if (path === '/api/cancel-reminders' && request.method === 'POST') {
+        try {
+            const body = await request.json() as { installmentId?: string };
+            if (!body.installmentId) {
+                return jsonResponse({ success: false, message: 'installmentId الزامی است.', errorCode: 400 }, 400);
+            }
+            await db.cancelPendingRemindersForInstallment(body.installmentId);
+            return jsonResponse({ success: true, message: 'یادآوری‌های این قسط لغو شدند.' });
+        } catch (err: any) {
+            return jsonResponse({ success: false, message: `خطا: ${err.message}`, errorCode: 500 }, 500);
+        }
+    }
+
     // ============================================================
     // 4. Data Synchronization (Students, Installments, Financials)
     // ============================================================
     if (path === '/api/sync/student' && request.method === 'POST') {
         try {
             const body = await request.json() as SyncStudentRequest;
+            // The server is the source of truth for the Telegram link. An empty
+            // chat id must NOT wipe a connection made by the student in the bot.
             await db.upsertStudent({
                 id: body.id,
                 student_code: body.studentCode || '',
@@ -267,9 +326,16 @@ export async function handleApiRequest(
                 is_telegram_connected: body.isTelegramConnected ? 1 : 0
             });
 
+            const synced = await db.getStudentById(body.id);
+
             return jsonResponse({
                 success: true,
-                message: `اطلاعات هنرجو ${body.fullName} در سرور همگام‌سازی شد.`
+                message: `اطلاعات هنرجو ${body.fullName} در سرور همگام‌سازی شد.`,
+                data: {
+                    telegramChatId: synced?.telegram_chat_id || '',
+                    telegramUsername: synced?.telegram_username || '',
+                    isTelegramConnected: synced?.is_telegram_connected === 1
+                }
             });
         } catch (err: any) {
             return jsonResponse({
@@ -364,6 +430,40 @@ export async function handleApiRequest(
                 message: `خطا: ${err.message}`,
                 errorCode: 500
             }, 500);
+        }
+    }
+
+    // Returns every student link created in the bot, so the app can update Room
+    if (path === '/api/sync/telegram-links' && (request.method === 'POST' || request.method === 'GET')) {
+        try {
+            const students = await db.getAllConnectedStudents();
+            return jsonResponse({
+                success: true,
+                message: `${students.length} لینک تلگرام فعال`,
+                data: {
+                    links: students.map(s => ({
+                        id: s.id,
+                        telegramChatId: s.telegram_chat_id,
+                        telegramUsername: s.telegram_username,
+                        linkedAt: s.linked_at_epoch
+                    }))
+                }
+            });
+        } catch (err: any) {
+            return jsonResponse({ success: false, message: `خطا: ${err.message}`, errorCode: 500 }, 500);
+        }
+    }
+
+    if (path === '/api/sync/student-delete' && request.method === 'POST') {
+        try {
+            const body = await request.json() as { id?: string };
+            if (!body.id) {
+                return jsonResponse({ success: false, message: 'id الزامی است.', errorCode: 400 }, 400);
+            }
+            await db.deleteStudent(body.id);
+            return jsonResponse({ success: true, message: 'هنرجو از سرور حذف شد.' });
+        } catch (err: any) {
+            return jsonResponse({ success: false, message: `خطا: ${err.message}`, errorCode: 500 }, 500);
         }
     }
 

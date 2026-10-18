@@ -23,6 +23,15 @@ interface StudentDao {
     @Query("SELECT * FROM students")
     suspend fun getAllStudentsDirect(): List<Student>
 
+    @Query("SELECT * FROM pending_student_deletions ORDER BY createdAt ASC")
+    fun getPendingDeletions(): Flow<List<com.example.data.model.PendingStudentDeletion>>
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertStudentDeletion(deletion: com.example.data.model.PendingStudentDeletion)
+
+    @Query("DELETE FROM pending_student_deletions WHERE studentId = :id")
+    suspend fun clearStudentDeletion(id: String)
+
     @Query("SELECT * FROM students WHERE telegramLinkToken = :token LIMIT 1")
     suspend fun getStudentByTelegramToken(token: String): Student?
 

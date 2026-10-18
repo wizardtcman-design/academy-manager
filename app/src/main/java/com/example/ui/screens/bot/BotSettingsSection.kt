@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.CloudUpload
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Error
 import androidx.compose.material.icons.filled.Info
@@ -388,6 +389,68 @@ fun BotSettingsSection(
                             Spacer(modifier = Modifier.width(6.dp))
                             Text("تست اتصال به Cloudflare Worker")
                         }
+                    }
+
+                    // Publish students, installments, financials and reminders to
+                    // the Cloudflare Worker so the bot keeps working with the app closed.
+                    var isPushingToServer by remember { mutableStateOf(false) }
+                    var pushResult by remember { mutableStateOf<Pair<Boolean, String>?>(null) }
+
+                    OutlinedButton(
+                        onClick = {
+                            val cleanUrl = telegramWorkerUrl.trim().removeSuffix("/")
+                            if (cleanUrl.isBlank() || telegramApiSecret.isBlank()) {
+                                Toast.makeText(context, "آدرس سرور و کلید API را کامل کنید.", Toast.LENGTH_SHORT).show()
+                                return@OutlinedButton
+                            }
+                            isPushingToServer = true
+                            pushResult = null
+                            coroutineScope.launch {
+                                // Persist current values first so the bridge sees them
+                                val current = (settings ?: AcademySettings()).copy(
+                                    telegramEnabled = telegramEnabled,
+                                    telegramUseWorker = telegramUseWorker,
+                                    telegramWorkerUrl = cleanUrl,
+                                    telegramApiSecret = telegramApiSecret.trim(),
+                                    telegramBotUsername = botUsername,
+                                    telegramBotToken = botToken
+                                )
+                                onSaveSettings(current)
+                                kotlinx.coroutines.delay(300)
+                                val outcome = com.example.service.messaging.BotCloudBridge(context).pushAll()
+                                isPushingToServer = false
+                                pushResult = Pair(
+                                    outcome.success,
+                                    if (outcome.success) {
+                                        "✅ سرور آماده است.\n${outcome.message}\n\nاز این پس ربات و یادآوری‌ها حتی وقتی برنامه بسته باشد با سرور Cloudflare کار می‌کنند."
+                                    } else outcome.message
+                                )
+                            }
+                        },
+                        enabled = !isPushingToServer && telegramWorkerUrl.isNotBlank(),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("bot_push_to_server_btn"),
+                        shape = RoundedCornerShape(10.dp)
+                    ) {
+                        if (isPushingToServer) {
+                            CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("در حال ارسال داده‌ها به سرور...")
+                        } else {
+                            Icon(Icons.Default.CloudUpload, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("فعال‌سازی ربات ابری (ارسال داده‌ها و یادآوری‌ها)")
+                        }
+                    }
+
+                    pushResult?.let { (ok, msg) ->
+                        Text(
+                            text = msg,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (ok) StatusSuccess else StatusError,
+                            fontSize = 12.sp
+                        )
                     }
                 }
             }

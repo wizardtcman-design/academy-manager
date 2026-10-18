@@ -67,6 +67,36 @@ export class AcademyDatabase {
         return memoryStudents.get(id) || null;
     }
 
+    async getStudentByCode(studentCode: string): Promise<StudentRecord | null> {
+        if (!studentCode) return null;
+        if (this.db) {
+            try {
+                return await this.db.prepare('SELECT * FROM students WHERE student_code = ?').bind(studentCode).first<StudentRecord>();
+            } catch (e) {
+                console.warn('[DB] D1 getStudentByCode failed:', e);
+            }
+        }
+        for (const s of memoryStudents.values()) {
+            if (s.student_code === studentCode) return s;
+        }
+        return null;
+    }
+
+    /** All students that are linked to Telegram (used for admin broadcast). */
+    async getAllConnectedStudents(): Promise<StudentRecord[]> {
+        if (this.db) {
+            try {
+                const { results } = await this.db.prepare(
+                    "SELECT * FROM students WHERE is_telegram_connected = 1 AND telegram_chat_id != ''"
+                ).all<StudentRecord>();
+                return results || [];
+            } catch (e) {
+                console.warn('[DB] D1 getAllConnectedStudents failed:', e);
+            }
+        }
+        return Array.from(memoryStudents.values()).filter(s => s.is_telegram_connected === 1 && s.telegram_chat_id);
+    }
+
     async getStudentByChatId(chatId: string): Promise<StudentRecord | null> {
         if (!chatId) return null;
         if (this.kv) {
@@ -113,9 +143,12 @@ export class AcademyDatabase {
             full_name: student.full_name,
             phone: student.phone ?? existing?.phone ?? '',
             national_code: student.national_code ?? existing?.national_code ?? '',
-            telegram_chat_id: student.telegram_chat_id ?? existing?.telegram_chat_id ?? '',
-            telegram_username: student.telegram_username ?? existing?.telegram_username ?? '',
-            is_telegram_connected: student.is_telegram_connected ?? existing?.is_telegram_connected ?? 0,
+            // Never let a sync from the app erase a link the student created in the bot
+            telegram_chat_id: student.telegram_chat_id || existing?.telegram_chat_id || '',
+            telegram_username: student.telegram_username || existing?.telegram_username || '',
+            is_telegram_connected: (student.is_telegram_connected === 1 || (student.telegram_chat_id ?? '') !== '')
+                ? 1
+                : (existing?.is_telegram_connected ?? 0),
             linked_at_epoch: student.linked_at_epoch ?? existing?.linked_at_epoch ?? 0,
             created_at_epoch: existing?.created_at_epoch ?? now,
             updated_at_epoch: now
@@ -375,6 +408,105 @@ export class AcademyDatabase {
             r.error_message = errorMessage;
             if (status === 'SENT') r.sent_at_epoch = now;
             r.retry_count++;
+        }
+    }
+
+    async getReminderById(id: string): Promise<ReminderRecord | null> {
+        if (this.db) {
+            try {
+                return await this.db.prepare('SELECT * FROM reminders WHERE id = ?').bind(id).first<ReminderRecord>();
+            } catch (e) {
+                console.warn('[DB] D1 getReminderById failed:', e);
+            }
+        }
+        return memoryReminders.get(id) || null;
+    }
+
+    async retryReminder(id: string, nextEpoch: number, errorMessage: string = ''): Promise<void> {
+        if (this.db) {
+            try {
+                await this.db.prepare(`
+                    UPDATE reminders SET
+                        status = 'SCHEDULED',
+                        scheduled_epoch = ?,
+                        error_message = ?,
+                        retry_count = retry_count + 1
+                    WHERE id = ?
+                `).bind(nextEpoch, errorMessage, id).run();
+            } catch (e) {
+                console.warn('[DB] D1 retryReminder failed:', e);
+            }
+        }
+        const r = memoryReminders.get(id);
+        if (r) {
+            r.status = 'SCHEDULED';
+            r.scheduled_epoch = nextEpoch;
+            r.error_message = errorMessage;
+            r.retry_count++;
+        }
+    }
+
+    async cancelPendingRemindersForInstallment(installmentId: string): Promise<void> {
+        if (!installmentId) return;
+        if (this.db) {
+            try {
+                await this.db.prepare(`
+                    UPDATE reminders SET status = 'CANCELLED', error_message = 'Installment already paid'
+                    WHERE installment_id = ? AND status = 'SCHEDULED'
+                `).bind(installmentId).run();
+            } catch (e) {
+                console.warn('[DB] D1 cancelPendingReminders failed:', e);
+            }
+        }
+        for (const r of memoryReminders.values()) {
+            if (r.installment_id === installmentId && r.status === 'SCHEDULED') {
+                r.status = 'CANCELLED';
+            }
+        }
+    }
+
+    /** Cancels reminders that are stale (installment paid / past due by more than graceDays). */
+    async pruneStaleReminders(nowEpoch: number, graceDays: number = 2): Promise<number> {
+        const cutoff = nowEpoch - graceDays * 24 * 60 * 60 * 1000;
+        let cancelled = 0;
+        if (this.db) {
+            try {
+                const res = await this.db.prepare(`
+                    UPDATE reminders SET status = 'CANCELLED', error_message = 'Stale: missed schedule window'
+                    WHERE status = 'SCHEDULED' AND scheduled_epoch < ?
+                `).bind(cutoff).run();
+                cancelled = res.meta?.changes || 0;
+            } catch (e) {
+                console.warn('[DB] D1 pruneStaleReminders failed:', e);
+            }
+        }
+        for (const r of memoryReminders.values()) {
+            if (r.status === 'SCHEDULED' && r.scheduled_epoch < cutoff) {
+                r.status = 'CANCELLED';
+                cancelled++;
+            }
+        }
+        return cancelled;
+    }
+
+    async deleteStudent(id: string): Promise<void> {
+        if (this.db) {
+            try {
+                await this.db.batch([
+                    this.db.prepare('DELETE FROM reminders WHERE student_id = ?').bind(id),
+                    this.db.prepare('DELETE FROM installments WHERE student_id = ?').bind(id),
+                    this.db.prepare('DELETE FROM financial_summaries WHERE student_id = ?').bind(id),
+                    this.db.prepare('DELETE FROM students WHERE id = ?').bind(id)
+                ]);
+            } catch (e) {
+                console.warn('[DB] D1 deleteStudent failed:', e);
+            }
+        }
+        memoryStudents.delete(id);
+        memoryInstallments.delete(id);
+        memoryFinancials.delete(id);
+        for (const [chatId, sid] of memoryChatMap.entries()) {
+            if (sid === id) memoryChatMap.delete(chatId);
         }
     }
 

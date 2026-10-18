@@ -1,71 +1,80 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    
-    // Helper function: Check if request is authenticated
-    function isAuthenticated() {
+
+    // ------------------------------------------------------------------
+    // Access model
+    // Every academy gets ONE owner uid. Only that uid can read or write the
+    // academy data. New sign-ups do not get access automatically: add their
+    // uid here (or in a /owners/{uid} doc) before they can use the cloud.
+    // ------------------------------------------------------------------
+    function isSignedIn() {
       return request.auth != null;
     }
-    
-    // Helper function: Check if current user is an admin
-    function isAdmin() {
-      return isAuthenticated() && 
-        (request.auth.token.role == 'ADMIN' || 
-         request.auth.token.email != null);
+
+    // 1) Owner allow-list stored in the database (recommended)
+    function isListedOwner() {
+      return isSignedIn() &&
+        exists(/databases/$(database)/documents/owners/$(request.auth.uid));
     }
 
-    // Users Collection: Only authenticated admins can manage users
+    // 2) Optional hard-coded owner uids (comma separated in the string below)
+    function isEnvOwner() {
+      return isSignedIn() &&
+        request.auth.uid in [];   // e.g. ['uidOfTheAcademyManager']
+    }
+
+    function isOwner() {
+      return isSignedIn() && (isListedOwner() || isEnvOwner());
+    }
+
+    // Profiles are private to their own user. Only managers may self-register.
     match /users/{userId} {
-      allow read: if isAuthenticated();
-      allow write: if isAdmin() || request.auth.uid == userId;
+      allow read: if isSignedIn() && request.auth.uid == userId;
+      allow create: if isSignedIn() && request.auth.uid == userId
+        && !exists(/databases/$(database)/documents/owners/$(userId))
+        && !exists(/databases/$(database)/documents/users/$(userId));
+      allow update: if isSignedIn() && request.auth.uid == userId;
+      allow delete: if false;
     }
 
-    // Students Collection: Strict admin access for privacy & student data protection
-    match /students/{studentId} {
-      allow read, write: if isAuthenticated();
+    // The owner allow-list can only be managed from the Firebase console
+    // (Admin SDK). Clients can read only their own entry.
+    match /owners/{uid} {
+      allow read: if isSignedIn() && request.auth.uid == uid;
+      allow write: if false;
     }
 
-    // Courses Collection: Public or internal reading, admin write
-    match /courses/{courseId} {
-      allow read: if isAuthenticated();
-      allow write: if isAuthenticated();
+    // One document per academy owner. Only the owner may touch it.
+    match /academies/{ownerUid} {
+      allow read: if isSignedIn() && request.auth.uid == ownerUid;
+      allow write: if isSignedIn() && request.auth.uid == ownerUid;
     }
 
-    // Enrollments: Strictly authenticated
-    match /enrollments/{enrollmentId} {
-      allow read, write: if isAuthenticated();
+    // Business data: readable/writable only by the academy owner(s)
+    match /students/{id}     { allow read, write: if isOwner(); }
+    match /courses/{id}      { allow read, write: if isOwner(); }
+    match /enrollments/{id}  { allow read, write: if isOwner(); }
+    match /installments/{id} { allow read, write: if isOwner(); }
+    match /payments/{id}     { allow read, write: if isOwner(); }
+    match /expenses/{id}     { allow read, write: if isOwner(); }
+    match /refunds/{id}      { allow read, write: if isOwner(); }
+    match /bankAccounts/{id} { allow read, write: if isOwner(); }
+    match /messageLogs/{id}  { allow read, write: if isOwner(); }
+    match /notifications/{id}{ allow read, write: if isOwner(); }
+    match /settings/{id}     { allow read, write: if isOwner(); }
+    match /reminders/{id}    { allow read, write: if isOwner(); }
+
+    // Audit log is append-only for the owner
+    match /auditLogs/{id} {
+      allow read: if isOwner();
+      allow create: if isOwner();
+      allow update, delete: if false;
     }
 
-    // Installments: Financial data - protected
-    match /installments/{installmentId} {
-      allow read, write: if isAuthenticated();
-    }
-
-    // Payments: Financial records - protected
-    match /payments/{paymentId} {
-      allow read, write: if isAuthenticated();
-    }
-
-    // Reminders & Notifications
-    match /reminders/{reminderId} {
-      allow read, write: if isAuthenticated();
-    }
-    
-    match /notifications/{notificationId} {
-      allow read, write: if isAuthenticated();
-    }
-
-    // Academy Settings
-    match /settings/{settingId} {
-      allow read: if isAuthenticated();
-      allow write: if isAuthenticated();
-    }
-
-    // Audit Logs: Read & Append only by authenticated staff, never delete or overwrite past logs
-    match /auditLogs/{logId} {
-      allow read: if isAuthenticated();
-      allow create: if isAuthenticated();
-      allow update, delete: if false; // Immutable audit trail
+    // Everything else is denied by default
+    match /{document=**} {
+      allow read, write: if false;
     }
   }
 }

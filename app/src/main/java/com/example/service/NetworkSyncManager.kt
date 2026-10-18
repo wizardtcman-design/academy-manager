@@ -103,6 +103,12 @@ class NetworkSyncManager(
             } catch (e: Exception) {
                 Log.w("NetworkSyncManager", "[TRACE 4 ERROR] Background auto-sync failed gracefully: ${e.message}")
             }
+            // Keep the Cloudflare bot server in sync as well (works while the app is closed)
+            try {
+                com.example.service.messaging.BotCloudBridge(context).pushAll()
+            } catch (e: Exception) {
+                Log.w("NetworkSyncManager", "Bot server push skipped: ${e.message}")
+            }
         }
     }
 }
