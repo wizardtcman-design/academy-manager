@@ -66,25 +66,13 @@ fun CoursesScreen(
     var courseToEdit by remember { mutableStateOf<Course?>(null) }
 
     Scaffold(
-        floatingActionButton = {
-            FloatingActionButton(
+        bottomBar = {
+            com.example.ui.components.PinnedActionBar(
+                title = "تعریف دوره جدید",
+                icon = Icons.Default.Add,
                 onClick = { showAddDialog = true },
-                containerColor = TealSecondary,
-                contentColor = MaterialTheme.colorScheme.onPrimary,
-                shape = RoundedCornerShape(16.dp),
-                modifier = Modifier
-                    .padding(bottom = 72.dp)
-                    .testTag("fab_add_course")
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 14.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Icon(Icons.Default.Add, contentDescription = "ایجاد دوره جدید")
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text("تعریف دوره جدید", fontWeight = FontWeight.Bold)
-                }
-            }
+                testTag = "fab_add_course"
+            )
         }
     ) { innerPadding ->
         Column(
@@ -184,7 +172,7 @@ fun CoursesScreen(
             } else {
                 LazyColumn(
                     modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(bottom = 120.dp),
+                    contentPadding = PaddingValues(bottom = 24.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
                     items(courses, key = { it.id }) { course ->

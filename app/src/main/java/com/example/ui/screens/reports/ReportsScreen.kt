@@ -178,6 +178,7 @@ fun ReportsScreen(
                     com.example.ui.components.FilterOption("ANNUAL", "سالانه")
                 ),
                 selectedKey = selectedPeriod,
+                title = "بازه",
                 onSelect = { selectedPeriod = it },
                 groups = listOf(
                     com.example.ui.components.FilterGroup(

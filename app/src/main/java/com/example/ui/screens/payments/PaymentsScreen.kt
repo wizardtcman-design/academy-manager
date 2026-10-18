@@ -121,8 +121,10 @@ fun PaymentsScreen(
     var accountToEdit by remember { mutableStateOf<BankAccount?>(null) }
 
     Scaffold(
-        floatingActionButton = {
-            FloatingActionButton(
+        bottomBar = {
+            com.example.ui.components.PinnedActionBar(
+                title = "ثبت واریزی جدید",
+                icon = Icons.Default.Add,
                 onClick = {
                     // Open quick payment for first available pending installment or prompt
                     val pendingInst = installments.firstOrNull { it.status != "PAID" }
@@ -137,22 +139,8 @@ fun PaymentsScreen(
                         viewModel.showMessage("لطفاً ابتدا هنرجو و دوره ثبت نمایید.")
                     }
                 },
-                containerColor = MaterialTheme.colorScheme.primary,
-                contentColor = MaterialTheme.colorScheme.onPrimary,
-                shape = RoundedCornerShape(16.dp),
-                modifier = Modifier
-                    .padding(bottom = 72.dp)
-                    .testTag("fab_record_payment")
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 14.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Icon(Icons.Default.Add, contentDescription = null)
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text("ثبت واریزی جدید", fontWeight = FontWeight.Bold)
-                }
-            }
+                testTag = "fab_record_payment"
+            )
         }
     ) { innerPadding ->
         Column(
@@ -536,6 +524,7 @@ private fun DebtorsTab(
                 com.example.ui.components.FilterOption("DUE_DATE", "نزدیک‌ترین سررسید")
             ),
             selectedKey = sortBy,
+            title = "ترتیب",
             onSelect = { sortBy = it },
             groups = listOf(
                 com.example.ui.components.FilterGroup(

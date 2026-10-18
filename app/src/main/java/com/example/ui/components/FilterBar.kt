@@ -43,12 +43,18 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 
 /**
- * A collapsible filter bar that always fits a phone screen: the first few
- * options stay visible as chips and everything else lives behind the filter
- * button, inside a bottom sheet grouped by category.
+ * A compact filter strip that always fits a phone screen in one row:
+ *
+ *   [ فیلتر ▾ ]   [ همه | بدهکار | فعال ]        (بقیه در شیت پایین)
+ *
+ * Nothing overflows: the chips are sized to the row, the active filter is
+ * highlighted, and every remaining option (plus its category) lives behind the
+ * filter button in a bottom sheet. The previous version rendered a trailing
+ * "فیلترها" chip that broke onto its own line and pushed the list down.
  */
 data class FilterOption(
     val key: String,
@@ -62,7 +68,7 @@ data class FilterGroup(
     val options: List<FilterOption>
 )
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun FilterBar(
     options: List<FilterOption>,
@@ -76,30 +82,20 @@ fun FilterBar(
     var sheetOpen by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
     val allGroups = if (groups.isNotEmpty()) groups else listOf(FilterGroup(title, options))
     val flat = allGroups.flatMap { it.options }.distinctBy { it.key }
-    val visible = options.take(3)
-    val hasMore = flat.size > visible.size
+    val hasMore = flat.size > options.size || trailing != null
 
     Row(
         modifier = modifier.fillMaxWidth(),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(6.dp)
     ) {
-        if (hasMore) {
-            FilterChipPro(
-                label = title,
-                selected = false,
-                icon = Icons.Default.FilterList,
-                onClick = { sheetOpen = true },
-                compact = true
-            )
-        }
         Row(
             modifier = Modifier
                 .weight(1f)
                 .horizontalScroll(rememberScrollState()),
             horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-            visible.forEach { option ->
+            options.forEach { option ->
                 FilterChipPro(
                     label = option.label,
                     selected = option.key == selectedKey,
@@ -108,7 +104,40 @@ fun FilterBar(
                 )
             }
         }
-        trailing?.invoke()
+        if (hasMore) {
+            Surface(
+                modifier = Modifier
+                    .height(34.dp)
+                    .clip(RoundedCornerShape(11.dp))
+                    .clickable { sheetOpen = true }
+                    .then(Modifier.testTag("filter_open_sheet")),
+                shape = RoundedCornerShape(11.dp),
+                color = MaterialTheme.colorScheme.primary.copy(alpha = 0.10f),
+                border = androidx.compose.foundation.BorderStroke(
+                    1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.30f)
+                )
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        Icons.Default.FilterList,
+                        contentDescription = title,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(Modifier.width(4.dp))
+                    Text(
+                        text = title,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.primary,
+                        fontWeight = FontWeight.SemiBold,
+                        maxLines = 1
+                    )
+                }
+            }
+        }
     }
 
     if (sheetOpen) {

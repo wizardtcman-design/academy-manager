@@ -34,6 +34,7 @@ import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.FilterList
 import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.MenuBook
 import androidx.compose.material.icons.filled.PersonAdd
 import androidx.compose.material.icons.filled.Phone
 import androidx.compose.material.icons.filled.Search
@@ -101,6 +102,7 @@ fun StudentsScreen(
 
     // Dialogs state
     var showAddStudentDialog by remember { mutableStateOf(false) }
+    var enrollPicker by remember { mutableStateOf(false) }
     var studentToEdit by remember { mutableStateOf<Student?>(null) }
     var selectedStudentForDetails by remember { mutableStateOf<Student?>(null) }
     var studentForEnrollment by remember { mutableStateOf<Student?>(null) }
@@ -143,25 +145,14 @@ fun StudentsScreen(
     }
 
     Scaffold(
-        floatingActionButton = {
-            FloatingActionButton(
+        bottomBar = {
+            com.example.ui.components.PinnedActionBar(
+                title = "هنرجوی جدید",
+                icon = Icons.Default.PersonAdd,
+                subtitle = PersianDateUtil.toPersianDigits(students.size.toString()),
                 onClick = { showAddStudentDialog = true },
-                containerColor = MaterialTheme.colorScheme.primary,
-                contentColor = MaterialTheme.colorScheme.onPrimary,
-                shape = RoundedCornerShape(16.dp),
-                modifier = Modifier
-                    .padding(bottom = 72.dp)
-                    .testTag("fab_add_student")
-            ) {
-                Row(
-                    modifier = Modifier.padding(horizontal = 14.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Icon(Icons.Default.PersonAdd, contentDescription = "افزودن هنرجو")
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text("هنرجوی جدید", fontWeight = FontWeight.Bold)
-                }
-            }
+                testTag = "fab_add_student"
+            )
         }
     ) { innerPadding ->
         Column(
@@ -239,17 +230,51 @@ fun StudentsScreen(
                     fontWeight = FontWeight.Bold
                 )
 
-                Surface(
-                    shape = RoundedCornerShape(10.dp),
-                    color = MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    Text(
-                        text = "${PersianDateUtil.toPersianDigits(filteredStudents.size.toString())} هنرجو",
-                        style = MaterialTheme.typography.labelMedium,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
-                    )
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)
+                    ) {
+                        Text(
+                            text = "${PersianDateUtil.toPersianDigits(filteredStudents.size.toString())} هنرجو",
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp)
+                        )
+                    }
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = MaterialTheme.colorScheme.primary.copy(alpha = 0.10f),
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(10.dp))
+                            .clickable(enabled = students.isNotEmpty() && courses.isNotEmpty()) {
+                                enrollPicker = true
+                            }
+                            .testTag("enroll_shortcut")
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 5.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                Icons.Default.MenuBook,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(14.dp)
+                            )
+                            Spacer(Modifier.width(4.dp))
+                            Text(
+                                "ثبت‌نام",
+                                style = MaterialTheme.typography.labelMedium,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                    }
                 }
             }
 
@@ -258,8 +283,7 @@ fun StudentsScreen(
             if (filteredStudents.isEmpty()) {
                 Box(
                     modifier = Modifier
-                        .fillMaxSize()
-                        .padding(bottom = 80.dp),
+                        .fillMaxSize(),
                     contentAlignment = Alignment.Center
                 ) {
                     Column(
@@ -290,7 +314,7 @@ fun StudentsScreen(
             } else {
                 LazyColumn(
                     modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(bottom = 120.dp),
+                    contentPadding = PaddingValues(bottom = 24.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     itemsIndexed(filteredStudents, key = { _, st -> st.id }) { index, student ->
@@ -398,6 +422,18 @@ fun StudentsScreen(
             },
             onSendMessage = { st, inst ->
                 studentForMessage = Pair(st, inst)
+            }
+        )
+    }
+
+    // 3.b Quick picker opened from the "ثبت‌نام" shortcut in the header.
+    if (enrollPicker) {
+        com.example.ui.screens.dialogs.EnrollStudentPickerDialog(
+            students = students,
+            onDismiss = { enrollPicker = false },
+            onPick = { st ->
+                enrollPicker = false
+                studentForEnrollment = st
             }
         )
     }
