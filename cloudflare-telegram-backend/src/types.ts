@@ -6,6 +6,15 @@ export interface Env {
     // Cloudflare Bindings (Optional - can be attached via Dashboard later)
     DB?: D1Database;
     STUDENT_KV?: KVNamespace;
+    /** R2 bucket for contract PDFs (original + signed). Falls back to D1 when absent. */
+    CONTRACTS?: R2Bucket;
+
+    /** Comma separated tenant ids this deployment accepts (default: "default"). */
+    ACADEMY_IDS?: string;
+    /** Public origin used to build signing links (default: the Worker origin). */
+    PUBLIC_BASE_URL?: string;
+    /** Set once a real SMS provider is chosen; sending stays disabled while empty. */
+    SMS_PROVIDER?: string;
 
     // Secrets (configured via `wrangler secret put <KEY>` or Cloudflare Dashboard)
     TELEGRAM_BOT_TOKEN: string; // Server-side secret Telegram Bot Token

@@ -27,13 +27,28 @@ data class StudentFinancialSummary(
 object FinanceUtil {
 
     /**
-     * Generates a formatted unique Student ID like ST-1403-0001
+     * Generates a short, readable Student ID in the format `1405-001`:
+     * the Jalali year of registration, a dash, then the student's running
+     * number inside that year, zero-padded to three digits (widening past 999
+     * on its own, so it never collides).
+     *
+     * This is a *display* code only. Every row keeps its stable UUID `id` and
+     * every relation (enrollments, installments, payments, contracts, Telegram
+     * chat) is keyed on that id, so changing this format can never move data.
      */
-    fun generateStudentCode(sequenceNumber: Int): String {
-        val currentYear = PersianDateUtil.currentJalali().year
-        val formattedSeq = String.format("%04d", sequenceNumber.coerceAtLeast(1))
-        return "ST-$currentYear-$formattedSeq"
-    }
+    fun generateStudentCode(year: Int, sequenceNumber: Int): String =
+        "${year}-" + sequenceNumber.coerceAtLeast(1).toString().padStart(3, '0')
+
+    /**
+     * Oldest supported code shape, kept for migrating existing rows.
+     * Returns the last numeric part of `ST-1403-0001` (4) or `1405-001` (1).
+     */
+    fun studentCodeSequence(code: String): Int? =
+        code.trim().substringAfterLast('-').toIntOrNull()
+
+    /** True for the current short format `1405-001` (year, dash, 3+ digits). */
+    fun isShortStudentCode(code: String): Boolean =
+        Regex("^\\d{4}-\\d{3,}$").matches(code.trim())
 
     /**
      * Generates a formatted unique Transaction ID like TRX-1403-0001

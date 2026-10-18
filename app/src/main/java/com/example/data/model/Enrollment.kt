@@ -24,6 +24,7 @@ data class Enrollment(
     val firstInstallmentDateEpoch: Long = System.currentTimeMillis(),
     val status: String = "ACTIVE", // ACTIVE, COMPLETED, CANCELLED
     val notes: String = "",
+    val contractNumber: String = "",
     val isSampleData: Boolean = false,
     val createdAt: Long = System.currentTimeMillis()
 ) {
@@ -71,6 +72,7 @@ data class Enrollment(
                 firstInstallmentDateEpoch = (map["firstInstallmentDateEpoch"] as? Number)?.toLong() ?: System.currentTimeMillis(),
                 status = map["status"] as? String ?: "ACTIVE",
                 notes = map["notes"] as? String ?: "",
+                contractNumber = map["contractNumber"] as? String ?: "",
                 isSampleData = map["isSampleData"] as? Boolean ?: false,
                 createdAt = (map["createdAt"] as? Number)?.toLong() ?: System.currentTimeMillis()
             )

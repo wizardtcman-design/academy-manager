@@ -6,6 +6,8 @@ import { Env } from './types';
 import { handleTelegramWebhook } from './handlers/webhook';
 import { handleApiRequest } from './handlers/api';
 import { handleScheduledEvent } from './handlers/cron';
+import { handleContractsApi } from './handlers/contracts-api';
+import { handleSignRoute } from './handlers/sign';
 
 export default {
     async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -22,6 +24,15 @@ export default {
                     'Access-Control-Max-Age': '86400'
                 }
             });
+        }
+
+        // 0. Digital contracts: public signing page (no auth, token in URL) and
+        //    the app API (bearer key). Both are handled before the legacy API.
+        if (url.pathname === '/sign' || url.pathname.startsWith('/sign/')) {
+            return await handleSignRoute(request, env, url);
+        }
+        if (url.pathname.startsWith('/api/contracts')) {
+            return await handleContractsApi(request, env, url);
         }
 
         // 1. Route Telegram Webhook

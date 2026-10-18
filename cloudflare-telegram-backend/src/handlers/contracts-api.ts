@@ -1,0 +1,254 @@
+// ============================================================
+// Contract API (app side) — bearer key of the academy, scoped by X-Academy-Id
+//   POST /api/contracts            upload PDF + metadata, returns the sign link
+//   GET  /api/contracts/health     Worker + D1 + R2 readiness
+//   GET  /api/contracts/:id        status of one contract
+//   GET  /api/contracts/:id/pdf    original (?signed=1 for the signed copy)
+//   POST /api/contracts/:id/revoke invalidate the link (signed contracts are final)
+// ============================================================
+
+import { Env } from '../types';
+import { ContractStore } from '../contracts-store';
+import { sha256Hex, maskPhone, maskNational } from '../crypto';
+
+const MAX_PDF_BYTES = 6 * 1024 * 1024;
+
+function json(data: unknown, status = 200): Response {
+    return new Response(JSON.stringify(data), {
+        status,
+        headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }
+    });
+}
+
+function ok<T>(message: string, data: T): Response {
+    return json({ success: true, message, data });
+}
+
+function fail(message: string, status = 400, extra: Record<string, unknown> = {}): Response {
+    return json({ success: false, message, error: message, ...extra }, status);
+}
+
+function academyIdOf(request: Request, env: Env): string {
+    const header = request.headers.get('X-Academy-Id') || '';
+    const allowed = (env.ACADEMY_IDS || 'default').split(',').map((s) => s.trim()).filter(Boolean);
+    const candidate = header.trim() || 'default';
+    return allowed.includes(candidate) ? candidate : '';
+}
+
+function publicBase(request: Request, env: Env): string {
+    return (env.PUBLIC_BASE_URL || new URL(request.url).origin).replace(/\/+$/, '');
+}
+
+function signUrlFor(base: string, token: string): string {
+    return `${base}/sign?s=${encodeURIComponent(token)}`;
+}
+
+function rowToApi(row: any, base: string, token?: string) {
+    return {
+        id: row.id,
+        enrollmentId: row.enrollment_id,
+        status: row.status,
+        expiresAtEpoch: row.expires_at_epoch,
+        issuedAtEpoch: row.issued_at_epoch,
+        openedAtEpoch: row.opened_at_epoch,
+        signedAtEpoch: row.signed_at_epoch,
+        signedAtShamsi: row.signed_at_shamsi,
+        signerName: row.signer_name,
+        r2Key: row.pdf_key,
+        signedR2Key: row.signed_pdf_key,
+        pdfSha256: row.pdf_sha256,
+        signedPdfSha256: row.signed_pdf_sha256,
+        rejectedAttempts: row.rejected_attempts,
+        phoneMask: row.phone_mask,
+        nationalMask: row.national_mask,
+        signUrl: token ? signUrlFor(base, token) : ''
+    };
+}
+
+export async function handleContractsApi(request: Request, env: Env, url: URL): Promise<Response> {
+    const store = new ContractStore(env);
+
+    if (url.pathname === '/api/contracts/health') {
+        const health = await store.health();
+        return ok('contract service', {
+            version: 'contracts-1',
+            d1: health.d1,
+            r2: health.r2,
+            r2Enabled: Boolean(env.CONTRACTS),
+            error: health.error || '',
+            academyScoped: (env.ACADEMY_IDS || '').includes(','),
+            time: new Date().toISOString()
+        });
+    }
+
+    const academyId = academyIdOf(request, env);
+    if (!academyId) return fail('شناسه آموزشگاه مجاز نیست.', 403);
+
+    if (!env.DB) return fail('D1 متصل نیست؛ قراردادها ذخیره نمی‌شوند.', 503);
+
+    // ---- upload / re-issue ----
+    if (url.pathname === '/api/contracts' && request.method === 'POST') {
+        let form: FormData;
+        try {
+            form = await request.formData();
+        } catch {
+            return fail('درخواست باید multipart باشد.', 400);
+        }
+        const metaRaw = form.get('meta');
+        const file = form.get('file');
+        if (typeof metaRaw !== 'string' || !file || typeof (file as any).arrayBuffer !== 'function') {
+            return fail('اطلاعات قرارداد یا فایل PDF ناقص است.', 400);
+        }
+        const fileSize = Number((file as any).size || 0);
+        if (fileSize > MAX_PDF_BYTES) return fail('حجم PDF بیش از حد مجاز (۶ مگابایت) است.', 413);
+
+        let meta: any;
+        try {
+            meta = JSON.parse(metaRaw);
+        } catch {
+            return fail('meta معتبر نیست.', 400);
+        }
+        const enrollmentId = String(meta.enrollmentId || '');
+        const studentId = String(meta.studentId || '');
+        const tokenHash = String(meta.tokenHash || '');
+        if (!enrollmentId || !studentId || !/^[0-9a-f]{64}$/.test(tokenHash)) {
+            return fail('شناسه ثبت‌نام، هنرجو یا توکن نامعتبر است.', 400);
+        }
+
+        const existing = await store.findByEnrollment(academyId, enrollmentId);
+        if (existing?.status === 'SIGNED') {
+            // Never replace a signed contract: the app is told it is final.
+            return ok('این قرارداد قبلاً امضا شده و تغییر نمی‌کند.', rowToApi(existing, publicBase(request, env)));
+        }
+
+        const pdfBytes = new Uint8Array(await (file as any).arrayBuffer());
+        const pdfSha = await sha256Hex(new TextDecoder('latin1').decode(pdfBytes));
+        const info = meta.enrollment?.info || {};
+        const student = meta.enrollment?.student || {};
+        const verifySeed = `${student.phone || ''}|${student.nationalCode || ''}|${enrollmentId}`;
+        const verifyHash = await sha256Hex(verifySeed);
+
+        let pdfKey = `contracts/${academyId}/${enrollmentId}/original.pdf`;
+        if (env.CONTRACTS) {
+            await env.CONTRACTS.put(pdfKey, pdfBytes, {
+                httpMetadata: { contentType: 'application/pdf' },
+                customMetadata: { sha256: pdfSha, enrollmentId, academyId }
+            });
+        } else {
+            // No R2 bucket yet: keep the PDF in D1 so nothing is lost.
+            await env.DB.prepare(
+                `INSERT OR REPLACE INTO contract_files (key, academy_id, content, sha256, created_at_epoch)
+                 VALUES (?,?,?,?,?)`
+            ).bind(pdfKey, academyId, pdfBytes, pdfSha, Date.now()).run();
+        }
+
+        // The link is issued by the app; the Worker never needs the token itself.
+        const res = await store.upsert({
+            academyId,
+            id: String(meta.contractId || ''),
+            enrollmentId,
+            studentId,
+            studentName: String(student.fullName || info.studentName || ''),
+            courseTitle: String(info.courseTitle || ''),
+            tokenHash,
+            expiresAt: Number(meta.expiresAtEpoch || Date.now() + 30 * 86400000),
+            pdfKey,
+            pdfSha256: pdfSha,
+            enrollmentJson: JSON.stringify(info),
+            phoneMask: maskPhone(String(student.phone || '')),
+            nationalMask: maskNational(String(student.nationalCode || '')),
+            verifyHash,
+            signerName: String(meta.signerName || ''),
+            rotateToken: true
+        });
+
+        const appToken = String(meta.publicToken || '');
+        const signUrl = appToken ? signUrlFor(publicBase(request, env), appToken) : '';
+        if (appToken && (res.row.status === 'ISSUED' || res.row.status === 'OPENED')) {
+            // Keep only a hash; the raw token lives solely in the signal link.
+            await store.setAppToken(academyId, res.row.id, await sha256Hex(appToken));
+        }
+
+        await store.event(academyId, res.row.id, {
+            type: res.created ? 'CREATED' : 'LINK_ROTATED',
+            detail: `enrollment=${enrollmentId}`,
+            ip: request.headers.get('CF-Connecting-IP') || '',
+            userAgent: request.headers.get('User-Agent') || ''
+        });
+
+        return ok(
+            res.created ? 'قرارداد ساخته شد.' : 'لینک امضای جدید برای همان قرارداد صادر شد.',
+            {
+                ...rowToApi(res.row, publicBase(request, env)),
+                signUrl,
+                created: res.created,
+                storage: env.CONTRACTS ? 'R2' : 'D1'
+            }
+        );
+    }
+
+    const match = /^\/api\/contracts\/([^/]+)(\/pdf|\/revoke)?$/.exec(url.pathname);
+    if (!match) return fail('مسیر نامعتبر است.', 404);
+    const id = decodeURIComponent(match[1]);
+
+    const row = await store.findById(academyId, id);
+    if (!row) return fail('قرارداد پیدا نشد.', 404);
+
+    if (request.method === 'GET' && !match[2]) {
+        const base = publicBase(request, env);
+        const res = ok('وضعیت قرارداد', rowToApi(row, base, row.status === 'ISSUED' || row.status === 'OPENED' ? 'link-in-app' : undefined));
+        return res;
+    }
+
+    if (request.method === 'POST' && match[2] === '/revoke') {
+        if (row.status === 'SIGNED') return fail('قرارداد امضاشده قابل لغو نیست.', 409);
+        await store.revoke(academyId, row);
+        await store.event(academyId, row.id, { type: 'REVOKED', ip: request.headers.get('CF-Connecting-IP') || '' });
+        return ok('لینک امضا لغو شد.', { id: row.id, status: 'REVOKED' });
+    }
+
+    if (request.method === 'GET' && match[2] === '/pdf') {
+        const signed = url.searchParams.get('signed') === '1';
+        if (signed && row.status !== 'SIGNED') return fail('این قرارداد هنوز امضا نشده است.', 409);
+        const key = signed ? row.signed_pdf_key : row.pdf_key;
+        if (!key) return fail('فایلی برای این قرارداد ثبت نشده است.', 404);
+        const bytes = await readContractFile(env, key);
+        if (!bytes) return fail('فایل در فضای ذخیره‌سازی نیست.', 404);
+        return new Response(bytes, {
+            headers: {
+                'Content-Type': 'application/pdf',
+                'Content-Disposition': `attachment; filename="${signed ? 'signed' : 'contract'}-${row.id.slice(0, 8)}.pdf"`,
+                'Cache-Control': 'no-store'
+            }
+        });
+    }
+
+    return fail('روش پشتیبانی نمی‌شود.', 405);
+}
+
+export async function readContractFile(env: Env, key: string): Promise<Uint8Array | null> {
+    if (env.CONTRACTS) {
+        const obj = await env.CONTRACTS.get(key);
+        if (!obj) return null;
+        return new Uint8Array(await obj.arrayBuffer());
+    }
+    const row = await env.DB!.prepare('SELECT content FROM contract_files WHERE key = ?').bind(key).first<any>();
+    if (!row?.content) return null;
+    return row.content instanceof ArrayBuffer ? new Uint8Array(row.content) : Uint8Array.from(row.content);
+}
+
+export async function writeContractFile(
+    env: Env, key: string, bytes: Uint8Array, sha256: string, academyId: string, contentType = 'application/pdf'
+): Promise<void> {
+    if (env.CONTRACTS) {
+        await env.CONTRACTS.put(key, bytes, {
+            httpMetadata: { contentType },
+            customMetadata: { sha256, academyId }
+        });
+    } else {
+        await env.DB!.prepare(
+            `INSERT OR REPLACE INTO contract_files (key, academy_id, content, sha256, created_at_epoch)
+             VALUES (?,?,?,?,?)`
+        ).bind(key, academyId, bytes, sha256, Date.now()).run();
+    }
+}

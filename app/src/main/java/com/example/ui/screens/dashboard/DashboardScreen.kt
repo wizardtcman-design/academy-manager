@@ -114,6 +114,7 @@ fun DashboardScreen(
     val courses by viewModel.courses.collectAsState()
     val bankAccounts by viewModel.bankAccounts.collectAsState()
     val messageTemplates by viewModel.messageTemplates.collectAsState()
+    val enrollments by viewModel.enrollments.collectAsState()
 
     val urgentInstallments = remember(installments) {
         installments.filter { it.status == "OVERDUE" || it.status == "DUE_TODAY" }
@@ -447,6 +448,7 @@ fun DashboardScreen(
         EnrollStudentDialog(
             students = students,
             courses = courses,
+            existingEnrollments = enrollments,
             initialStudent = pendingStudentForEnroll,
             onCreateCourse = {
                 pendingStudentForEnroll = null

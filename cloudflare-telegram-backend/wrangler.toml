@@ -8,15 +8,25 @@ compatibility_date = "2024-09-01"
 [vars]
 ENVIRONMENT = "production"
 BOT_USERNAME = ""
+# Tenant whitelist: the app sends X-Academy-Id; anything else is rejected.
+ACADEMY_IDS = "default"
+# Set after deploying to make signing links stable (defaults to the Worker origin).
+PUBLIC_BASE_URL = "https://academy-manager1.wizard-tcman.workers.dev"
+# Empty means SMS sending is disabled (a provider has not been chosen yet).
+SMS_PROVIDER = ""
 
-# D1 relational DB (required for a bot that keeps working while the app is closed)
-# Create it once:  wrangler d1 create academy-manager
-# Then uncomment and put the database_id printed by that command:
-# [[d1_databases]]
-# binding = "DB"
-# database_name = "academy-manager"
-# database_id = "<YOUR_D1_DATABASE_ID>"
-# migrations_dir = "migrations"
+# D1 relational DB (required): students, reminders, contracts, delivery status.
+[[d1_databases]]
+binding = "DB"
+database_name = "academy-contracts-dev"
+database_id = "2d7fa1bd-f015-43be-b180-1d7b84554ffd"
+migrations_dir = "migrations"
+
+# R2 bucket for contract PDFs. Requires R2 to be enabled once in the dashboard
+# (Cloudflare > R2 > Enable). Without it, PDFs are stored in D1 instead.
+# [[r2_buckets]]
+# binding = "CONTRACTS"
+# bucket_name = "academy-contracts"
 
 # KV cache (optional, speeds up student lookup by chat id)
 # [[kv_namespaces]]

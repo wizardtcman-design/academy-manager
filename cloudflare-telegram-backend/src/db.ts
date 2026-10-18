@@ -11,7 +11,9 @@ import {
     MessageLogRecord
 } from './types';
 
-// In-Memory Fallback Map in case D1 / KV is not yet bound in Cloudflare Dashboard
+// In-Memory Fallback Map, used ONLY by the local test server (`npm run dev`).
+// Production always writes to D1; the authenticated health endpoint reports
+// `d1` so the app can refuse to issue contracts while data would be volatile.
 const memoryStudents = new Map<string, StudentRecord>();
 const memoryChatMap = new Map<string, string>(); // chatId -> studentId
 const memoryInstallments = new Map<string, InstallmentRecord[]>(); // studentId -> installments
@@ -23,10 +25,13 @@ const memorySettings = new Map<string, string>();
 export class AcademyDatabase {
     private db?: D1Database;
     private kv?: KVNamespace;
+    /** Tenant of this database handle: every contract query is scoped by it. */
+    public readonly academyId: string;
 
-    constructor(env: Env) {
+    constructor(env: Env, academyId: string = 'default') {
         this.db = env.DB;
         this.kv = env.STUDENT_KV;
+        this.academyId = academyId;
     }
 
     public isD1Configured(): boolean {
@@ -41,7 +46,7 @@ export class AcademyDatabase {
     // Student Methods
     // ============================================================
 
-    async getStudentById(id: string): Promise<StudentRecord | null> {
+    async getStudentById(id: string, academyId: string = 'default'): Promise<StudentRecord | null> {
         // Fast-path: Check KV cache first if available
         if (this.kv) {
             try {
@@ -52,7 +57,7 @@ export class AcademyDatabase {
 
         if (this.db) {
             try {
-                const stmt = this.db.prepare('SELECT * FROM students WHERE id = ?').bind(id);
+                const stmt = this.db.prepare('SELECT * FROM students WHERE id = ? AND academy_id = ?').bind(id, academyId);
                 const record = await stmt.first<StudentRecord>();
                 if (record && this.kv) {
                     await this.kv.put(`student:${id}`, JSON.stringify(record), { expirationTtl: 3600 });
@@ -241,10 +246,10 @@ export class AcademyDatabase {
     // Installments & Financial Summaries
     // ============================================================
 
-    async getInstallmentsForStudent(studentId: string): Promise<InstallmentRecord[]> {
+    async getInstallmentsForStudent(studentId: string, academyId: string = 'default'): Promise<InstallmentRecord[]> {
         if (this.db) {
             try {
-                const stmt = this.db.prepare('SELECT * FROM installments WHERE student_id = ? ORDER BY due_date_epoch ASC, installment_number ASC').bind(studentId);
+                const stmt = this.db.prepare('SELECT * FROM installments WHERE student_id = ? AND academy_id = ? ORDER BY due_date_epoch ASC, installment_number ASC').bind(studentId, academyId);
                 const { results } = await stmt.all<InstallmentRecord>();
                 return results || [];
             } catch (e) {

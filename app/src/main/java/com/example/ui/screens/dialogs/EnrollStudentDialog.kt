@@ -73,6 +73,7 @@ fun EnrollStudentDialog(
     courses: List<Course>,
     initialStudent: Student? = null,
     initialCourse: Course? = null,
+    existingEnrollments: List<com.example.data.model.Enrollment> = emptyList(),
     onCreateCourse: () -> Unit = {},
     onDismiss: () -> Unit,
     onEnroll: (
@@ -110,6 +111,21 @@ fun EnrollStudentDialog(
     }
 
     var blockMessage by remember { mutableStateOf<String?>(null) }
+
+    // Live guard: same student + same course is refused (and explained) before
+    // saving; the repository enforces the same rule for every other entry point.
+    val sameCourseEnrollments = remember(selectedStudent?.id, selectedCourse?.id, existingEnrollments) {
+        if (selectedStudent == null || selectedCourse == null) emptyList()
+        else existingEnrollments
+            .filter { it.studentId == selectedStudent!!.id && it.courseId == selectedCourse!!.id }
+            .sortedByDescending { it.registrationDateEpoch }
+    }
+    val duplicateGuard = remember(sameCourseEnrollments, selectedCourse?.id) {
+        val courseEnd = sameCourseEnrollments.maxOfOrNull { en ->
+            if (en.endDateShamsi.isBlank()) 0L else PersianDateUtil.parseShamsiToEpoch(en.endDateShamsi)
+        } ?: 0L
+        com.example.data.util.EnrollmentGuard.check(sameCourseEnrollments, courseEnd)
+    }
 
     val customAmounts = remember { mutableStateListOf<Long>() }
 
@@ -151,6 +167,8 @@ fun EnrollStudentDialog(
                 blockMessage = "شهریهٔ دوره صفر است؛ اول شهریهٔ دوره را در تنظیمات دوره اصلاح کنید."
             } else if (!isSumValid) {
                 blockMessage = "جمع اقساط با شهریهٔ قابل پرداخت برابر نیست؛ یکی از اقساط را اصلاح کنید."
+            } else if (!duplicateGuard.allowed) {
+                blockMessage = duplicateGuard.message
             } else {
                 onEnroll(
                     st,
@@ -169,6 +187,30 @@ fun EnrollStudentDialog(
         maxHeight = 760,
         testTag = "enroll_student_dialog"
     ) {
+        if (sameCourseEnrollments.isNotEmpty()) {
+            com.example.ui.components.FormSection(
+                title = "سابقهٔ همین دوره",
+                icon = Icons.Default.MenuBook
+            ) {
+                sameCourseEnrollments.forEach { en ->
+                    Text(
+                        text = PersianDateUtil.toPersianDigits(
+                            "ثبت‌نام ${en.registrationDateShamsi} · ${en.statusFa()} · شهریهٔ ${PersianDateUtil.formatCurrency(en.finalFee)}"
+                        ),
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                }
+                Text(
+                    text = PersianDateUtil.toPersianDigits(duplicateGuard.message.ifBlank {
+                        "سابقهٔ قبلی حفظ می‌شود؛ ثبت‌نام جدید رکورد جداگانه می‌سازد."
+                    }),
+                    color = if (duplicateGuard.allowed) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodySmall,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+        }
+
         com.example.ui.components.FormSection(title = "هنرجو و دوره", icon = Icons.Default.Person) {
             if (initialStudent == null) {
                 com.example.ui.components.FieldCaption("هنرجو", required = true)
@@ -537,4 +579,12 @@ private fun AmountInWordsHint(amount: Long) {
         fontSize = 10.5.sp,
         color = MaterialTheme.colorScheme.onSurfaceVariant
     )
+}
+
+private fun com.example.data.model.Enrollment.statusFa(): String = when (status.uppercase()) {
+    "ACTIVE" -> "فعال"
+    "COMPLETED", "FINISHED" -> "پایان‌یافته"
+    "CANCELLED" -> "انصراف"
+    "PAUSED" -> "متوقف"
+    else -> status
 }

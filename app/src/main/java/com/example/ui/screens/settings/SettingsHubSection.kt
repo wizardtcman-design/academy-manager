@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Badge
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.filled.AccountBalance
@@ -40,6 +41,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -79,7 +81,8 @@ fun SettingsHubSection(
     onOpenBackup: () -> Unit,
     onOpenIntegrations: () -> Unit,
     onLogout: () -> Unit,
-    onTestNotification: () -> Unit
+    onTestNotification: () -> Unit,
+    onOpenLetterhead: () -> Unit = {}
 ) {
     // Profile card
     Surface(
@@ -235,6 +238,12 @@ fun SettingsHubSection(
             Icons.Default.Storage
         )
     )
+    Spacer(Modifier.height(8.dp))
+    TextButton(onClick = onOpenLetterhead, modifier = Modifier.fillMaxWidth()) {
+        Icon(Icons.Default.Badge, contentDescription = null, modifier = Modifier.size(16.dp))
+        Spacer(Modifier.width(6.dp))
+        Text("مهر و امضای قرارداد (سربخش)", style = MaterialTheme.typography.bodySmall)
+    }
     Spacer(Modifier.height(14.dp))
 }
 

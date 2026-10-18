@@ -23,6 +23,19 @@ data class AcademySettings(
     // Rubika configuration
     val rubikaEnabled: Boolean = false,
     val rubikaBotToken: String = "",
+    // Contract letterhead: signature and stamp images are stored as file paths
+    // in the app's private storage (never in the cloud), so the APK carries none.
+    val sealImagePath: String = "",
+    val signatureImagePath: String = "",
+    val signerName: String = "",
+    val signerTitle: String = "مدیر آموزشگاه",
+    val contractRequireSmsOtp: Boolean = false,
+    // SMS provider (sending stays disabled until a provider is chosen)
+    val smsProviderName: String = "",
+    val smsApiUrl: String = "",
+    val smsApiKey: String = "",
+    val smsSenderLine: String = "",
+    val smsEnabled: Boolean = false,
     // Automation flags & Individual Send Times & Admin Notification Templates
     val reminder7DaysEnabled: Boolean = true,
     val reminder7DaysTime: String = "10:00",
@@ -71,9 +84,19 @@ data class AcademySettings(
     val customExpenseCategories: String = "",
     val updatedAt: Long = System.currentTimeMillis()
 ) {
+    val hasContractSignature: Boolean
+        get() = signatureImagePath.isNotBlank()
+
+    val hasContractSeal: Boolean
+        get() = sealImagePath.isNotBlank()
+
     val isTelegramConfigured: Boolean
         get() = if (telegramUseWorker) telegramWorkerUrl.isNotBlank() else telegramBotToken.isNotBlank()
 
+    /**
+     * Cloud copy of the settings WITHOUT credentials: bot token, worker API
+     * secret, SMS key, Rubika token and the app-lock PIN stay on the device.
+     */
     fun toMap(): Map<String, Any> = mapOf(
         "id" to id,
         "academyName" to academyName,
@@ -83,14 +106,20 @@ data class AcademySettings(
         "currencyUnit" to currencyUnit,
         "reminderDaysBefore" to reminderDaysBefore,
         "smsTemplate" to smsTemplate,
-        "telegramBotToken" to telegramBotToken,
         "telegramBotUsername" to telegramBotUsername,
         "telegramEnabled" to telegramEnabled,
         "telegramWorkerUrl" to telegramWorkerUrl,
-        "telegramApiSecret" to telegramApiSecret,
         "telegramUseWorker" to telegramUseWorker,
         "rubikaEnabled" to rubikaEnabled,
-        "rubikaBotToken" to rubikaBotToken,
+        "sealImagePath" to sealImagePath,
+        "signatureImagePath" to signatureImagePath,
+        "signerName" to signerName,
+        "signerTitle" to signerTitle,
+        "contractRequireSmsOtp" to contractRequireSmsOtp,
+        "smsProviderName" to smsProviderName,
+        "smsApiUrl" to smsApiUrl,
+        "smsSenderLine" to smsSenderLine,
+        "smsEnabled" to smsEnabled,
         "reminder7DaysEnabled" to reminder7DaysEnabled,
         "reminder7DaysTime" to reminder7DaysTime,
         "reminder7DaysAdminTitle" to reminder7DaysAdminTitle,
@@ -121,7 +150,6 @@ data class AcademySettings(
         "themeMode" to themeMode,
         "managerUsername" to managerUsername,
         "appLockEnabled" to appLockEnabled,
-        "appLockPin" to appLockPin,
         "appLockTimeoutMinutes" to appLockTimeoutMinutes,
         "lastBackupEpoch" to lastBackupEpoch,
         "autoBackupFrequency" to autoBackupFrequency,
@@ -140,14 +168,24 @@ data class AcademySettings(
                 currencyUnit = map["currencyUnit"] as? String ?: "تومان",
                 reminderDaysBefore = (map["reminderDaysBefore"] as? Number)?.toInt() ?: 3,
                 smsTemplate = map["smsTemplate"] as? String ?: "",
-                telegramBotToken = map["telegramBotToken"] as? String ?: "",
+                telegramBotToken = (map["telegramBotToken"] as? String)?.takeIf { it.isNotBlank() } ?: "",
                 telegramBotUsername = map["telegramBotUsername"] as? String ?: "",
                 telegramEnabled = map["telegramEnabled"] as? Boolean ?: false,
                 telegramWorkerUrl = map["telegramWorkerUrl"] as? String ?: "",
-                telegramApiSecret = map["telegramApiSecret"] as? String ?: "",
+                telegramApiSecret = (map["telegramApiSecret"] as? String)?.takeIf { it.isNotBlank() } ?: "",
                 telegramUseWorker = map["telegramUseWorker"] as? Boolean ?: false,
                 rubikaEnabled = map["rubikaEnabled"] as? Boolean ?: false,
-                rubikaBotToken = map["rubikaBotToken"] as? String ?: "",
+                rubikaBotToken = (map["rubikaBotToken"] as? String)?.takeIf { it.isNotBlank() } ?: "",
+                sealImagePath = map["sealImagePath"] as? String ?: "",
+                signatureImagePath = map["signatureImagePath"] as? String ?: "",
+                signerName = map["signerName"] as? String ?: "",
+                signerTitle = map["signerTitle"] as? String ?: "مدیر آموزشگاه",
+                contractRequireSmsOtp = map["contractRequireSmsOtp"] as? Boolean ?: false,
+                smsProviderName = map["smsProviderName"] as? String ?: "",
+                smsApiUrl = map["smsApiUrl"] as? String ?: "",
+                smsApiKey = (map["smsApiKey"] as? String)?.takeIf { it.isNotBlank() } ?: "",
+                smsSenderLine = map["smsSenderLine"] as? String ?: "",
+                smsEnabled = map["smsEnabled"] as? Boolean ?: false,
                 reminder7DaysEnabled = map["reminder7DaysEnabled"] as? Boolean ?: true,
                 reminder7DaysTime = map["reminder7DaysTime"] as? String ?: "10:00",
                 reminder7DaysAdminTitle = map["reminder7DaysAdminTitle"] as? String ?: "🔔 یادآوری ۷ روز قبل: {studentName}",
@@ -178,7 +216,7 @@ data class AcademySettings(
                 themeMode = map["themeMode"] as? String ?: "SYSTEM",
                 managerUsername = map["managerUsername"] as? String ?: "admin",
                 appLockEnabled = map["appLockEnabled"] as? Boolean ?: false,
-                appLockPin = map["appLockPin"] as? String ?: "",
+                appLockPin = (map["appLockPin"] as? String)?.takeIf { it.isNotBlank() } ?: "",
                 appLockTimeoutMinutes = (map["appLockTimeoutMinutes"] as? Number)?.toInt() ?: 5,
                 lastBackupEpoch = (map["lastBackupEpoch"] as? Number)?.toLong() ?: 0L,
                 autoBackupFrequency = map["autoBackupFrequency"] as? String ?: "WEEKLY",

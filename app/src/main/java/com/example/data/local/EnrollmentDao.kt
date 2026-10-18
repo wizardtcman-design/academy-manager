@@ -20,6 +20,12 @@ interface EnrollmentDao {
     @Query("SELECT * FROM enrollments WHERE id = :id LIMIT 1")
     suspend fun getEnrollmentById(id: String): Enrollment?
 
+    @Query("SELECT * FROM enrollments WHERE studentId = :studentId AND courseId = :courseId ORDER BY registrationDateEpoch DESC")
+    suspend fun getEnrollmentsForStudentAndCourse(studentId: String, courseId: String): List<Enrollment>
+
+    @Query("SELECT * FROM enrollments WHERE courseId = :courseId")
+    suspend fun getEnrollmentsForCourse(courseId: String): List<Enrollment>
+
     @Query("SELECT COUNT(*) FROM enrollments")
     fun getEnrollmentsCount(): Flow<Int>
 

@@ -17,11 +17,13 @@ import com.example.data.model.Refund
 import com.example.data.model.Reminder
 import com.example.data.model.Student
 import com.example.data.remote.FirebaseManager
+import com.example.data.util.EnrollmentGuard
 import com.example.data.util.FinanceUtil
 import com.example.data.util.PersianDateUtil
 import com.example.data.util.StudentFinancialSummary
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import android.util.Log
 import kotlinx.coroutines.flow.Flow
@@ -122,6 +124,10 @@ class AcademyRepository(
     private val firebaseManager: FirebaseManager
 ) {
     private val studentDao = database.studentDao()
+
+    /** Serializes student-code allocation inside the process (no duplicates). */
+    private val studentCodeLock = kotlinx.coroutines.sync.Mutex()
+
     private val courseDao = database.courseDao()
     private val settingsDao = database.settingsDao()
     private val auditLogDao = database.auditLogDao()
@@ -232,6 +238,72 @@ class AcademyRepository(
         return Result.success(Unit)
     }
 
+    /**
+     * Allocates the next short student code (`1405-001`): the running number
+     * continues after the largest code already used *this year*, so it is
+     * unique, monotonic and never depends on the row count (deleting a student
+     * can no longer produce a duplicate). Existing codes are never modified,
+     * and a code is re-checked against the table before it is returned.
+     */
+    private suspend fun nextStudentCode(): String = studentCodeLock.withLock {
+        val year = PersianDateUtil.currentJalali().year.toString()
+        val existing = studentDao.getAllStudentCodes()
+            .filter { it.startsWith("$year-") }
+            .mapNotNull { FinanceUtil.studentCodeSequence(it) }
+        var next = (existing.maxOrNull() ?: 0) + 1
+        var code = FinanceUtil.generateStudentCode(year.toInt(), next)
+        while (studentDao.getAllStudentCodes().any { it == code }) {
+            next += 1
+            code = FinanceUtil.generateStudentCode(year.toInt(), next)
+        }
+        code
+    }
+
+    /**
+     * Optional, explicit migration of OLD long codes (`ST-1403-0001`) to the
+     * short format (`1403-001`). Nothing is overwritten until the owner runs
+     * this from Settings; only the display code changes, the row id and every
+     * relation stay untouched. A code is skipped when the short form is already
+     * taken by another student, so no two students can end up with one code.
+     */
+    suspend fun migrateToShortStudentCodes(): Pair<Int, Int> {
+        val all = studentDao.getAllStudentsDirect()
+        val short = all.filter { FinanceUtil.isShortStudentCode(it.studentCode) }
+        val legacy = all.filter {
+            it.studentCode.isNotBlank() && !FinanceUtil.isShortStudentCode(it.studentCode)
+        }
+        val taken = short.map { it.studentCode }.toMutableSet()
+        var converted = 0
+        legacy.forEach { st ->
+            // 1403-0001 -> year 1403, number 1; fall back to registration year.
+            val parts = st.studentCode.split("-")
+            val year = parts.getOrNull(1)?.toIntOrNull() ?: st.registrationDateShamsi.take(4).toIntOrNull()
+            val seq = FinanceUtil.studentCodeSequence(st.studentCode)
+            if (year != null && seq != null) {
+                var candidate = FinanceUtil.generateStudentCode(year, seq)
+                var bump = seq
+                while (taken.contains(candidate)) {
+                    bump += 1
+                    candidate = FinanceUtil.generateStudentCode(year, bump)
+                }
+                val updated = st.copy(updatedAt = System.currentTimeMillis(), studentCode = candidate)
+                studentDao.updateStudent(updated)
+                firebaseManager.saveStudentToFirestore(updated)
+                taken.add(candidate)
+                converted += 1
+            }
+        }
+        logAction(
+            entityType = "STUDENT",
+            entityId = "bulk",
+            actionType = "MIGRATE",
+            previousValue = "",
+            newValue = "$converted",
+            description = "کوتاه‌سازی کد هنرجویان: $converted مورد"
+        )
+        return converted to legacy.size
+    }
+
     suspend fun addStudent(
         firstName: String,
         lastName: String,
@@ -243,12 +315,32 @@ class AcademyRepository(
         if (firstName.isBlank() || lastName.isBlank()) {
             return Result.failure(Exception("نام و نام خانوادگی الزامی است."))
         }
-        if (phone.isBlank()) {
+        val normalizedPhone = PersianDateUtil.toLatinDigits(phone.trim()).replace(" ", "")
+        val normalizedNational = PersianDateUtil.toLatinDigits(nationalCode.trim()).replace(" ", "")
+        if (normalizedPhone.isBlank()) {
             return Result.failure(Exception("شماره موبایل الزامی است."))
         }
+        if (!isValidMobile(normalizedPhone)) {
+            return Result.failure(Exception("شماره موبایل باید ۱۱ رقم و با ۰۹ شروع شود."))
+        }
+        if (normalizedNational.isNotBlank() && !isValidNationalCode(normalizedNational)) {
+            return Result.failure(Exception("کد ملی معتبر نیست."))
+        }
 
-        val totalStudentsCount = studentDao.getStudentsCount().firstOrNull() ?: 0
-        val studentCode = FinanceUtil.generateStudentCode(totalStudentsCount + 1)
+        // One student record per phone number: a double tap or a repeated form
+        // submission must never create a second identity for the same person.
+        val duplicate = studentDao.getAllStudentsDirect().firstOrNull {
+            PersianDateUtil.toLatinDigits(it.phone).replace(" ", "") == normalizedPhone ||
+                (normalizedNational.isNotBlank() &&
+                    PersianDateUtil.toLatinDigits(it.nationalCode).replace(" ", "") == normalizedNational)
+        }
+        if (duplicate != null) {
+            return Result.failure(
+                Exception("هنرجویی با این شماره موبایل/کد ملی از قبل ثبت شده است: ${duplicate.fullName} (${duplicate.studentCode}).")
+            )
+        }
+
+        val studentCode = nextStudentCode()
         val shamsiDate = PersianDateUtil.currentShamsiString()
 
         val student = Student(
@@ -256,8 +348,8 @@ class AcademyRepository(
             studentCode = studentCode,
             firstName = firstName.trim(),
             lastName = lastName.trim(),
-            phone = phone.trim(),
-            nationalCode = nationalCode.trim(),
+            phone = normalizedPhone,
+            nationalCode = normalizedNational,
             address = address.trim(),
             notes = notes.trim(),
             registrationDateShamsi = shamsiDate,
@@ -430,6 +522,19 @@ class AcademyRepository(
 
         if (finalFee <= 0) {
             return Result.failure(Exception("شهریه نهایی نامعتبر است."))
+        }
+
+        // Duplicate-enrollment guard lives in the data layer, so it applies to
+        // every entry point (dialog, shortcut, import), not only to a button.
+        val priorSameCourse = enrollmentDao.getEnrollmentsForStudentAndCourse(student.id, course.id)
+        val guard = EnrollmentGuard.check(
+            prior = priorSameCourse,
+            courseEndDateEpoch = priorSameCourse.maxOfOrNull { en ->
+                PersianDateUtil.parseShamsiToEpoch(en.endDateShamsi).takeIf { en.endDateShamsi.isNotBlank() } ?: 0L
+            } ?: 0L
+        )
+        if (!guard.allowed) {
+            return Result.failure(Exception(guard.message))
         }
 
         // Validate installment amounts sum == finalFee
@@ -617,6 +722,20 @@ class AcademyRepository(
             ?: return Result.failure(Exception("هنرجو یافت نشد."))
         val installment = installmentDao.getInstallmentById(installmentId)
             ?: return Result.failure(Exception("قسط یافت نشد."))
+
+        // Never overpay an installment: an extra tap or a wrong amount must not
+        // turn a paid installment into negative debt or double the income.
+        val alreadyPaid = paymentDao.getPaymentsForInstallment(installment.id).firstOrNull()
+            ?.filter { !it.isReversed }?.sumOf { it.amount } ?: 0L
+        val remaining = (installment.amount - alreadyPaid).coerceAtLeast(0L)
+        if (remaining <= 0L) {
+            return Result.failure(Exception("این قسط قبلاً به‌طور کامل پرداخت شده است."))
+        }
+        if (amount > remaining) {
+            return Result.failure(
+                Exception("مبلغ واردشده از ماندهٔ قسط بیشتر است. مانده: ${PersianDateUtil.formatCurrency(remaining)}")
+            )
+        }
 
         val totalPayments = paymentDao.getAllPayments().firstOrNull()?.size ?: 0
         val trxId = FinanceUtil.generateTransactionId(totalPayments + 1)
@@ -2488,4 +2607,19 @@ class AcademyRepository(
 
     suspend fun getSettingsDirect(): AcademySettings? =
         settingsDao.getSettingsDirect()
+    /** Iranian mobile in local form: 09xxxxxxxxx (11 digits). */
+    private fun isValidMobile(number: String): Boolean =
+        number.matches(Regex("^09\\d{9}$"))
+
+    /** Standard Iranian national code check digit (all-equal codes rejected). */
+    private fun isValidNationalCode(code: String): Boolean {
+        if (!code.matches(Regex("^\\d{10}$"))) return false
+        if (code.toSet().size == 1) return false
+        val check = code[9].digitToInt()
+        val sum = (0 until 9).sumOf { i -> code[i].digitToInt() * (10 - i) }
+        val remainder = sum % 11
+        val expected = if (remainder < 2) remainder else 11 - remainder
+        return expected == check
+    }
+
 }

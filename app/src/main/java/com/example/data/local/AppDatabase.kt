@@ -38,9 +38,10 @@ import com.example.data.model.Student
         Refund::class,
         ExpenseCategory::class,
         com.example.data.model.PendingDeletion::class,
-        com.example.data.model.PendingStudentDeletion::class
+        com.example.data.model.PendingStudentDeletion::class,
+        com.example.data.model.Contract::class
     ],
-    version = 5,
+    version = 6,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -60,6 +61,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun refundDao(): RefundDao
     abstract fun expenseCategoryDao(): ExpenseCategoryDao
     abstract fun pendingDeletionDao(): PendingDeletionDao
+    abstract fun contractDao(): ContractDao
 
     companion object {
         @Volatile
@@ -88,6 +90,47 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * v6 adds the single digital contract per enrollment plus the contract
+         * number on the enrollment. Existing rows are kept as-is; numbers are
+         * assigned in place on first read so no historical data is rewritten.
+         */
+        val MIGRATION_5_6 = object : androidx.room.migration.Migration(5, 6) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `enrollments` ADD COLUMN `contractNumber` TEXT NOT NULL DEFAULT ''")
+                db.execSQL(
+                    """CREATE TABLE IF NOT EXISTS `contracts` (
+                        `id` TEXT NOT NULL,
+                        `enrollmentId` TEXT NOT NULL,
+                        `studentId` TEXT NOT NULL,
+                        `studentName` TEXT NOT NULL,
+                        `courseId` TEXT NOT NULL,
+                        `courseTitle` TEXT NOT NULL,
+                        `status` TEXT NOT NULL,
+                        `publicToken` TEXT NOT NULL,
+                        `publicTokenHash` TEXT NOT NULL,
+                        `signUrl` TEXT NOT NULL,
+                        `issuedAtEpoch` INTEGER NOT NULL,
+                        `expiresAtEpoch` INTEGER NOT NULL,
+                        `openedAtEpoch` INTEGER NOT NULL,
+                        `signedAtEpoch` INTEGER NOT NULL,
+                        `signedAtShamsi` TEXT NOT NULL,
+                        `remoteId` TEXT NOT NULL,
+                        `remoteKey` TEXT NOT NULL,
+                        `localPdfPath` TEXT NOT NULL,
+                        `localSignedPdfPath` TEXT NOT NULL,
+                        `pdfSha256` TEXT NOT NULL,
+                        `lastError` TEXT NOT NULL,
+                        `createdAt` INTEGER NOT NULL,
+                        `updatedAt` INTEGER NOT NULL,
+                        PRIMARY KEY(`id`))"""
+                )
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS `index_contracts_enrollmentId` ON `contracts` (`enrollmentId`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_contracts_studentId` ON `contracts` (`studentId`)")
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS `index_contracts_publicTokenHash` ON `contracts` (`publicTokenHash`)")
+            }
+        }
+
         fun getDatabase(context: Context): AppDatabase {
             return INSTANCE ?: synchronized(this) {
                 val instance = Room.databaseBuilder(
@@ -97,7 +140,7 @@ abstract class AppDatabase : RoomDatabase() {
                 )
                     // Real migrations only. Never wipe the academy data silently:
                     // a missing migration is a build-time bug, not a user problem.
-                    .addMigrations(MIGRATION_4_5)
+                    .addMigrations(MIGRATION_4_5, MIGRATION_5_6)
                     .build()
                 INSTANCE = instance
                 instance

@@ -41,6 +41,16 @@ interface StudentDao {
     @Query("SELECT COUNT(*) FROM students")
     fun getStudentsCount(): Flow<Int>
 
+    @Query("SELECT COUNT(*) FROM students")
+    suspend fun getStudentsCountNow(): Int
+
+    /** Largest running number already used in codes of the given year. */
+    @Query("SELECT MAX(studentCode) FROM students WHERE studentCode LIKE :yearPrefix || '-%'")
+    suspend fun getMaxStudentCodeForYear(yearPrefix: String): String?
+
+    @Query("SELECT studentCode FROM students")
+    suspend fun getAllStudentCodes(): List<String>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertStudent(student: Student)
 

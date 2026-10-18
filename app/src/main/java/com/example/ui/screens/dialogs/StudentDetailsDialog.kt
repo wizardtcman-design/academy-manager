@@ -31,6 +31,8 @@ import androidx.compose.material.icons.filled.Chat
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Description
+import androidx.compose.material.icons.filled.Verified
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.ErrorOutline
@@ -115,7 +117,13 @@ fun StudentDetailsDialog(
     onCancelReminder: (String) -> Unit = {},
     onViewReceipt: (Payment) -> Unit,
     onReversePayment: (Payment) -> Unit,
-    onSendMessage: (Student, Installment?) -> Unit
+    onSendMessage: (Student, Installment?) -> Unit,
+    contracts: List<com.example.data.model.Contract> = emptyList(),
+    onIssueContractLink: (Enrollment, Boolean) -> Unit = { _, _ -> },
+    onRefreshContract: (Enrollment) -> Unit = {},
+    onRevokeContract: (Enrollment) -> Unit = {},
+    onShareContractFile: (com.example.data.model.Contract, Boolean) -> Unit = { _, _ -> },
+    onOpenSignPage: (com.example.data.model.Contract) -> Unit = {}
 ) {
     val context = LocalContext.current
     var selectedTabIndex by remember { mutableIntStateOf(0) }
@@ -314,7 +322,13 @@ fun StudentDetailsDialog(
                         onPayInstallment = { inst -> onPayInstallment(student, inst) },
                         onSendMessage = { inst -> onSendMessage(student, inst) },
                         onTestReminder = onTestReminder,
-                        onCancelReminder = onCancelReminder
+                        onCancelReminder = onCancelReminder,
+                        contracts = contracts,
+                        onIssueContractLink = onIssueContractLink,
+                        onRefreshContract = onRefreshContract,
+                        onRevokeContract = onRevokeContract,
+                        onShareContractFile = onShareContractFile,
+                        onOpenSignPage = onOpenSignPage
                     )
                     1 -> PaymentsTab(
                         payments = studentPayments,
@@ -342,7 +356,13 @@ private fun InstallmentsTab(
     onPayInstallment: (Installment) -> Unit,
     onSendMessage: (Installment) -> Unit,
     onTestReminder: (Installment) -> Unit = {},
-    onCancelReminder: (String) -> Unit = {}
+    onCancelReminder: (String) -> Unit = {},
+    contracts: List<com.example.data.model.Contract> = emptyList(),
+    onIssueContractLink: (Enrollment, Boolean) -> Unit = { _, _ -> },
+    onRefreshContract: (Enrollment) -> Unit = {},
+    onRevokeContract: (Enrollment) -> Unit = {},
+    onShareContractFile: (com.example.data.model.Contract, Boolean) -> Unit = { _, _ -> },
+    onOpenSignPage: (com.example.data.model.Contract) -> Unit = {}
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -378,6 +398,7 @@ private fun InstallmentsTab(
                 items(enrollments) { enrollment ->
                     val courseObj = courses.find { it.id == enrollment.courseId }
                     val enrollmentInsts = installments.filter { it.enrollmentId == enrollment.id }
+                    val contract = contracts.firstOrNull { it.enrollmentId == enrollment.id }
 
                     Card(
                         modifier = Modifier.fillMaxWidth(),
@@ -496,6 +517,17 @@ private fun InstallmentsTab(
                                     Text("چاپ", style = MaterialTheme.typography.bodySmall)
                                 }
                             }
+
+                            ContractStatusBlock(
+                                enrollment = enrollment,
+                                contract = contract,
+                                settings = settings,
+                                onIssue = { force -> onIssueContractLink(enrollment, force) },
+                                onRefresh = { onRefreshContract(enrollment) },
+                                onRevoke = { onRevokeContract(enrollment) },
+                                onShare = { signed -> contract?.let { onShareContractFile(it, signed) } },
+                                onOpenSign = { contract?.let { onOpenSignPage(it) } }
+                            )
                         }
                     }
                 }
@@ -859,3 +891,117 @@ private fun InstallmentStatusBadge(status: String) {
         Text(text = label, color = textColor, style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
     }
 }
+
+/**
+ * Compact status of the single digital contract of one enrollment: link state,
+ * expiry, signature date, and the actions (issue / refresh / share / revoke).
+ */
+@Composable
+private fun ContractStatusBlock(
+    enrollment: Enrollment,
+    contract: com.example.data.model.Contract?,
+    settings: AcademySettings?,
+    onIssue: (Boolean) -> Unit,
+    onRefresh: () -> Unit,
+    onRevoke: () -> Unit,
+    onShare: (Boolean) -> Unit,
+    onOpenSign: () -> Unit
+) {
+    val status = contract?.status ?: "DRAFT"
+    val signed = contract?.isSigned == true
+    val hasLink = !contract?.signUrl.isNullOrBlank() && !signed &&
+        (contract?.expiresAtEpoch ?: 0L) > System.currentTimeMillis()
+    val expired = (contract?.expiresAtEpoch ?: 0L) in 1..System.currentTimeMillis()
+
+    Column(modifier = Modifier.padding(top = 8.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(
+                if (signed) Icons.Default.Verified else Icons.Default.Description,
+                contentDescription = null,
+                modifier = Modifier.size(14.dp),
+                tint = if (signed) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(modifier = Modifier.width(4.dp))
+            Text(
+                "قرارداد ${enrollment.contractNumber.ifBlank { contract?.id?.take(6) ?: "—" }}",
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.Bold
+            )
+            Spacer(modifier = Modifier.width(6.dp))
+            Surface(
+                color = when {
+                    signed -> MaterialTheme.colorScheme.primaryContainer
+                    status == "FAILED" || status == "REVOKED" -> MaterialTheme.colorScheme.errorContainer
+                    else -> MaterialTheme.colorScheme.surfaceVariant
+                },
+                shape = RoundedCornerShape(6.dp)
+            ) {
+                Text(
+                    (contract?.statusFa ?: "پیش‌نویس") + if (expired) " (مهلت تمام شد)" else "",
+                    style = MaterialTheme.typography.labelSmall,
+                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+                )
+            }
+        }
+        if (signed) {
+            Text(
+                PersianDateUtil.toPersianDigits("امضاشده در ${contract?.signedAtShamsi.orEmpty()}"),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        } else if (hasLink) {
+            Text(
+                PersianDateUtil.toPersianDigits(
+                    "لینک امضا تا ${PersianDateUtil.formatEpochToShamsi(contract!!.expiresAtEpoch)} معتبر است"
+                ),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        if (!settings?.hasContractSignature.orFalse() || !settings?.hasContractSeal.orFalse()) {
+            Text(
+                "هشدار: مهر یا امضای آموزشگاه در تنظیمات ثبت نشده است.",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.error
+            )
+        }
+        contract?.lastError?.takeIf { it.isNotBlank() }?.let {
+            Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.error)
+        }
+
+        Spacer(Modifier.height(4.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
+            when {
+                signed -> {
+                    OutlinedButton(onClick = { onShare(true) }, modifier = Modifier.weight(1f), contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 6.dp, vertical = 2.dp)) {
+                        Text("فایل امضاشده", fontSize = 11.sp)
+                    }
+                    OutlinedButton(onClick = onRefresh, contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 6.dp, vertical = 2.dp)) {
+                        Text("بروزرسانی", fontSize = 11.sp)
+                    }
+                }
+                hasLink -> {
+                    Button(onClick = onOpenSign, modifier = Modifier.weight(1f), contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 6.dp, vertical = 2.dp)) {
+                        Text("باز کردن صفحه امضا", fontSize = 11.sp)
+                    }
+                    OutlinedButton(onClick = onRefresh, contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 6.dp, vertical = 2.dp)) {
+                        Text("بروزرسانی", fontSize = 11.sp)
+                    }
+                    OutlinedButton(onClick = onRevoke, contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 6.dp, vertical = 2.dp)) {
+                        Text("لغو لینک", fontSize = 11.sp)
+                    }
+                }
+                else -> {
+                    Button(onClick = { onIssue(expired || contract?.status == "EXPIRED") }, modifier = Modifier.weight(1f), contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 6.dp, vertical = 2.dp)) {
+                        Text(if (expired) "صدور لینک جدید" else "ساخت لینک امضا", fontSize = 11.sp)
+                    }
+                    OutlinedButton(onClick = { onShare(false) }, contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 6.dp, vertical = 2.dp)) {
+                        Text("فایل قرارداد", fontSize = 11.sp)
+                    }
+                }
+            }
+        }
+    }
+}
+
+private fun Boolean?.orFalse(): Boolean = this == true

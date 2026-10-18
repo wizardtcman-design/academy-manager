@@ -36,6 +36,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
@@ -98,7 +99,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val reminderScheduler = com.example.service.ReminderScheduler(application)
 
     val settings: StateFlow<AcademySettings?> = academyRepository.settings
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), AcademySettings())
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), null)
+
+    /** One row per enrollment (a unique index in Room backs this guarantee). */
+    val contractRows: StateFlow<List<com.example.data.model.Contract>> = database.contractDao().getAllContracts()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    private val contractManager by lazy { com.example.service.contract.ContractManager(getApplication()) }
 
     val dashboardStats: StateFlow<DashboardStats> = academyRepository.dashboardStats
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), DashboardStats())
@@ -300,6 +307,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     // --- Enrollment ---
+    /**
+     * Existing enrollments grouped by course, so the enrollment dialog can show
+     * the 6-month cooldown before the user presses save.
+     */
+    val enrollmentsByCourse: StateFlow<Map<String, List<com.example.data.model.Enrollment>>> =
+        academyRepository.allEnrollments
+            .map { list: List<com.example.data.model.Enrollment> -> list.groupBy { it.courseId } }
+            .stateIn(viewModelScope, kotlinx.coroutines.flow.SharingStarted.WhileSubscribed(5000), emptyMap())
+
     fun enrollStudent(
         student: Student,
         course: Course,
@@ -632,6 +648,75 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             } else {
                 onComplete(false)
             }
+        }
+    }
+
+    // --- Digital contracts ---
+    fun issueContractLink(
+        enrollment: com.example.data.model.Enrollment,
+        force: Boolean = false,
+        onResult: (Boolean, String) -> Unit = { _, _ -> }
+    ) {
+        viewModelScope.launch {
+            val res = contractManager.issueLink(
+                enrollment = enrollment,
+                validityDays = com.example.service.contract.ContractManager.LINK_VALIDITY_DAYS,
+                forceRenew = force
+            )
+            onResult(res.ok, res.message)
+            showMessage(res.message)
+        }
+    }
+
+    fun refreshContract(enrollment: com.example.data.model.Enrollment) {
+        viewModelScope.launch {
+            val c = contractManager.refresh(enrollment)
+            showMessage(
+                when {
+                    c == null -> "قراردادی برای این ثبت‌نام پیدا نشد."
+                    c.isSigned -> "قرارداد امضا شده و فایل نهایی ذخیره شد."
+                    else -> "وضعیت قرارداد: ${c.statusFa}"
+                }
+            )
+        }
+    }
+
+    fun revokeContractLink(enrollment: com.example.data.model.Enrollment) {
+        viewModelScope.launch {
+            val res = contractManager.revoke(enrollment)
+            showMessage(res.message)
+        }
+    }
+
+    fun shareContractFile(contract: com.example.data.model.Contract, signed: Boolean) {
+        viewModelScope.launch {
+            val path = if (signed) contract.localSignedPdfPath else contract.localPdfPath
+            val file = java.io.File(path)
+            if (path.isBlank() || !file.exists()) {
+                showMessage("فایل ${if (signed) "امضاشده" else "قرارداد"} موجود نیست؛ ابتدا بروزرسانی کنید.")
+                return@launch
+            }
+            com.example.data.util.PdfDocumentHelper.sharePdfFile(
+                context = getApplication(),
+                pdfFile = file,
+                title = "قرارداد ${contract.studentName}"
+            )
+        }
+    }
+
+    fun openUrlExternally(url: String) {
+        if (url.isBlank()) {
+            showMessage("لینک امضا موجود نیست؛ ابتدا لینک بسازید.")
+            return
+        }
+        try {
+            val intent = android.content.Intent(
+                android.content.Intent.ACTION_VIEW,
+                android.net.Uri.parse(url)
+            ).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+            getApplication<android.app.Application>().startActivity(intent)
+        } catch (e: Exception) {
+            showMessage("باز کردن لینک امضا ممکن نشد.")
         }
     }
 

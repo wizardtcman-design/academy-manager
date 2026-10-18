@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -58,6 +59,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
@@ -65,7 +67,9 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.model.Course
@@ -91,6 +95,7 @@ fun StudentsScreen(
     val students by viewModel.students.collectAsState()
     val courses by viewModel.courses.collectAsState()
     val enrollments by viewModel.enrollments.collectAsState()
+    val contractRows by viewModel.contractRows.collectAsState()
     val installments by viewModel.installments.collectAsState()
     val payments by viewModel.payments.collectAsState()
     val bankAccounts by viewModel.bankAccounts.collectAsState()
@@ -177,37 +182,73 @@ fun StudentsScreen(
                 modifier = Modifier.padding(bottom = 12.dp)
             )
 
-            // Search Bar
-            OutlinedTextField(
-                value = searchQuery,
-                onValueChange = { viewModel.studentSearchQuery.value = it },
-                placeholder = { Text("جستجوی نام، کد، موبایل یا کدملی", fontSize = 12.sp) },
-                leadingIcon = {
-                    Icon(
-                        imageVector = Icons.Default.Search,
-                        contentDescription = "جستجو",
-                        tint = MaterialTheme.colorScheme.primary
-                    )
-                },
-                trailingIcon = {
-                    if (searchQuery.isNotEmpty()) {
-                        IconButton(onClick = { viewModel.studentSearchQuery.value = "" }) {
-                            Icon(Icons.Default.Clear, contentDescription = "پاک کردن")
-                        }
-                    }
-                },
-                singleLine = true,
-                shape = RoundedCornerShape(13.dp),
-                textStyle = androidx.compose.ui.text.TextStyle(fontSize = 13.sp),
+            // Search bar. A custom row instead of OutlinedTextField: the field
+            // locked its own height and the placeholder ended up clipped under
+            // the bottom edge. Here height, vertical centring and line height are
+            // explicit, so the hint always renders fully.
+            Surface(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(46.dp)
+                    .height(44.dp)
                     .testTag("students_search_bar"),
-                colors = OutlinedTextFieldDefaults.colors(
-                    focusedBorderColor = MaterialTheme.colorScheme.primary,
-                    unfocusedBorderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.5f)
+                shape = RoundedCornerShape(13.dp),
+                color = MaterialTheme.colorScheme.surface,
+                border = androidx.compose.foundation.BorderStroke(
+                    1.dp,
+                    MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.9f)
                 )
-            )
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(start = 12.dp, end = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        Icons.Default.Search,
+                        contentDescription = "جستجو",
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    BasicTextField(
+                        value = searchQuery,
+                        onValueChange = { viewModel.studentSearchQuery.value = it },
+                        singleLine = true,
+                        textStyle = TextStyle(
+                            fontSize = 13.sp,
+                            lineHeight = 18.sp,
+                            color = MaterialTheme.colorScheme.onSurface
+                        ),
+                        cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                        modifier = Modifier.weight(1f),
+                        decorationBox = { inner ->
+                            Box(contentAlignment = Alignment.CenterStart) {
+                                if (searchQuery.isEmpty()) {
+                                    Text(
+                                        text = "جستجوی نام، کد، موبایل یا کدملی",
+                                        fontSize = 12.5.sp,
+                                        lineHeight = 17.sp,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                                inner()
+                            }
+                        }
+                    )
+                    if (searchQuery.isNotEmpty()) {
+                        IconButton(onClick = { viewModel.studentSearchQuery.value = "" }) {
+                            Icon(
+                                Icons.Default.Clear,
+                                contentDescription = "پاک کردن",
+                                modifier = Modifier.size(18.dp)
+                            )
+                        }
+                    }
+                }
+            }
 
             Spacer(modifier = Modifier.height(10.dp))
 
@@ -426,7 +467,15 @@ fun StudentsScreen(
             },
             onSendMessage = { st, inst ->
                 studentForMessage = Pair(st, inst)
-            }
+            },
+            contracts = contractRows,
+            onIssueContractLink = { enrollment, force ->
+                viewModel.issueContractLink(enrollment, force)
+            },
+            onRefreshContract = { viewModel.refreshContract(it) },
+            onRevokeContract = { viewModel.revokeContractLink(it) },
+            onShareContractFile = { c, signed -> viewModel.shareContractFile(c, signed) },
+            onOpenSignPage = { c -> viewModel.openUrlExternally(c.signUrl) }
         )
     }
 
@@ -447,6 +496,7 @@ fun StudentsScreen(
         EnrollStudentDialog(
             students = students,
             courses = courses,
+            existingEnrollments = enrollments,
             initialStudent = studentForEnrollment,
             onDismiss = { studentForEnrollment = null },
             onEnroll = { st, crs, startD, disc, count, amounts, firstD, paidNow, nts ->

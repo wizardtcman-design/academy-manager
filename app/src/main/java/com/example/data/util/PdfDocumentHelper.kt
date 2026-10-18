@@ -2,6 +2,8 @@ package com.example.data.util
 
 import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.DashPathEffect
@@ -285,7 +287,10 @@ object PdfDocumentHelper {
         student: Student? = null,
         course: Course? = null,
         installments: List<Installment>,
-        settings: AcademySettings? = null
+        settings: AcademySettings? = null,
+        studentSignature: Bitmap? = null,
+        signedAtShamsi: String = "",
+        verificationLine: String = ""
     ): File {
         val pdfDoc = PdfDocument()
         val pageInfo = PdfDocument.PageInfo.Builder(PAGE_WIDTH, PAGE_HEIGHT, 1).create()
@@ -518,6 +523,41 @@ object PdfDocumentHelper {
         canvas.drawRoundRect(studentStampRect, 8f, 8f, borderPaint)
         canvas.drawText("محل امضا و اثر انگشت هنرجو", PAGE_WIDTH - 44f - stampBoxWidth / 2f, currentY + 20f, stampTitlePaint)
 
+        // Academy seal + manager signature (from settings) go inside the manager box.
+        drawSealAndSignature(
+            canvas = canvas,
+            box = academyStampRect,
+            sealPath = settings?.sealImagePath ?: "",
+            signaturePath = settings?.signatureImagePath ?: "",
+            signerName = settings?.signerName ?: "",
+            signerTitle = settings?.signerTitle ?: ""
+        )
+
+        if (studentSignature != null) {
+            drawSignatureBitmap(canvas, studentSignature, studentStampRect)
+            val signedPaint = Paint().apply {
+                color = Color.rgb(16, 122, 87)
+                textSize = 8f
+                textAlign = Paint.Align.CENTER
+                isAntiAlias = true
+            }
+            canvas.drawText(
+                PersianDateUtil.toPersianDigits("امضاشده دیجیتال در $signedAtShamsi"),
+                studentStampRect.centerX(),
+                studentStampRect.bottom - 6f,
+                signedPaint
+            )
+            if (verificationLine.isNotBlank()) {
+                val verifyPaint = Paint().apply {
+                    color = Color.rgb(100, 116, 139)
+                    textSize = 7.5f
+                    textAlign = Paint.Align.CENTER
+                    isAntiAlias = true
+                }
+                canvas.drawText(verificationLine, PAGE_WIDTH / 2f, currentY + stampBoxHeight + 14f, verifyPaint)
+            }
+        }
+
         // Footer Address
         if (academyAddress.isNotBlank()) {
             val footerPaint = Paint().apply {
@@ -654,6 +694,99 @@ object PdfDocumentHelper {
         } catch (e: Exception) {
             Toast.makeText(context, "فایل در حافظه موقت برنامه ذخیره شد.", Toast.LENGTH_SHORT).show()
             false
+        }
+    }
+
+    /** Integer pixels per PostScript point of the PDF canvas. */
+    private fun density(canvas: Canvas): Float = canvas.density.toFloat().coerceAtLeast(1f)
+
+    /**
+     * Places the academy seal (bottom-left of the box) and the manager
+     * signature (bottom-right) inside the stamp box, keeping the aspect ratio.
+     * A missing image simply leaves the reserved space empty.
+     */
+    private fun drawSealAndSignature(
+        canvas: Canvas,
+        box: RectF,
+        sealPath: String,
+        signaturePath: String,
+        signerName: String,
+        signerTitle: String
+    ) {
+        val k = density(canvas)
+        val top = box.top + 24f
+        val size = box.height() - 26f
+        val seal = loadImage(sealPath)
+        val signature = loadImage(signaturePath)
+        val gap = 4f
+        val slotWidth = if (seal != null && signature != null) (box.width() - 12f - gap) / 2f else box.width() - 12f
+
+        seal?.let {
+            val target = RectF(box.left + 6f, top, box.left + 6f + slotWidth, top + size)
+            drawBitmapFitted(canvas, it, target, alpha = 235)
+        }
+        signature?.let {
+            val left = if (seal != null) box.left + 6f + slotWidth + gap else box.left + 6f
+            val target = RectF(left, top + size * 0.18f, left + slotWidth, top + size)
+            drawBitmapFitted(canvas, it, target, alpha = 245)
+        }
+
+        val namePaint = Paint().apply {
+            color = Color.rgb(51, 65, 85)
+            textSize = 7.5f
+            textAlign = Paint.Align.CENTER
+            isAntiAlias = true
+        }
+        val line = listOf(signerName, signerTitle).filter { it.isNotBlank() }.joinToString(" - ")
+        if (line.isNotBlank()) {
+            canvas.drawText(line, box.centerX(), box.bottom - 6f, namePaint)
+        }
+    }
+
+    private fun drawSignatureBitmap(canvas: Canvas, bitmap: Bitmap, box: RectF) {
+        val target = RectF(box.left + 12f, box.top + 26f, box.right - 12f, box.bottom - 18f)
+        drawBitmapFitted(canvas, bitmap, target, alpha = 255)
+    }
+
+    private fun drawBitmapFitted(canvas: Canvas, bitmap: Bitmap, target: RectF, alpha: Int) {
+        val scale = minOf(target.width() / bitmap.width, target.height() / bitmap.height)
+        val w = bitmap.width * scale
+        val h = bitmap.height * scale
+        val dst = RectF(
+            target.centerX() - w / 2f,
+            target.centerY() - h / 2f,
+            target.centerX() + w / 2f,
+            target.centerY() + h / 2f
+        )
+        val paint = Paint().apply {
+            isAntiAlias = true
+            isFilterBitmap = true
+            this.alpha = alpha
+        }
+        canvas.drawBitmap(bitmap, null, dst, paint)
+    }
+
+    /**
+     * Loads a user image from its stored path, downscaling so a multi-megabyte
+     * phone photo cannot bloat the contract PDF.
+     */
+    fun loadImage(path: String, maxSide: Int = 900): Bitmap? {
+        if (path.isBlank()) return null
+        return try {
+            val file = File(path)
+            if (!file.exists() || file.length() == 0L) return null
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeFile(path, bounds)
+            if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+            var sample = 1
+            while (maxOf(bounds.outWidth, bounds.outHeight) / (sample * 2) >= maxSide) sample *= 2
+            val opts = BitmapFactory.Options().apply {
+                inSampleSize = sample
+                inPreferredConfig = Bitmap.Config.ARGB_8888
+            }
+            BitmapFactory.decodeFile(path, opts)
+        } catch (_: Throwable) {
+            null
         }
     }
 

@@ -189,6 +189,9 @@ fun SettingsScreen(
     var restoreJsonInput by remember { mutableStateOf("") }
     var isRestoring by remember { mutableStateOf(false) }
 
+    // Letterhead (seal + signature) is part of the digital contract settings,
+    // shown on its own sub-tab so it does not add a sixth main tab.
+    var showLetterhead by remember { mutableStateOf(false) }
     var showAddEditBankDialog by remember { mutableStateOf(false) }
     var editingBankAccount by remember { mutableStateOf<BankAccount?>(null) }
     var bankAccountToDelete by remember { mutableStateOf<BankAccount?>(null) }
@@ -292,12 +295,17 @@ fun SettingsScreen(
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
             // 0. Hub: everything that used to be in the "More" tab, grouped.
+            if (showLetterhead) {
+                ContractLetterheadSection(viewModel = viewModel, settings = settings)
+                Spacer(Modifier.height(16.dp))
+            }
             SettingsHubSection(
                 user = user,
                 settings = settings,
                 versionName = com.example.BuildConfig.VERSION_NAME,
                 selectedTab = settingsTab,
                 onSelectTab = { settingsTab = it },
+                onOpenLetterhead = { showLetterhead = !showLetterhead },
                 onNavigateToCourses = onNavigateToCourses,
                 onNavigateToAuditLogs = onNavigateToAuditLogs,
                 onNavigateToReminders = onNavigateToReminders,

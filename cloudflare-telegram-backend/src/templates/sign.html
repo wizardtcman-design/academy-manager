@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="fa" dir="rtl"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>امضای قرارداد</title>
+<style>
+:root{--bg:#f7f7f8;--card:#fff;--line:#e4e4e7;--text:#18181b;--soft:#71717a;--ok:#15803d;--err:#b91c1c}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:15px/1.8 Vazirmatn,Tahoma,system-ui,sans-serif}
+main{max-width:620px;margin:0 auto;padding:16px 14px 130px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:16px;margin-bottom:12px}
+h1{font-size:19px;margin:0 0 6px}
+h2{font-size:15px;margin:18px 0 8px;color:var(--soft)}
+p{margin:0 0 8px;color:#3f3f46}
+.muted{color:var(--soft);font-size:13px}
+.row{display:flex;justify-content:space-between;gap:10px;padding:7px 0;border-bottom:1px dashed var(--line);font-size:14px}
+.row:last-child{border-bottom:0}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th,td{padding:7px 6px;border-bottom:1px solid var(--line);text-align:right}
+th{color:var(--soft);font-weight:600}
+.state{text-align:center;padding:34px 18px}
+.icon{width:56px;height:56px;border-radius:50%;display:grid;place-items:center;margin:0 auto 12px;font-size:26px;font-weight:700}
+.icon.ok{background:#f0fdf4;color:var(--ok)}.icon.err{background:#fef2f2;color:var(--err)}
+label{display:block;font-size:13px;font-weight:600;margin:12px 0 4px}
+input{width:100%;padding:11px 12px;border:1px solid var(--line);border-radius:10px;font:inherit;background:#fff;direction:ltr;text-align:left}
+input:focus{outline:2px solid #a5b4fc;border-color:#a5b4fc}
+.pad{border:2px dashed #c7cad1;border-radius:12px;background:#fff;touch-action:none;width:100%;height:200px;display:block}
+.actions{position:fixed;right:0;left:0;bottom:0;background:rgba(255,255,255,.96);border-top:1px solid var(--line);padding:12px 14px calc(12px + env(safe-area-inset-bottom))}
+.actions .inner{max-width:620px;margin:0 auto;display:flex;gap:8px}
+button{flex:1;border:0;border-radius:12px;padding:13px;font:inherit;font-weight:700;cursor:pointer}
+button.primary{background:#18181b;color:#fff}
+button.ghost{background:#f4f4f5;color:#18181b;border:1px solid var(--line);flex:0 0 auto;padding:13px 16px}
+button:disabled{opacity:.45}
+.err{color:var(--err);font-size:13px;margin-top:8px;font-weight:600}
+.chk{display:flex;gap:8px;align-items:flex-start;font-size:13.5px;margin-top:14px}
+.chk input{width:20px;height:20px;margin:2px 0 0}
+a{color:#1d4ed8}
+</style></head>
+<body>
+<main>
+  <div class="card"><h1 id="academy">در حال بارگذاری…</h1><p class="muted" id="sub"></p></div>
+
+  <div class="card" id="view" hidden>
+    <h2>مشخصات قرارداد</h2>
+    <div id="rows"></div>
+    <h2>اقساط</h2>
+    <div style="overflow-x:auto"><table id="inst"><thead><tr><th>#</th><th>مبلغ</th><th>سررسید</th><th>وضعیت</th></tr></thead><tbody></tbody></table></div>
+    <p style="margin-top:10px"><a id="pdf" href="#" target="_blank" rel="noopener">مشاهده فایل PDF قرارداد</a></p>
+  </div>
+
+  <div class="card" id="verify" hidden>
+    <h2>تأیید هویت</h2>
+    <p class="muted">برای تأیید اینکه شما همان هنرجوی ثبت‌شده هستید، دو مورد زیر باید با سوابق آموزشگاه یکسان باشد. این تطبیق به‌تنهایی احراز هویت رسمی محسوب نمی‌شود.</p>
+    <label>شماره تماس ثبت‌شده<span class="muted" id="phoneHint"></span></label>
+    <input id="phone" inputmode="numeric" autocomplete="tel" placeholder="09xxxxxxxxx">
+    <label>کد ملی<span class="muted" id="natHint"></span></label>
+    <input id="national" inputmode="numeric" autocomplete="off" placeholder="۱۰ رقم">
+  </div>
+
+  <div class="card" id="signCard" hidden>
+    <h2>امضای شما</h2>
+    <p class="muted">با انگشت در کادر زیر امضا کنید.</p>
+    <canvas class="pad" id="pad"></canvas>
+    <label class="chk"><input type="checkbox" id="accept">
+      <span>مفاد این قرارداد را خوانده‌ام و شهریه، اقساط و شرایط آن را می‌پذیرم.</span></label>
+  </div>
+
+  <div class="err card" id="err" hidden style="font-weight:600"></div>
+
+  <div class="actions"><div class="inner">
+    <button class="ghost" id="clear" type="button" hidden>پاک کردن</button>
+    <button class="primary" id="submit" type="button" disabled>ثبت امضا و پایان</button>
+  </div></div>
+</main>
+<script>
+(function () {
+  var TOKEN = window.__SIGN_TOKEN__ || '';
+  function $(id) { return document.getElementById(id); }
+  function fmt(n) { try { return new Intl.NumberFormat('fa-IR').format(n || 0); } catch (e) { return String(n || 0); } }
+  var pad = $('pad'), ctx = pad.getContext('2d'), drawing = false, dirty = false, data = null;
+
+  function setupCanvas() {
+    var r = pad.getBoundingClientRect(), ratio = window.devicePixelRatio || 1;
+    pad.width = Math.max(1, Math.floor(r.width * ratio));
+    pad.height = Math.max(1, Math.floor(r.height * ratio));
+    ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+    ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, r.width, r.height);
+    ctx.lineWidth = 3; ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.strokeStyle = '#111';
+  }
+  function pt(e) {
+    var r = pad.getBoundingClientRect();
+    var t = (e.touches && e.touches[0]) || e;
+    return { x: t.clientX - r.left, y: t.clientY - r.top };
+  }
+  function start(e) { if (e.cancelable) e.preventDefault(); drawing = true; var p = pt(e); ctx.beginPath(); ctx.moveTo(p.x, p.y); }
+  function move(e) { if (!drawing) return; if (e.cancelable) e.preventDefault(); var p = pt(e); ctx.lineTo(p.x, p.y); ctx.stroke(); dirty = true; refresh(); }
+  function end() { drawing = false; }
+  pad.addEventListener('pointerdown', start);
+  pad.addEventListener('pointermove', move);
+  window.addEventListener('pointerup', end);
+  pad.addEventListener('touchstart', start, { passive: false });
+  pad.addEventListener('touchmove', move, { passive: false });
+  pad.addEventListener('touchend', end);
+
+  function refresh() {
+    var ok = dirty && $('accept').checked && $('phone').value.trim() && $('national').value.trim();
+    $('submit').disabled = !ok;
+  }
+  $('phone').addEventListener('input', refresh);
+  $('national').addEventListener('input', refresh);
+  $('accept').addEventListener('change', refresh);
+  $('clear').onclick = function () {
+    setupCanvas(); dirty = false; refresh();
+  };
+
+  function showError(msg) { var b = $('err'); b.textContent = msg; b.hidden = !msg; }
+
+  function load() {
+    fetch('/sign/' + encodeURIComponent(TOKEN) + '/open', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}', cache: 'no-store' })
+      .then(function (r) { return r.json(); })
+      .then(function (json) {
+        if (!json.success) { $('academy').textContent = 'امکان نمایش قرارداد نیست'; $('sub').textContent = json.message || ''; return; }
+        data = json.data;
+        $('academy').textContent = data.academyName;
+        $('sub').textContent = 'قرارداد شماره ' + data.contractNumber + ' · ' + data.studentName;
+        var rows = [
+          ['دوره', data.courseTitle], ['هنرجو', data.studentName],
+          ['شروع دوره', data.startDate], ['پایان دوره', data.endDate],
+          ['شهریه', fmt(data.finalFee) + ' ' + data.currency],
+          ['تعداد اقساط', fmt(data.installmentCount)],
+          ['شماره ثبت‌شده', data.phoneMask], ['کد ملی ثبت‌شده', data.nationalMask]
+        ];
+        $('rows').innerHTML = rows.map(function (r) {
+          return '<div class="row"><span>' + r[0] + '</span><b>' + (r[1] || '—') + '</b></div>';
+        }).join('');
+        var body = $('inst').querySelector('tbody');
+        body.innerHTML = (data.installments || []).map(function (i) {
+          return '<tr><td>' + fmt(i.number) + '</td><td>' + fmt(i.amount) + '</td><td>' + i.dueDate + '</td><td>' + (i.status === 'PAID' ? 'پرداخت‌شده' : 'باز') + '</td></tr>';
+        }).join('');
+        $('pdf').href = data.pdfUrl;
+        $('phoneHint').textContent = ' (' + data.phoneMask + ')';
+        $('natHint').textContent = ' (' + data.nationalMask + ')';
+        $('view').hidden = false; $('verify').hidden = false; $('signCard').hidden = false; $('clear').hidden = false;
+        setupCanvas(); refresh();
+      })
+      .catch(function () {
+        $('academy').textContent = 'خطا در ارتباط';
+        $('sub').textContent = 'اینترنت را بررسی کنید و صفحه را دوباره باز کنید.';
+      });
+  }
+
+  $('submit').onclick = function () {
+    showError('');
+    $('submit').disabled = true; $('submit').textContent = 'در حال ثبت…';
+    fetch('/sign/' + encodeURIComponent(TOKEN) + '/sign', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        phone: $('phone').value, nationalCode: $('national').value,
+        accepted: $('accept').checked, signatureDataUrl: pad.toDataURL('image/png')
+      })
+    }).then(function (r) { return r.json(); }).then(function (json) {
+      if (json.success) {
+        document.querySelector('main').innerHTML =
+          '<div class="card state"><div class="icon ok">✓</div><h1>قرارداد امضا شد</h1><p>' +
+          json.data.signedAtShamsi + '</p><p class="muted">نسخه امضاشده در آموزشگاه نگهداری می‌شود. این صفحه را می‌توانید ببندید.</p></div>';
+        document.querySelector('.actions').hidden = true;
+      } else {
+        showError(json.message || 'ثبت امضا انجام نشد.');
+        $('submit').textContent = 'ثبت امضا و پایان'; refresh();
+      }
+    }).catch(function () {
+      showError('ارتباط برقرار نشد. دوباره تلاش کنید.');
+      $('submit').textContent = 'ثبت امضا و پایان'; refresh();
+    });
+  };
+
+  load();
+})();
+</script>
+</body></html>

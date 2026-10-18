@@ -20,6 +20,12 @@ interface InstallmentDao {
     @Query("SELECT * FROM installments WHERE enrollmentId = :enrollmentId ORDER BY installmentNumber ASC")
     fun getInstallmentsForEnrollment(enrollmentId: String): Flow<List<Installment>>
 
+    @Query("SELECT * FROM installments WHERE enrollmentId = :enrollmentId ORDER BY installmentNumber")
+    suspend fun getInstallmentsForEnrollmentDirect(enrollmentId: String): List<Installment>
+
+    @Query("SELECT * FROM installments WHERE studentId = :studentId ORDER BY dueDateEpoch")
+    suspend fun getInstallmentsForStudentDirect(studentId: String): List<Installment>
+
     @Query("SELECT * FROM installments WHERE id = :id LIMIT 1")
     suspend fun getInstallmentById(id: String): Installment?
 
