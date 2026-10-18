@@ -468,8 +468,12 @@ fun DashboardScreen(
                     firstInstallmentDateShamsi = firstD,
                     firstInstallmentPaidNow = paidNow,
                     notes = nts
-                ) { success, _ ->
-                    if (success) showEnrollDialog = false
+                ) { success, error ->
+                    if (success) {
+                        showEnrollDialog = false
+                    } else {
+                        viewModel.showMessage(error ?: "ثبت‌نام ذخیره نشد. اطلاعات را بررسی کنید.")
+                    }
                 }
             }
         )

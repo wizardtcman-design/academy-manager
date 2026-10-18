@@ -141,8 +141,14 @@ fun EnrollStudentDialog(
         onConfirm = {
             val st = selectedStudent
             val crs = selectedCourse
-            if (st == null || crs == null) {
+            if (students.isEmpty()) {
+                blockMessage = "هیچ هنرجویی ثبت نشده؛ اول از «هنرجویان» یک هنرجو اضافه کنید."
+            } else if (courses.isEmpty()) {
+                blockMessage = "هیچ دوره‌ای تعریف نشده؛ اول دوره را بسازید."
+            } else if (st == null || crs == null) {
                 blockMessage = "اول هنرجو و دوره را انتخاب کنید."
+            } else if (finalFee <= 0) {
+                blockMessage = "شهریهٔ دوره صفر است؛ اول شهریهٔ دوره را در تنظیمات دوره اصلاح کنید."
             } else if (!isSumValid) {
                 blockMessage = "جمع اقساط با شهریهٔ قابل پرداخت برابر نیست؛ یکی از اقساط را اصلاح کنید."
             } else {

@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
@@ -100,6 +101,7 @@ fun AppFormDialog(
                     // every phone, even with the keyboard open.
                     Modifier
                         .fillMaxHeight()
+                        .imePadding()
                         .padding(vertical = 12.dp)
                 )
                 .clip(RoundedCornerShape(26.dp)),
@@ -165,10 +167,13 @@ fun AppFormDialog(
                     }
                 }
 
-                // Scrollable body
+                // Scrollable body. weight(1f) + fill=false caps it between the
+                // header and the footer: without it the content grew to its full
+                // height and pushed the footer (انصراف / ثبت) off the screen.
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
+                        .weight(1f, fill = false)
                         .verticalScroll(rememberScrollState())
                         .padding(horizontal = 16.dp, vertical = 6.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp),

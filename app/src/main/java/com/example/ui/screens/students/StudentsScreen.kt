@@ -420,8 +420,12 @@ fun StudentsScreen(
                     firstInstallmentDateShamsi = firstD,
                     firstInstallmentPaidNow = paidNow,
                     notes = nts
-                ) { success, _ ->
-                    if (success) studentForEnrollment = null
+                ) { success, error ->
+                    if (success) {
+                        studentForEnrollment = null
+                    } else {
+                        viewModel.showMessage(error ?: "ثبت‌نام ذخیره نشد. اطلاعات را بررسی کنید.")
+                    }
                 }
             }
         )
