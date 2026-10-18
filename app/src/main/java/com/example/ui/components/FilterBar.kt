@@ -45,6 +45,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 
 /**
  * A compact filter strip that always fits a phone screen in one row:
@@ -89,19 +90,31 @@ fun FilterBar(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(6.dp)
     ) {
-        Row(
+        // All primary options share the width equally, so the whole row always
+        // stays inside one frame and nothing is clipped off the edge.
+        Surface(
             modifier = Modifier
                 .weight(1f)
-                .horizontalScroll(rememberScrollState()),
-            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                .height(34.dp),
+            shape = RoundedCornerShape(12.dp),
+            color = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.55f)
         ) {
-            options.forEach { option ->
-                FilterChipPro(
-                    label = option.label,
-                    selected = option.key == selectedKey,
-                    icon = option.icon,
-                    onClick = { onSelect(option.key) }
-                )
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(3.dp),
+                horizontalArrangement = Arrangement.spacedBy(2.dp)
+            ) {
+                options.forEach { option ->
+                    FilterChipPro(
+                        label = option.label,
+                        selected = option.key == selectedKey,
+                        icon = option.icon,
+                        onClick = { onSelect(option.key) },
+                        compact = true,
+                        modifier = Modifier.weight(1f)
+                    )
+                }
             }
         }
         if (hasMore) {
@@ -244,7 +257,12 @@ fun FilterChipPro(
             .clip(RoundedCornerShape(11.dp))
             .background(if (selected) gradient else Brush.linearGradient(listOf(bgColor, bgColor)))
             .clickable(interactionSource = interaction, indication = null, onClick = onClick)
-            .padding(horizontal = if (compact) 9.dp else 11.dp, vertical = 7.dp)
+            .padding(
+                start = if (compact) 7.dp else 9.dp,
+                end = if (compact) 7.dp else 9.dp,
+                top = 5.dp,
+                bottom = 5.dp
+            )
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             if (icon != null) {
@@ -259,9 +277,11 @@ fun FilterChipPro(
             Text(
                 text = label,
                 style = MaterialTheme.typography.labelMedium,
+                fontSize = 11.5.sp,
                 fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
                 color = fgColor,
-                maxLines = 1
+                maxLines = 1,
+                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
             )
         }
     }

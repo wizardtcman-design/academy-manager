@@ -67,6 +67,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.example.data.model.Course
 import com.example.data.model.Enrollment
 import com.example.data.model.Installment
@@ -117,9 +118,9 @@ fun StudentsScreen(
         com.example.ui.components.FilterOption("ALL", "همه"),
         com.example.ui.components.FilterOption("ACTIVE", "فعال"),
         com.example.ui.components.FilterOption("DEBTOR", "بدهکار"),
-        com.example.ui.components.FilterOption("SETTLED", "تسویه کامل"),
-        com.example.ui.components.FilterOption("FINISHED", "پایان دوره"),
-        com.example.ui.components.FilterOption("WITHDRAWN", "انصراف داده")
+        com.example.ui.components.FilterOption("SETTLED", "تسویه"),
+        com.example.ui.components.FilterOption("FINISHED", "پایان"),
+        com.example.ui.components.FilterOption("WITHDRAWN", "انصراف")
     )
     val filterGroups = listOf(
         com.example.ui.components.FilterGroup("وضعیت مالی", listOf(filterOptions[0], filterOptions[2], filterOptions[3])),
@@ -180,7 +181,7 @@ fun StudentsScreen(
             OutlinedTextField(
                 value = searchQuery,
                 onValueChange = { viewModel.studentSearchQuery.value = it },
-                placeholder = { Text("جستجوی نام، کدهنرجویی، موبایل یا کدملی...") },
+                placeholder = { Text("جستجوی نام، کد، موبایل یا کدملی", fontSize = 12.sp) },
                 leadingIcon = {
                     Icon(
                         imageVector = Icons.Default.Search,
@@ -196,9 +197,11 @@ fun StudentsScreen(
                     }
                 },
                 singleLine = true,
-                shape = RoundedCornerShape(16.dp),
+                shape = RoundedCornerShape(13.dp),
+                textStyle = androidx.compose.ui.text.TextStyle(fontSize = 13.sp),
                 modifier = Modifier
                     .fillMaxWidth()
+                    .height(46.dp)
                     .testTag("students_search_bar"),
                 colors = OutlinedTextFieldDefaults.colors(
                     focusedBorderColor = MaterialTheme.colorScheme.primary,
@@ -213,7 +216,8 @@ fun StudentsScreen(
                 options = filterOptions,
                 selectedKey = statusFilter,
                 onSelect = { statusFilter = it },
-                groups = filterGroups
+                groups = filterGroups,
+                title = "فیلتر"
             )
 
             Spacer(modifier = Modifier.height(10.dp))
@@ -631,30 +635,37 @@ private fun StudentItemCard(
                             fontWeight = FontWeight.Bold,
                             color = MaterialTheme.colorScheme.onSurface
                         )
-                        if (student.studentCode.isNotBlank()) {
-                            Text(
-                                text = "(${student.studentCode})",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
                     }
 
-                    Spacer(modifier = Modifier.height(2.dp))
+                    Spacer(modifier = Modifier.height(3.dp))
 
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Icon(
                             imageVector = Icons.Default.Phone,
                             contentDescription = null,
                             tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(13.dp)
+                            modifier = Modifier.size(12.dp)
                         )
                         Spacer(modifier = Modifier.width(4.dp))
                         Text(
                             text = PersianDateUtil.toPersianDigits(student.phone),
                             style = MaterialTheme.typography.bodySmall,
+                            fontSize = 11.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
+                        if (student.studentCode.isNotBlank()) {
+                            Text(
+                                text = " · ",
+                                fontSize = 10.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f)
+                            )
+                            Text(
+                                text = PersianDateUtil.toPersianDigits(student.studentCode),
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Medium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f)
+                            )
+                        }
                     }
                 }
 
