@@ -69,11 +69,6 @@ jobs:
           cp app/build/outputs/apk/debug/app-debug.apk \
              "out/AcademyManager-v${{ steps.ver.outputs.name }}-${{ github.run_number }}.apk"
 
-      - uses: actions/upload-artifact@v4
-        with:
-          name: AcademyManager-APK
-          path: out/*.apk
-
       - name: Publish release with APK
         uses: softprops/action-gh-release@v2
         with:
