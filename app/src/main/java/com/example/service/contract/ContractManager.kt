@@ -126,6 +126,7 @@ class ContractManager(private val context: Context) {
     ): IssueResult = withContext(Dispatchers.IO) {
         val settings = db.settingsDao().getSettingsDirect()
         val client = ContractCloudClient.fromSettings(settings)
+        val cfg = settings
         if (!client.isConfigured()) {
             return@withContext IssueResult(
                 ok = false,
@@ -171,7 +172,11 @@ class ContractManager(private val context: Context) {
             studentId = enrollment.studentId,
             enrollment = JSONObject().put("info", payload).put("student", studentObj),
             pdf = pdf,
-            forceRenew = forceRenew || contract.expiresAtEpoch > 0
+            forceRenew = forceRenew || contract.expiresAtEpoch > 0,
+            sealFile = cfg?.sealImagePath?.takeIf { it.isNotBlank() }?.let(::File),
+            signatureFile = cfg?.signatureImagePath?.takeIf { it.isNotBlank() }?.let(::File),
+            signerName = cfg?.signerName.orEmpty(),
+            signerTitle = cfg?.signerTitle.orEmpty()
         )
 
         if (!res.ok || res.data == null) {

@@ -377,9 +377,11 @@ export interface SignedLayer {
     imageWidth: number;
     imageHeight: number;
     sealJpeg?: Uint8Array;
+    sealPng?: Uint8Array;
     sealWidth?: number;
     sealHeight?: number;
     managerSignatureJpeg?: Uint8Array;
+    managerSignaturePng?: Uint8Array;
     managerSignatureWidth?: number;
     managerSignatureHeight?: number;
     lines: string[];
@@ -409,6 +411,10 @@ export function appendSignatureLayer(original: Uint8Array, layer: SignedLayer): 
     const sigObj = base;              // signature image XObject
     const contentObj = base + 1;      // signature content stream
     const sigMaskObj = base + 4;      // alpha mask for the signature image
+    const sealSrc = layer.sealPng || layer.sealJpeg;
+    const msigSrc = layer.managerSignaturePng || layer.managerSignatureJpeg;
+    const sealObj = sealSrc ? base + 2 : 0;
+    const msigObj = msigSrc ? base + 3 : 0;
     const pageObjNum = page.pageRef ? Number(page.pageRef.split(' ')[0]) : 0;
     const pageBody = pageObjNum ? objects.get(pageObjNum)?.body ?? '' : '';
 
@@ -425,11 +431,19 @@ export function appendSignatureLayer(original: Uint8Array, layer: SignedLayer): 
     ops += `0.58 0.63 0.70 RG 0.8 w ${boxX} ${boxY} ${w - margin * 2} ${boxH} re S\n`;
     ops += `q ${boxX + 10} ${boxY + 34} 150 100 re W n `;
     ops += layer.imageWidth > 0 && layer.imageHeight > 0 ? `q 150 0 0 100 ${boxX + 10} ${boxY + 34} cm /Sig Do Q Q\n` : 'Q\n';
-    if (layer.sealJpeg) {
-        ops += `q 76 0 0 76 ${w - margin - 92} ${boxY + 40} cm /Seal Do Q\n`;
+    // Seal keeps its own aspect ratio; the manager signature sits left of it.
+    if (sealSrc) {
+        const sw = layer.sealWidth || 1, sh = layer.sealHeight || 1;
+        const target = 78;
+        const dw = sw >= sh ? target : (target * sw) / sh;
+        const dh = sh >= sw ? target : (target * sh) / sw;
+        ops += `q ${dw.toFixed(2)} 0 0 ${dh.toFixed(2)} ${(w - margin - dw - 12).toFixed(2)} ${(boxY + boxH - dh - 10).toFixed(2)} cm /Seal Do Q\n`;
     }
-    if (layer.managerSignatureJpeg) {
-        ops += `q 96 0 0 60 ${w - margin - 200} ${boxY + 36} cm /MSig Do Q\n`;
+    if (msigSrc) {
+        const sw = layer.managerSignatureWidth || 1, sh = layer.managerSignatureHeight || 1;
+        const dw = Math.min(96, (52 * sw) / sh);
+        const dh = (dw * sh) / sw;
+        ops += `q ${dw.toFixed(2)} 0 0 ${dh.toFixed(2)} ${(w - margin - 105).toFixed(2)} ${(boxY + 26).toFixed(2)} cm /MSig Do Q\n`;
     }
     ops += `Q\n`;
 
@@ -452,7 +466,7 @@ export function appendSignatureLayer(original: Uint8Array, layer: SignedLayer): 
         let body = obj.body;
         if (num === pageObjNum) {
             // register the new XObjects in the page resources
-            const extra = `${layer.imageWidth > 0 ? ` /Sig ${sigObj} 0 R /SigMask ${sigMaskObj} 0 R` : ''}${layer.sealJpeg ? ` /Seal ${base + 2} 0 R` : ''}${layer.managerSignatureJpeg ? ` /MSig ${base + 3} 0 R` : ''}`.trim();
+            const extra = `${layer.imageWidth > 0 ? ` /Sig ${sigObj} 0 R /SigMask ${sigMaskObj} 0 R` : ''}${sealSrc ? ` /Seal ${base + 2} 0 R` : ''}${msigSrc ? ` /MSig ${base + 3} 0 R` : ''}`.trim();
             if (!extra) {
                 // no images this time
             } else if (/\/XObject\s*<<[^>]*>>/.test(body)) {
@@ -493,12 +507,27 @@ export function appendSignatureLayer(original: Uint8Array, layer: SignedLayer): 
         imageBodies.set(sigMaskObj, { header: maskHeader, payload: decoded.mask });
     }
     objectsOut.push(`${contentObj} 0 obj\n<< /Length ${ops.length} >>\nstream\n${ops}endstream\nendobj`);
-    const sealObj = layer.sealJpeg ? base + 2 : 0;
-    const msigObj = layer.managerSignatureJpeg ? base + 3 : 0;
-    if (layer.sealJpeg) {
+    // A PNG seal/signature is flattened to RGB first: RGB has no alpha channel,
+    // so the soft mask keeps the transparent background from painting white.
+    const flattenPng = (bytes: Uint8Array, w: number, h: number) => {
+        const px = pngToRgb(bytes);
+        if (!px || !w || !h) return null;
+        return { rgb: px.rgb, mask: px.mask, header: `<< /Type /XObject /Subtype /Image /Width ${w} /Height ${h} /ColorSpace /DeviceRGB /BitsPerComponent 8 /SMask ${base + 5} 0 R /Filter /FlateDecode /Length ${px.rgb.length} >>`, maskHeader: `<< /Type /XObject /Subtype /Image /Width ${w} /Height ${h} /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /FlateDecode /Length ${px.mask.length} >>` };
+    };
+    const sealIsPng = Boolean(layer.sealPng);
+    const msigIsPng = Boolean(layer.managerSignaturePng);
+    const flatSeal = sealIsPng && sealSrc ? flattenPng(sealSrc, layer.sealWidth || 0, layer.sealHeight || 0) : null;
+    const flatMsig = msigIsPng && msigSrc ? flattenPng(msigSrc, layer.managerSignatureWidth || 0, layer.managerSignatureHeight || 0) : null;
+    if (flatSeal && sealSrc) {
+        imageBodies.set(sealObj, { header: flatSeal.header, payload: flatSeal.rgb });
+        imageBodies.set(sealObj + 3, { header: flatSeal.maskHeader, payload: flatSeal.mask });
+    } else if (layer.sealJpeg) {
         imageBodies.set(sealObj, { header: imgHeader(layer.sealJpeg, layer.sealWidth || 1, layer.sealHeight || 1), payload: layer.sealJpeg });
     }
-    if (layer.managerSignatureJpeg) {
+    if (flatMsig && msigSrc) {
+        imageBodies.set(msigObj, { header: flatMsig.header, payload: flatMsig.rgb });
+        imageBodies.set(msigObj + 3, { header: flatMsig.maskHeader, payload: flatMsig.mask });
+    } else if (layer.managerSignatureJpeg) {
         imageBodies.set(msigObj, {
             header: imgHeader(layer.managerSignatureJpeg, layer.managerSignatureWidth || 1, layer.managerSignatureHeight || 1),
             payload: layer.managerSignatureJpeg
@@ -578,6 +607,66 @@ export interface SignatureImage {
 }
 
 export function pngSignatureImage(png: Uint8Array): SignatureImage | null {
+    const dec = decodePngRgba(png);
+    if (!dec) return null;
+    const { width, height, rgba: out } = dec;
+
+    const INK = 40, PAPER = 255;
+    const ink = new Uint8Array(height * width);
+    const mask = new Uint8Array(height * width);
+    for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+            const i = (y * width + x) * 4;
+            // Ink is where the canvas is not white, whatever the alpha channel says.
+            const luma = (out[i] * 299 + out[i + 1] * 587 + out[i + 2] * 114) / 1000;
+            const inked = luma < 245 ? Math.min(out[i + 3], 255 - luma) : 0;
+            ink[y * width + x] = inked > 8 ? INK : PAPER;
+            mask[y * width + x] = inked;
+        }
+    }
+    return { alpha: deflateStore(ink), mask: deflateStore(mask) };
+}
+
+/** Flat RGB + alpha mask from an RGBA canvas PNG (seal / manager signature). */
+function pngToRgb(png: Uint8Array): { rgb: Uint8Array; mask: Uint8Array } | null {
+    const dec = decodePngRgba(png);
+    if (!dec) return null;
+    const { width, height, rgba } = dec;
+    const rgb = new Uint8Array(height * width * 3);
+    const mask = new Uint8Array(height * width);
+    for (let i = 0, j = 0; i < width * height; i++, j += 4) {
+        rgb[i * 3] = rgba[j];
+        rgb[i * 3 + 1] = rgba[j + 1];
+        rgb[i * 3 + 2] = rgba[j + 2];
+        mask[i] = rgba[j + 3];
+    }
+    return { rgb: deflateStore(rgb), mask: deflateStore(mask) };
+}
+
+/** zlib wrapper around stored (uncompressed) deflate blocks. */
+function deflateStore(data: Uint8Array): Uint8Array {
+    const blocks = Math.max(1, Math.ceil(data.length / 65535));
+    const out = new Uint8Array(2 + blocks * 5 + data.length + 4);
+    let p = 0;
+    out[p++] = 0x78; out[p++] = 0x01;
+    for (let b = 0; b < blocks; b++) {
+        const start = b * 65535;
+        const len = Math.min(65535, data.length - start);
+        out[p++] = b === blocks - 1 ? 1 : 0;
+        out[p++] = len & 0xff; out[p++] = (len >> 8) & 0xff;
+        out[p++] = (~len) & 0xff; out[p++] = ((~len) >> 8) & 0xff;
+        out.set(data.subarray(start, start + len), p); p += len;
+    }
+    // adler32
+    let a = 1, bsum = 0;
+    for (const byte of data) { a = (a + byte) % 65521; bsum = (bsum + a) % 65521; }
+    const adler = ((bsum << 16) | a) >>> 0;
+    out[p++] = (adler >>> 24) & 0xff; out[p++] = (adler >>> 16) & 0xff;
+    out[p++] = (adler >>> 8) & 0xff; out[p++] = adler & 0xff;
+    return out.subarray(0, p);
+}
+
+function decodePngRgba(png: Uint8Array): { width: number; height: number; rgba: Uint8Array } | null {
     const view = new DataView(png.buffer, png.byteOffset, png.byteLength);
     let pos = 8;
     let width = 0, height = 0, bitDepth = 0, colorType = 0;
@@ -635,44 +724,7 @@ export function pngSignatureImage(png: Uint8Array): SignatureImage | null {
         out.set(cur, y * stride);
         prev = cur;
     }
-
-    const INK = 40, PAPER = 255;
-    const ink = new Uint8Array(height * width);
-    const mask = new Uint8Array(height * width);
-    for (let y = 0; y < height; y++) {
-        for (let x = 0; x < width; x++) {
-            const i = (y * width + x) * 4;
-            // Ink is where the canvas is not white, whatever the alpha channel says.
-            const luma = (out[i] * 299 + out[i + 1] * 587 + out[i + 2] * 114) / 1000;
-            const inked = luma < 245 ? Math.min(out[i + 3], 255 - luma) : 0;
-            ink[y * width + x] = inked > 8 ? INK : PAPER;
-            mask[y * width + x] = inked;
-        }
-    }
-    return { alpha: deflateStore(ink), mask: deflateStore(mask) };
-}
-
-/** zlib wrapper around stored (uncompressed) deflate blocks. */
-function deflateStore(data: Uint8Array): Uint8Array {
-    const blocks = Math.max(1, Math.ceil(data.length / 65535));
-    const out = new Uint8Array(2 + blocks * 5 + data.length + 4);
-    let p = 0;
-    out[p++] = 0x78; out[p++] = 0x01;
-    for (let b = 0; b < blocks; b++) {
-        const start = b * 65535;
-        const len = Math.min(65535, data.length - start);
-        out[p++] = b === blocks - 1 ? 1 : 0;
-        out[p++] = len & 0xff; out[p++] = (len >> 8) & 0xff;
-        out[p++] = (~len) & 0xff; out[p++] = ((~len) >> 8) & 0xff;
-        out.set(data.subarray(start, start + len), p); p += len;
-    }
-    // adler32
-    let a = 1, bsum = 0;
-    for (const byte of data) { a = (a + byte) % 65521; bsum = (bsum + a) % 65521; }
-    const adler = ((bsum << 16) | a) >>> 0;
-    out[p++] = (adler >>> 24) & 0xff; out[p++] = (adler >>> 16) & 0xff;
-    out[p++] = (adler >>> 8) & 0xff; out[p++] = adler & 0xff;
-    return out.subarray(0, p);
+    return { width, height, rgba: out };
 }
 
 const LEN_BASE = [3,4,5,6,7,8,9,10,11,13,15,17,19,23,27,31,35,43,51,59,67,83,99,115,131,163,195,227,258];

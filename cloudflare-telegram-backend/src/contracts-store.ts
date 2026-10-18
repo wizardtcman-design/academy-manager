@@ -23,6 +23,15 @@ export interface ContractRow {
     signed_at_epoch: number;
     signed_at_shamsi: string;
     signer_name: string;
+    signer_title: string;
+    seal_key: string;
+    seal_sha256: string;
+    seal_width: number;
+    seal_height: number;
+    sig_key: string;
+    sig_sha256: string;
+    sig_width: number;
+    sig_height: number;
     pdf_key: string;
     signed_pdf_key: string;
     pdf_sha256: string;
@@ -108,6 +117,9 @@ export class ContractStore {
         verifyHash: string;
         signerName: string;
         rotateToken: boolean;
+        signerTitle?: string;
+        seal?: { key: string; sha256: string; width: number; height: number };
+        signature?: { key: string; sha256: string; width: number; height: number };
     }): Promise<{ row: ContractRow; created: boolean; signerName: string }> {
         const now = Date.now();
         const existing = await this.findByEnrollment(input.academyId, input.enrollmentId);
@@ -116,12 +128,17 @@ export class ContractStore {
             await this.env.DB!.prepare(
                 `INSERT INTO contracts (id, academy_id, enrollment_id, student_id, student_name, course_title,
                     status, token_hash, expires_at_epoch, issued_at_epoch, enrollment_json, pdf_key, pdf_sha256,
-                    phone_mask, national_mask, verify_hash, created_at_epoch, updated_at_epoch)
-                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+                    phone_mask, national_mask, verify_hash, created_at_epoch, updated_at_epoch,
+                    signer_name, signer_title, seal_key, seal_sha256, seal_width, seal_height,
+                    sig_key, sig_sha256, sig_width, sig_height)
+                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
             ).bind(
                 id, input.academyId, input.enrollmentId, input.studentId, input.studentName, input.courseTitle,
                 'ISSUED', input.tokenHash, input.expiresAt, now, input.enrollmentJson, input.pdfKey, input.pdfSha256,
-                input.phoneMask, input.nationalMask, input.verifyHash, now, now
+                input.phoneMask, input.nationalMask, input.verifyHash, now, now,
+                input.signerName || '', input.signerTitle || '',
+                input.seal?.key || '', input.seal?.sha256 || '', input.seal?.width || 0, input.seal?.height || 0,
+                input.signature?.key || '', input.signature?.sha256 || '', input.signature?.width || 0, input.signature?.height || 0
             ).run();
             const row = await this.findById(input.academyId, id);
             return { row: row!, created: true, signerName: input.signerName };
@@ -139,12 +156,19 @@ export class ContractStore {
                 student_name = ?, course_title = ?, status = 'ISSUED', token_hash = ?, expires_at_epoch = ?,
                 issued_at_epoch = ?, enrollment_json = ?, pdf_key = ?, pdf_sha256 = ?,
                 phone_mask = ?, national_mask = ?, verify_hash = ?, rejected_attempts = 0,
-                updated_at_epoch = ?
+                updated_at_epoch = ?,
+                signer_name = ?, signer_title = ?,
+                seal_key = ?, seal_sha256 = ?, seal_width = ?, seal_height = ?,
+                sig_key = ?, sig_sha256 = ?, sig_width = ?, sig_height = ?
              WHERE academy_id = ? AND id = ?`
         ).bind(
             input.studentName, input.courseTitle, newTokenHash, input.expiresAt, now,
             input.enrollmentJson, input.pdfKey, input.pdfSha256, input.phoneMask, input.nationalMask,
-            input.verifyHash, now, input.academyId, existing.id
+            input.verifyHash, now,
+            input.signerName || '', input.signerTitle || '',
+            input.seal?.key || '', input.seal?.sha256 || '', input.seal?.width || 0, input.seal?.height || 0,
+            input.signature?.key || '', input.signature?.sha256 || '', input.signature?.width || 0, input.signature?.height || 0,
+            input.academyId, existing.id
         ).run();
         const row = await this.findById(input.academyId, existing.id);
         return { row: row!, created: false, signerName: input.signerName };

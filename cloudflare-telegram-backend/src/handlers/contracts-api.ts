@@ -12,6 +12,7 @@ import { ContractStore } from '../contracts-store';
 import { sha256Hex, maskPhone, maskNational } from '../crypto';
 
 const MAX_PDF_BYTES = 6 * 1024 * 1024;
+const MAX_SEAL_BYTES = 512 * 1024;
 
 function json(data: unknown, status = 200): Response {
     return new Response(JSON.stringify(data), {
@@ -128,6 +129,30 @@ export async function handleContractsApi(request: Request, env: Env, url: URL): 
         const verifySeed = `${student.phone || ''}|${student.nationalCode || ''}|${enrollmentId}`;
         const verifyHash = await sha256Hex(verifySeed);
 
+        // Optional academy seal + manager signature, drawn on the signed PDF.
+        const storeImage = async (part: any, slug: string) => {
+            if (!part || typeof (part as any).arrayBuffer !== 'function') return undefined;
+            const bytes = new Uint8Array(await (part as any).arrayBuffer());
+            if (!bytes.length) return undefined;
+            const png = bytes[0] === 0x89 && bytes[1] === 0x50;
+            const jpeg = bytes[0] === 0xff && bytes[1] === 0xd8;
+            if (!png && !jpeg) return undefined;
+            if (bytes.length > MAX_SEAL_BYTES) return undefined;
+            const dims = imageDims(bytes);
+            const sha = await sha256Hex(new TextDecoder('latin1').decode(bytes));
+            const key = `contracts/${academyId}/${enrollmentId}/${slug}.${png ? 'png' : 'jpg'}`;
+            await putContractFile(env, key, bytes, sha, academyId);
+            return { key, sha256: sha, width: dims.width, height: dims.height, png };
+        };
+        let sealInfo, sigInfo;
+        try {
+            sealInfo = await storeImage(form.get('seal'), 'seal');
+            sigInfo = await storeImage(form.get('signature'), 'manager-signature');
+        } catch (e: any) {
+            sealInfo = undefined;
+            sigInfo = undefined;
+        }
+
         let pdfKey = `contracts/${academyId}/${enrollmentId}/original.pdf`;
         if (env.CONTRACTS) {
             await env.CONTRACTS.put(pdfKey, pdfBytes, {
@@ -159,6 +184,9 @@ export async function handleContractsApi(request: Request, env: Env, url: URL): 
             nationalMask: maskNational(String(student.nationalCode || '')),
             verifyHash,
             signerName: String(meta.signerName || ''),
+            signerTitle: String(meta.signerTitle || ''),
+            seal: sealInfo && { key: sealInfo.key, sha256: sealInfo.sha256, width: sealInfo.width, height: sealInfo.height },
+            signature: sigInfo && { key: sigInfo.key, sha256: sigInfo.sha256, width: sigInfo.width, height: sigInfo.height },
             rotateToken: true
         });
 
@@ -224,6 +252,29 @@ export async function handleContractsApi(request: Request, env: Env, url: URL): 
     }
 
     return fail('روش پشتیبانی نمی‌شود.', 405);
+}
+
+async function putContractFile(env: Env, key: string, bytes: Uint8Array, sha256: string, academyId: string) {
+    await writeContractFile(env, key, bytes, sha256, academyId, key.endsWith('.png') ? 'image/png' : 'image/jpeg');
+}
+
+function imageDims(bytes: Uint8Array): { width: number; height: number } {
+    if (bytes[0] === 0x89 && bytes[1] === 0x50) {
+        const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+        return { width: view.getUint32(16), height: view.getUint32(20) };
+    }
+    let i = 2;
+    while (i < bytes.length - 9) {
+        if (bytes[i] !== 0xff) { i++; continue; }
+        const marker = bytes[i + 1];
+        const len = (bytes[i + 2] << 8) | bytes[i + 3];
+        if (marker >= 0xc0 && marker <= 0xc3) {
+            return { width: (bytes[i + 7] << 8) | bytes[i + 8], height: (bytes[i + 5] << 8) | bytes[i + 6] };
+        }
+        if (len <= 0) break;
+        i += 2 + len;
+    }
+    return { width: 0, height: 0 };
 }
 
 export async function readContractFile(env: Env, key: string): Promise<Uint8Array | null> {

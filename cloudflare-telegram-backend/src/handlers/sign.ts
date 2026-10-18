@@ -247,6 +247,16 @@ export async function handleSignRoute(request: Request, env: Env, url: URL): Pro
             `enrollment ${row.enrollment_id.slice(0, 8)}`
         ];
 
+        // Academy seal + manager signature uploaded by the app (optional).
+        const sealKey = (row as any).seal_key as string;
+        const sigKey = (row as any).sig_key as string;
+        const sealBytes = sealKey ? await readContractFile(env, sealKey) : null;
+        const managerSigBytes = sigKey ? await readContractFile(env, sigKey) : null;
+        const isPngBytes = (bytes: Uint8Array | null) =>
+            !!bytes && bytes[0] === 0x89 && bytes[1] === 0x50;
+        const asJpeg = (bytes: Uint8Array | null) =>
+            bytes && bytes[0] === 0xff && bytes[1] === 0xd8 ? bytes : undefined;
+
         let signed: Uint8Array;
         try {
             signed = appendSignatureLayer(original, {
@@ -254,6 +264,14 @@ export async function handleSignRoute(request: Request, env: Env, url: URL): Pro
                 imageIsPng: isPng,
                 imageWidth: dims.width,
                 imageHeight: dims.height,
+                sealPng: isPngBytes(sealBytes) ? sealBytes! : undefined,
+                sealJpeg: asJpeg(sealBytes),
+                sealWidth: Number((row as any).seal_width) || 0,
+                sealHeight: Number((row as any).seal_height) || 0,
+                managerSignaturePng: isPngBytes(managerSigBytes) ? managerSigBytes! : undefined,
+                managerSignatureJpeg: asJpeg(managerSigBytes),
+                managerSignatureWidth: Number((row as any).sig_width) || 0,
+                managerSignatureHeight: Number((row as any).sig_height) || 0,
                 lines: lines.map(toDisplayDigits),
                 verifyLines
             });

@@ -68,7 +68,11 @@ class ContractCloudClient(
         studentId: String,
         enrollment: JSONObject,
         pdf: File,
-        forceRenew: Boolean
+        forceRenew: Boolean,
+        sealFile: File? = null,
+        signatureFile: File? = null,
+        signerName: String = "",
+        signerTitle: String = ""
     ): Result<JSONObject> {
         if (!isConfigured()) return Result(false, error = "اتصال به سرور قرارداد تنظیم نشده است.")
         return try {
@@ -81,6 +85,8 @@ class ContractCloudClient(
                 .put("studentId", studentId)
                 .put("enrollment", enrollment)
                 .put("forceRenew", forceRenew)
+                .put("signerName", signerName)
+                .put("signerTitle", signerTitle)
 
             val body = MultipartBody.Builder()
                 .setType(MultipartBody.FORM)
@@ -90,6 +96,14 @@ class ContractCloudClient(
                     pdf.name,
                     pdf.asRequestBody("application/pdf".toMediaType())
                 )
+                .apply {
+                    if (sealFile != null && sealFile.exists()) {
+                        addFormDataPart("seal", sealFile.name, sealFile.asRequestBody("image/png".toMediaType()))
+                    }
+                    if (signatureFile != null && signatureFile.exists()) {
+                        addFormDataPart("signature", signatureFile.name, signatureFile.asRequestBody("image/png".toMediaType()))
+                    }
+                }
                 .build()
 
             val req = Request.Builder()
