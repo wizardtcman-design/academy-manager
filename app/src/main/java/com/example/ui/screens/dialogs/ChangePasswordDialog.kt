@@ -44,110 +44,77 @@ fun ChangePasswordDialog(
     var passwordVisible by remember { mutableStateOf(false) }
     var errorText by remember { mutableStateOf<String?>(null) }
 
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = {
-            Text(
-                text = "تغییر رمز عبور مدیر",
-                style = MaterialTheme.typography.titleLarge,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.primary
+
+    com.example.ui.components.AppFormDialog(
+        title = "تغییر رمز عبور",
+        subtitle = "رمز فعلی و رمز تازهٔ مدیر را وارد کنید",
+        icon = Icons.Default.Lock,
+        onDismiss = onDismiss,
+        confirmText = "تغییر رمز",
+        onConfirm = {
+            if (newPassword.length < 6) {
+                errorText = "رمز عبور جدید باید حداقل ۶ کاراکتر باشد."
+            } else if (newPassword != confirmPassword) {
+                errorText = "تکرار رمز عبور با رمز جدید مطابقت ندارد."
+            } else {
+                onConfirm(oldPassword, newPassword)
+            }
+        },
+        maxHeight = 680
+    ) {
+        com.example.ui.components.FormSection(title = "رمز عبور", icon = Icons.Default.Lock) {
+            OutlinedTextField(
+                value = oldPassword,
+                onValueChange = { oldPassword = it; errorText = null },
+                label = { Text("رمز عبور فعلی") },
+                leadingIcon = { Icon(Icons.Default.Lock, contentDescription = null) },
+                singleLine = true,
+                visualTransformation = if (passwordVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Next),
+                shape = RoundedCornerShape(14.dp),
+                colors = com.example.ui.components.FormTextFieldColors(),
+                modifier = Modifier.fillMaxWidth()
             )
-        },
-        text = {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(vertical = 8.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                OutlinedTextField(
-                    value = oldPassword,
-                    onValueChange = {
-                        oldPassword = it
-                        errorText = null
-                    },
-                    label = { Text("رمز عبور فعلی") },
-                    leadingIcon = { Icon(Icons.Default.Lock, contentDescription = null) },
-                    singleLine = true,
-                    visualTransformation = if (passwordVisible) VisualTransformation.None else PasswordVisualTransformation(),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Next),
-                    shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier.fillMaxWidth()
-                )
-
-                OutlinedTextField(
-                    value = newPassword,
-                    onValueChange = {
-                        newPassword = it
-                        errorText = null
-                    },
-                    label = { Text("رمز عبور جدید (حداقل ۶ کاراکتر)") },
-                    leadingIcon = { Icon(Icons.Default.Lock, contentDescription = null) },
-                    trailingIcon = {
-                        IconButton(onClick = { passwordVisible = !passwordVisible }) {
-                            Icon(
-                                imageVector = if (passwordVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
-                                contentDescription = null
-                            )
-                        }
-                    },
-                    singleLine = true,
-                    visualTransformation = if (passwordVisible) VisualTransformation.None else PasswordVisualTransformation(),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Next),
-                    shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier.fillMaxWidth()
-                )
-
-                OutlinedTextField(
-                    value = confirmPassword,
-                    onValueChange = {
-                        confirmPassword = it
-                        errorText = null
-                    },
-                    label = { Text("تکرار رمز عبور جدید") },
-                    leadingIcon = { Icon(Icons.Default.Lock, contentDescription = null) },
-                    singleLine = true,
-                    visualTransformation = if (passwordVisible) VisualTransformation.None else PasswordVisualTransformation(),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Done),
-                    shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier.fillMaxWidth()
-                )
-
-                if (errorText != null) {
-                    Text(
-                        text = errorText!!,
-                        color = MaterialTheme.colorScheme.error,
-                        style = MaterialTheme.typography.bodySmall
-                    )
-                }
-            }
-        },
-        confirmButton = {
-            Button(
-                onClick = {
-                    if (newPassword.length < 6) {
-                        errorText = "رمز عبور جدید باید حداقل ۶ کاراکتر باشد."
-                        return@Button
+            OutlinedTextField(
+                value = newPassword,
+                onValueChange = { newPassword = it; errorText = null },
+                label = { Text("رمز عبور جدید (حداقل ۶ کاراکتر)") },
+                leadingIcon = { Icon(Icons.Default.Lock, contentDescription = null) },
+                trailingIcon = {
+                    IconButton(onClick = { passwordVisible = !passwordVisible }) {
+                        Icon(
+                            imageVector = if (passwordVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                            contentDescription = null
+                        )
                     }
-                    if (newPassword != confirmPassword) {
-                        errorText = "تکرار رمز عبور با رمز جدید مطابقت ندارد."
-                        return@Button
-                    }
-                    onConfirm(oldPassword, newPassword)
                 },
-                shape = RoundedCornerShape(10.dp)
-            ) {
-                Text("تغییر رمز عبور")
-            }
-        },
-        dismissButton = {
-            OutlinedButton(
-                onClick = onDismiss,
-                shape = RoundedCornerShape(10.dp)
-            ) {
-                Text("انصراف")
+                singleLine = true,
+                visualTransformation = if (passwordVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Next),
+                shape = RoundedCornerShape(14.dp),
+                colors = com.example.ui.components.FormTextFieldColors(),
+                modifier = Modifier.fillMaxWidth()
+            )
+            OutlinedTextField(
+                value = confirmPassword,
+                onValueChange = { confirmPassword = it; errorText = null },
+                label = { Text("تکرار رمز عبور جدید") },
+                leadingIcon = { Icon(Icons.Default.Lock, contentDescription = null) },
+                singleLine = true,
+                visualTransformation = if (passwordVisible) VisualTransformation.None else PasswordVisualTransformation(),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Done),
+                shape = RoundedCornerShape(14.dp),
+                colors = com.example.ui.components.FormTextFieldColors(),
+                modifier = Modifier.fillMaxWidth()
+            )
+            if (errorText != null) {
+                Text(
+                    text = errorText!!,
+                    color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodySmall
+                )
             }
         }
-    )
+        Spacer(Modifier.height(4.dp))
+    }
 }

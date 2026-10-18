@@ -127,371 +127,218 @@ fun AddEditBankAccountDialog(
         }
     }
 
-    Dialog(
-        onDismissRequest = onDismiss,
-        properties = DialogProperties(usePlatformDefaultWidth = false)
+    com.example.ui.components.AppFormDialog(
+        title = if (initialAccount == null) "افزودن کارت / حساب" else "ویرایش حساب بانکی",
+        subtitle = "برای واریز شهریه و نمایش در قبوض و پیام‌ها",
+        icon = Icons.Default.AccountBalance,
+        onDismiss = onDismiss,
+        confirmText = "ذخیره مشخصات",
+        onConfirm = {
+            if (isValid) {
+                onSave(
+                    bankName.trim(),
+                    selectedType.first,
+                    accountTitle.trim(),
+                    cardNumber.trim(),
+                    shabaNumber.trim(),
+                    accountNumber.trim(),
+                    accountHolder.trim(),
+                    isDefault
+                )
+            }
+        },
+        confirmEnabled = isValid,
+        maxHeight = 780,
+        testTag = "add_edit_bank_account_dialog"
     ) {
-        Surface(
+        // Live card preview
+        Card(
             modifier = Modifier
-                .fillMaxWidth(0.94f)
-                .heightIn(max = 760.dp)
-                .clip(RoundedCornerShape(26.dp))
-                .testTag("add_edit_bank_account_dialog"),
-            color = MaterialTheme.colorScheme.surface,
-            tonalElevation = 6.dp
+                .fillMaxWidth()
+                .height(160.dp),
+            shape = RoundedCornerShape(18.dp),
+            elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
         ) {
-            Column(
+            Box(
                 modifier = Modifier
-                    .padding(20.dp)
-                    .verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(14.dp)
+                    .background(Brush.linearGradient(cardColors))
+                    .padding(16.dp)
             ) {
-                // Header
-                Row(
+                Column(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column {
-                        Text(
-                            text = if (initialAccount == null) "افزودن کارت / حساب بانکی" else "ویرایش حساب بانکی",
-                            style = MaterialTheme.typography.titleLarge,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.primary
-                        )
-                        Text(
-                            text = "مشخصات حساب جهت واریز شهریه و نمایش در قبوض و پیام‌ها",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-
-                    Surface(
-                        shape = CircleShape,
-                        color = MaterialTheme.colorScheme.primaryContainer,
-                        modifier = Modifier.size(42.dp)
-                    ) {
-                        Box(contentAlignment = Alignment.Center) {
-                            Icon(
-                                imageVector = Icons.Default.AccountBalance,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.size(24.dp)
-                            )
-                        }
-                    }
-                }
-
-                // Live Visual Card Preview
-                Card(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(170.dp),
-                    shape = RoundedCornerShape(18.dp),
-                    elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .background(Brush.linearGradient(cardColors))
-                            .padding(16.dp)
-                    ) {
-                        Column(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Icon(
-                                        imageVector = Icons.Default.CreditCard,
-                                        contentDescription = null,
-                                        tint = Color.White.copy(alpha = 0.9f),
-                                        modifier = Modifier.size(20.dp)
-                                    )
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                    Text(
-                                        text = bankName.ifBlank { "نام بانک" },
-                                        color = Color.White,
-                                        fontWeight = FontWeight.Bold,
-                                        style = MaterialTheme.typography.titleMedium
-                                    )
-                                }
-
-                                if (isDefault) {
-                                    Surface(
-                                        shape = RoundedCornerShape(8.dp),
-                                        color = Color(0xFFFFD54F)
-                                    ) {
-                                        Row(
-                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
-                                            verticalAlignment = Alignment.CenterVertically
-                                        ) {
-                                            Icon(
-                                                Icons.Default.Star,
-                                                contentDescription = null,
-                                                tint = Color(0xFF5D4037),
-                                                modifier = Modifier.size(12.dp)
-                                            )
-                                            Spacer(modifier = Modifier.width(2.dp))
-                                            Text(
-                                                text = "کارت پیش‌فرض",
-                                                color = Color(0xFF5D4037),
-                                                fontSize = 10.sp,
-                                                fontWeight = FontWeight.Bold
-                                            )
-                                        }
-                                    }
-                                }
-                            }
-
-                            Spacer(modifier = Modifier.height(14.dp))
-
-                            // Card Number
-                            val cleanCard = cardNumber.filter { it.isDigit() }
-                            val displayNum = if (cleanCard.length >= 16) {
-                                "${cleanCard.substring(0, 4)}   ${cleanCard.substring(4, 8)}   ${cleanCard.substring(8, 12)}   ${cleanCard.substring(12, 16)}"
-                            } else if (cleanCard.isNotEmpty()) {
-                                cleanCard.chunked(4).joinToString("   ")
-                            } else {
-                                "----   ----   ----   ----"
-                            }
-
-                            Text(
-                                text = displayNum,
-                                color = Color.White,
-                                fontSize = 17.sp,
-                                fontWeight = FontWeight.Bold,
-                                letterSpacing = 1.sp,
-                                fontFamily = FontFamily.Monospace
-                            )
-
-                            Spacer(modifier = Modifier.height(10.dp))
-
-                            // Bottom row
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.Bottom
-                            ) {
-                                Column {
-                                    Text(
-                                        text = "صاحب حساب",
-                                        color = Color.White.copy(alpha = 0.7f),
-                                        fontSize = 9.sp
-                                    )
-                                    Text(
-                                        text = accountHolder.ifBlank { "مدیریت آموزشگاه" },
-                                        color = Color.White,
-                                        fontWeight = FontWeight.SemiBold,
-                                        style = MaterialTheme.typography.bodySmall
-                                    )
-                                }
-
-                                if (shabaNumber.isNotBlank()) {
-                                    Column(horizontalAlignment = Alignment.End) {
-                                        Text(
-                                            text = "شماره شبا",
-                                            color = Color.White.copy(alpha = 0.7f),
-                                            fontSize = 9.sp
-                                        )
-                                        Text(
-                                            text = if (shabaNumber.startsWith("IR", ignoreCase = true)) shabaNumber.uppercase() else "IR$shabaNumber",
-                                            color = Color.White.copy(alpha = 0.95f),
-                                            fontSize = 10.sp,
-                                            fontFamily = FontFamily.Monospace
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                // Quick Bank Selection Chips
-                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text(
-                        text = "انتخاب سریع بانک:",
-                        style = MaterialTheme.typography.bodySmall,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    LazyRow(
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        items(popularBanks) { b ->
-                            FilterChip(
-                                selected = bankName == b,
-                                onClick = { bankName = b },
-                                label = { Text(b, fontSize = 11.sp) },
-                                leadingIcon = if (bankName == b) {
-                                    { Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(14.dp)) }
-                                } else null
-                            )
-                        }
-                    }
-                }
-
-                // Account Title
-                OutlinedTextField(
-                    value = accountTitle,
-                    onValueChange = { accountTitle = it },
-                    label = { Text("عنوان حساب / برچسب *") },
-                    placeholder = { Text("مثلاً: کارت اصلی واریز شهریه") },
-                    leadingIcon = { Icon(Icons.Default.Title, contentDescription = null) },
-                    singleLine = true,
-                    shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier.fillMaxWidth()
-                )
-
-                // Bank Name Input
-                OutlinedTextField(
-                    value = bankName,
-                    onValueChange = { bankName = it },
-                    label = { Text("نام بانک *") },
-                    placeholder = { Text("مثلاً: بانک ملت") },
-                    leadingIcon = { Icon(Icons.Default.AccountBalance, contentDescription = null) },
-                    singleLine = true,
-                    shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier.fillMaxWidth()
-                )
-
-                // Card Number (16 Digits)
-                OutlinedTextField(
-                    value = cardNumber,
-                    onValueChange = { input ->
-                        val digits = input.filter { it.isDigit() }.take(16)
-                        cardNumber = digits
-                    },
-                    label = { Text("شماره کارت بانکی (۱۶ رقم)") },
-                    placeholder = { Text("مثلاً: ۶۱۰۴۳۳۷۸۹۹۹۹۱۲۳۴") },
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                    leadingIcon = { Icon(Icons.Default.CreditCard, contentDescription = null) },
-                    supportingText = {
-                        Text("${cardNumber.filter { it.isDigit() }.length} از ۱۶ رقم وارد شده است")
-                    },
-                    singleLine = true,
-                    shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier.fillMaxWidth()
-                )
-
-                // Shaba Number (IBAN)
-                OutlinedTextField(
-                    value = shabaNumber,
-                    onValueChange = { input ->
-                        var clean = input.filter { it.isLetterOrDigit() }.uppercase()
-                        if (clean.startsWith("IR")) {
-                            clean = "IR" + clean.removePrefix("IR").filter { it.isDigit() }.take(24)
-                        } else {
-                            clean = clean.filter { it.isDigit() }.take(24)
-                        }
-                        shabaNumber = clean
-                    },
-                    label = { Text("شماره شبا (IBAN)") },
-                    placeholder = { Text("مثلاً: IR120120000000001234567890") },
-                    leadingIcon = { Icon(Icons.Default.AccountBalance, contentDescription = null) },
-                    singleLine = true,
-                    shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier.fillMaxWidth()
-                )
-
-                // Account Number
-                OutlinedTextField(
-                    value = accountNumber,
-                    onValueChange = { accountNumber = it.filter { c -> c.isDigit() } },
-                    label = { Text("شماره حساب (اختیاری)") },
-                    placeholder = { Text("مثلاً: ۱۲۳۴۵۶۷۸۹") },
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                    leadingIcon = { Icon(Icons.Default.CreditCard, contentDescription = null) },
-                    singleLine = true,
-                    shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier.fillMaxWidth()
-                )
-
-                // Account Holder
-                OutlinedTextField(
-                    value = accountHolder,
-                    onValueChange = { accountHolder = it },
-                    label = { Text("نام و نام خانوادگی صاحب حساب") },
-                    placeholder = { Text("مثلاً: مدیریت آموزشگاه کامپیوتر") },
-                    leadingIcon = { Icon(Icons.Default.Person, contentDescription = null) },
-                    singleLine = true,
-                    shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier.fillMaxWidth()
-                )
-
-                // Default Switch
-                Surface(
-                    shape = RoundedCornerShape(12.dp),
-                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
-                    modifier = Modifier.fillMaxWidth()
+                    verticalArrangement = Arrangement.SpaceBetween
                 ) {
                     Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 14.dp, vertical = 8.dp),
+                        modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(
-                                text = "حساب پیش‌فرض آموزشگاه",
-                                style = MaterialTheme.typography.bodyMedium,
-                                fontWeight = FontWeight.Bold
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                Icons.Default.CreditCard,
+                                contentDescription = null,
+                                tint = Color.White.copy(alpha = 0.9f),
+                                modifier = Modifier.size(20.dp)
                             )
+                            Spacer(Modifier.width(6.dp))
                             Text(
-                                text = "این حساب در پیامک‌ها، قبوض و ثبت پرداخت‌ها به صورت پیش‌فرض انتخاب می‌شود.",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                text = bankName.ifBlank { "نام بانک" },
+                                color = Color.White,
+                                fontWeight = FontWeight.Bold,
+                                style = MaterialTheme.typography.titleMedium
                             )
                         }
-                        Switch(
-                            checked = isDefault,
-                            onCheckedChange = { isDefault = it }
-                        )
+                        if (isDefault) {
+                            Surface(shape = RoundedCornerShape(8.dp), color = Color(0xFFFFD54F)) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Icon(Icons.Default.Star, contentDescription = null, tint = Color(0xFF5D4037), modifier = Modifier.size(12.dp))
+                                    Spacer(Modifier.width(2.dp))
+                                    Text("پیش‌فرض", color = Color(0xFF5D4037), fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                                }
+                            }
+                        }
                     }
-                }
-
-                Spacer(modifier = Modifier.height(6.dp))
-
-                // Actions
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    OutlinedButton(
-                        onClick = onDismiss,
-                        modifier = Modifier.weight(1f),
-                        shape = RoundedCornerShape(12.dp)
+                    Spacer(Modifier.height(14.dp))
+                    val cleanCard = cardNumber.filter { it.isDigit() }
+                    val displayNum = when {
+                        cleanCard.length >= 16 ->
+                            "${cleanCard.substring(0, 4)}   ${cleanCard.substring(4, 8)}   ${cleanCard.substring(8, 12)}   ${cleanCard.substring(12, 16)}"
+                        cleanCard.isNotEmpty() -> cleanCard.chunked(4).joinToString("   ")
+                        else -> "----   ----   ----   ----"
+                    }
+                    Text(
+                        text = displayNum,
+                        color = Color.White,
+                        fontSize = 17.sp,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 1.sp,
+                        fontFamily = FontFamily.Monospace
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.Bottom
                     ) {
-                        Text("انصراف")
-                    }
-                    Button(
-                        onClick = {
-                            if (isValid) {
-                                onSave(
-                                    bankName.trim(),
-                                    selectedType.first,
-                                    accountTitle.trim(),
-                                    cardNumber.trim(),
-                                    shabaNumber.trim(),
-                                    accountNumber.trim(),
-                                    accountHolder.trim(),
-                                    isDefault
+                        Column {
+                            Text("صاحب حساب", color = Color.White.copy(alpha = 0.7f), fontSize = 9.sp)
+                            Text(
+                                text = accountHolder.ifBlank { "مدیریت آموزشگاه" },
+                                color = Color.White,
+                                fontWeight = FontWeight.SemiBold,
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                        }
+                        if (shabaNumber.isNotBlank()) {
+                            Column(horizontalAlignment = Alignment.End) {
+                                Text("شماره شبا", color = Color.White.copy(alpha = 0.7f), fontSize = 9.sp)
+                                Text(
+                                    text = if (shabaNumber.startsWith("IR", ignoreCase = true)) shabaNumber.uppercase() else "IR$shabaNumber",
+                                    color = Color.White.copy(alpha = 0.95f),
+                                    fontSize = 10.sp,
+                                    fontFamily = FontFamily.Monospace
                                 )
                             }
-                        },
-                        enabled = isValid,
-                        modifier = Modifier.weight(1f),
-                        shape = RoundedCornerShape(12.dp)
-                    ) {
-                        Text("ذخیره مشخصات")
+                        }
                     }
                 }
             }
         }
+
+        com.example.ui.components.FormSection(title = "شناسهٔ حساب", icon = Icons.Default.AccountBalance) {
+            com.example.ui.components.FormTextField(
+                value = accountTitle,
+                onValueChange = { accountTitle = it },
+                label = "عنوان حساب / برچسب *",
+                leadingIcon = Icons.Default.Title
+            )
+            com.example.ui.components.FormTextField(
+                value = bankName,
+                onValueChange = { bankName = it },
+                label = "نام بانک *",
+                leadingIcon = Icons.Default.AccountBalance
+            )
+            LazyRow(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                items(popularBanks) { b ->
+                    FilterChip(
+                        selected = bankName == b,
+                        onClick = { bankName = b },
+                        label = { Text(b, fontSize = 11.sp) },
+                        leadingIcon = if (bankName == b) {
+                            { Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(14.dp)) }
+                        } else null
+                    )
+                }
+            }
+        }
+
+        com.example.ui.components.FormSection(
+            title = "شماره‌ها",
+            icon = Icons.Default.CreditCard,
+            accent = MaterialTheme.colorScheme.tertiary
+        ) {
+            com.example.ui.components.FormTextField(
+                value = cardNumber,
+                onValueChange = { input -> cardNumber = input.filter { it.isDigit() }.take(16) },
+                label = "شماره کارت (۱۶ رقم)",
+                leadingIcon = Icons.Default.CreditCard,
+                supportingText = "${cardNumber.filter { it.isDigit() }.length} از ۱۶ رقم",
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+            )
+            com.example.ui.components.FormTextField(
+                value = shabaNumber,
+                onValueChange = { input ->
+                    var clean = input.filter { it.isLetterOrDigit() }.uppercase()
+                    clean = if (clean.startsWith("IR")) {
+                        "IR" + clean.removePrefix("IR").filter { it.isDigit() }.take(24)
+                    } else {
+                        clean.filter { it.isDigit() }.take(24)
+                    }
+                    shabaNumber = clean
+                },
+                label = "شماره شبا (IBAN)",
+                leadingIcon = Icons.Default.AccountBalance
+            )
+            com.example.ui.components.FormTextField(
+                value = accountNumber,
+                onValueChange = { accountNumber = it.filter { c -> c.isDigit() } },
+                label = "شماره حساب (اختیاری)",
+                leadingIcon = Icons.Default.CreditCard,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+            )
+            com.example.ui.components.FormTextField(
+                value = accountHolder,
+                onValueChange = { accountHolder = it },
+                label = "نام صاحب حساب",
+                leadingIcon = Icons.Default.Person
+            )
+        }
+
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(16.dp))
+                .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.08f))
+                .padding(horizontal = 12.dp, vertical = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text("حساب پیش‌فرض آموزشگاه", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold)
+                Text(
+                    "در قبوض و ثبت پرداخت‌ها به‌صورت پیش‌فرض انتخاب می‌شود.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Switch(checked = isDefault, onCheckedChange = { isDefault = it })
+        }
+        Spacer(Modifier.height(4.dp))
     }
 }

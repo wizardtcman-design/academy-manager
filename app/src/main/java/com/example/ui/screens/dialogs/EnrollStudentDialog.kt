@@ -22,18 +22,15 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.MenuBook
+import androidx.compose.material.icons.filled.Payments
 import androidx.compose.material.icons.filled.CalendarMonth
-import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.DateRange
-import androidx.compose.material.icons.filled.MenuBook
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material3.Button
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.Divider
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExposedDropdownMenuBox
 import androidx.compose.material3.ExposedDropdownMenuDefaults
@@ -131,136 +128,131 @@ fun EnrollStudentDialog(
     val currentSum = customAmounts.sum()
     val isSumValid = currentSum == finalFee
 
-    Dialog(
-        onDismissRequest = onDismiss,
-        properties = DialogProperties(usePlatformDefaultWidth = false)
+    com.example.ui.components.AppFormDialog(
+        title = "ثبت‌نام در دوره",
+        subtitle = "هنرجو، دوره، اقساط و تاریخ‌ها را مشخص کنید",
+        icon = Icons.Default.MenuBook,
+        onDismiss = onDismiss,
+        confirmText = "تأیید و ثبت‌نام",
+        onConfirm = {
+            val st = selectedStudent
+            val crs = selectedCourse
+            if (st != null && crs != null && isSumValid) {
+                onEnroll(
+                    st,
+                    crs,
+                    startDateShamsi,
+                    discount,
+                    installmentCount,
+                    customAmounts.toList(),
+                    firstInstallmentDateShamsi,
+                    firstInstallmentPaidNow,
+                    notes
+                )
+            }
+        },
+        confirmEnabled = selectedStudent != null && selectedCourse != null && isSumValid,
+        maxHeight = 760,
+        testTag = "enroll_student_dialog"
     ) {
-        Surface(
-            modifier = Modifier
-                .fillMaxWidth(0.95f)
-                .heightIn(max = 700.dp)
-                .clip(RoundedCornerShape(24.dp))
-                .testTag("enroll_student_dialog"),
-            color = MaterialTheme.colorScheme.surface,
-            tonalElevation = 6.dp
-        ) {
-            Column(
-                modifier = Modifier
-                    .padding(24.dp)
-                    .verticalScroll(rememberScrollState())
-            ) {
-                // Header
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
+        com.example.ui.components.FormSection(title = "هنرجو و دوره", icon = Icons.Default.Person) {
+            if (initialStudent == null) {
+                ExposedDropdownMenuBox(
+                    expanded = studentDropdownExpanded,
+                    onExpandedChange = { studentDropdownExpanded = !studentDropdownExpanded }
                 ) {
-                    Text(
-                        text = "ثبت‌نام در دوره آموزشی",
-                        style = MaterialTheme.typography.titleLarge,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                }
-
-                Spacer(modifier = Modifier.height(16.dp))
-
-                // 1. Select Student
-                if (initialStudent == null) {
-                    ExposedDropdownMenuBox(
-                        expanded = studentDropdownExpanded,
-                        onExpandedChange = { studentDropdownExpanded = !studentDropdownExpanded }
-                    ) {
-                        OutlinedTextField(
-                            value = selectedStudent?.let { "${it.fullName} (${it.studentCode})" } ?: "انتخاب هنرجو",
-                            onValueChange = {},
-                            readOnly = true,
-                            label = { Text("هنرجو") },
-                            leadingIcon = { Icon(Icons.Default.Person, contentDescription = null) },
-                            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = studentDropdownExpanded) },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .menuAnchor()
-                        )
-                        ExposedDropdownMenu(
-                            expanded = studentDropdownExpanded,
-                            onDismissRequest = { studentDropdownExpanded = false }
-                        ) {
-                            students.forEach { s ->
-                                DropdownMenuItem(
-                                    text = { Text("${s.fullName} (${s.studentCode}) - ${s.phone}") },
-                                    onClick = {
-                                        selectedStudent = s
-                                        studentDropdownExpanded = false
-                                    }
-                                )
-                            }
-                        }
-                    }
-                    Spacer(modifier = Modifier.height(12.dp))
-                } else {
-                    Card(
-                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f)),
-                        shape = RoundedCornerShape(12.dp)
-                    ) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(12.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Icon(Icons.Default.Person, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text(
-                                text = "هنرجو: ${initialStudent.fullName} (${initialStudent.studentCode})",
-                                style = MaterialTheme.typography.bodyMedium,
-                                fontWeight = FontWeight.Bold
-                            )
-                        }
-                    }
-                    Spacer(modifier = Modifier.height(12.dp))
-                }
-
-                // 2. Select Course
-                if (courses.isEmpty()) {
-                    Card(
-                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.35f)),
+                    OutlinedTextField(
+                        value = selectedStudent?.let { "${it.fullName} (${it.studentCode})" } ?: "انتخاب هنرجو",
+                        onValueChange = {},
+                        readOnly = true,
+                        label = { Text("هنرجو") },
+                        leadingIcon = { Icon(Icons.Default.Person, contentDescription = null) },
+                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = studentDropdownExpanded) },
                         shape = RoundedCornerShape(14.dp),
-                        modifier = Modifier.fillMaxWidth()
+                        colors = com.example.ui.components.FormTextFieldColors(),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .menuAnchor()
+                    )
+                    ExposedDropdownMenu(
+                        expanded = studentDropdownExpanded,
+                        onDismissRequest = { studentDropdownExpanded = false }
                     ) {
-                        Column(
-                            modifier = Modifier.padding(14.dp),
-                            verticalArrangement = Arrangement.spacedBy(10.dp)
-                        ) {
-                            Text(
-                                text = "هنوز هیچ دوره‌ای تعریف نشده است.",
-                                style = MaterialTheme.typography.titleSmall,
-                                fontWeight = FontWeight.Bold
+                        students.forEach { st ->
+                            DropdownMenuItem(
+                                text = { Text("${st.fullName} (${st.studentCode}) - ${st.phone}") },
+                                onClick = {
+                                    selectedStudent = st
+                                    studentDropdownExpanded = false
+                                }
                             )
-                            Text(
-                                text = "اول دوره را با عنوان، مدت و شهریه بسازید؛ بعد از ذخیره، همین‌جا برای ثبت‌نام انتخاب می‌شود.",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                            Button(onClick = onCreateCourse, modifier = Modifier.fillMaxWidth()) {
-                                Icon(Icons.Default.MenuBook, contentDescription = null)
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text("تعریف دورهٔ جدید")
-                            }
                         }
                     }
-                } else {
+                }
+            } else {
+                Surface(
+                    shape = RoundedCornerShape(14.dp),
+                    color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.30f),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier.padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(Icons.Default.Person, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "${initialStudent.fullName} (${initialStudent.studentCode})",
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
+            }
+
+            if (courses.isEmpty()) {
+                Surface(
+                    shape = RoundedCornerShape(14.dp),
+                    color = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.35f),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(
+                        modifier = Modifier.padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text(
+                            text = "هنوز هیچ دوره‌ای تعریف نشده است.",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = "اول دوره را بسازید؛ بعد از ذخیره، همین‌جا برای ثبت‌نام انتخاب می‌شود.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Button(onClick = onCreateCourse, modifier = Modifier.fillMaxWidth()) {
+                            Icon(Icons.Default.MenuBook, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("تعریف دورهٔ جدید")
+                        }
+                    }
+                }
+            } else {
                 ExposedDropdownMenuBox(
                     expanded = courseDropdownExpanded,
                     onExpandedChange = { courseDropdownExpanded = !courseDropdownExpanded }
                 ) {
                     OutlinedTextField(
-                        value = selectedCourse?.let { "${it.title} (${PersianDateUtil.formatCurrency(it.tuitionFee)})" } ?: "انتخاب دوره آموزشی",
+                        value = selectedCourse?.let {
+                            "${it.title} (${PersianDateUtil.formatCurrency(it.tuitionFee)})"
+                        } ?: "انتخاب دوره آموزشی",
                         onValueChange = {},
                         readOnly = true,
                         label = { Text("دوره آموزشی") },
                         leadingIcon = { Icon(Icons.Default.MenuBook, contentDescription = null) },
                         trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = courseDropdownExpanded) },
+                        shape = RoundedCornerShape(14.dp),
+                        colors = com.example.ui.components.FormTextFieldColors(),
                         modifier = Modifier
                             .fillMaxWidth()
                             .menuAnchor()
@@ -279,7 +271,7 @@ fun EnrollStudentDialog(
                                 }
                             )
                         }
-                        Divider()
+                        HorizontalDivider()
                         DropdownMenuItem(
                             text = { Text("+ تعریف دورهٔ جدید", color = MaterialTheme.colorScheme.primary) },
                             onClick = {
@@ -289,249 +281,194 @@ fun EnrollStudentDialog(
                         )
                     }
                 }
-                Spacer(modifier = Modifier.height(6.dp))
                 TextButton(onClick = onCreateCourse, modifier = Modifier.align(Alignment.End)) {
                     Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(18.dp))
                     Spacer(modifier = Modifier.width(6.dp))
                     Text("دوره‌ای در لیست نیست؟ دورهٔ تازه بسازید")
                 }
-                }
+            }
+        }
 
-                Spacer(modifier = Modifier.height(12.dp))
-
-                // Dates
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    OutlinedTextField(
-                        value = startDateShamsi,
-                        onValueChange = { startDateShamsi = it },
-                        label = { Text("تاریخ شروع دوره") },
-                        leadingIcon = { Icon(Icons.Default.DateRange, contentDescription = null) },
-                        modifier = Modifier.weight(1f)
-                    )
-                    OutlinedTextField(
-                        value = discountText,
-                        onValueChange = { discountText = it },
-                        label = { Text("تخفیف (تومان)") },
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                        modifier = Modifier.weight(1f)
-                    )
-                }
-
-                Spacer(modifier = Modifier.height(12.dp))
-
-                // Financial Summary Card
-                Card(
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)),
-                    shape = RoundedCornerShape(12.dp)
-                ) {
-                    Column(modifier = Modifier.padding(12.dp)) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Text("شهریه مصوب دوره:", style = MaterialTheme.typography.bodyMedium)
-                            Text(PersianDateUtil.formatCurrency(baseTuition), fontWeight = FontWeight.Bold)
-                        }
-                        if (discount > 0) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.SpaceBetween
-                            ) {
-                                Text("تخفیف:", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error)
-                                Text("- ${PersianDateUtil.formatCurrency(discount)}", color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.Bold)
-                            }
-                        }
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Text("شهریه نهایی قابل پرداخت:", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold)
-                            Text(PersianDateUtil.formatCurrency(finalFee), style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
-                        }
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(16.dp))
-
-                // Installments Configuration
-                Text(
-                    text = "تنظیم و زمان‌بندی اقساط",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold
+        com.example.ui.components.FormSection(
+            title = "تاریخ و تخفیف",
+            icon = Icons.Default.CalendarMonth,
+            accent = MaterialTheme.colorScheme.tertiary
+        ) {
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                com.example.ui.components.JalaliDateField(
+                    value = startDateShamsi,
+                    onValueChange = { startDateShamsi = it },
+                    label = "تاریخ شروع دوره",
+                    modifier = Modifier.weight(1f)
                 )
+                com.example.ui.components.FormTextField(
+                    value = discountText,
+                    onValueChange = { discountText = it },
+                    label = "تخفیف (تومان)",
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    modifier = Modifier.weight(1f)
+                )
+            }
+            com.example.ui.components.JalaliDateField(
+                value = firstInstallmentDateShamsi,
+                onValueChange = { firstInstallmentDateShamsi = it },
+                label = "سررسید قسط اول"
+            )
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.08f))
+                    .padding(horizontal = 12.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text(
+                    text = "قسط اول هم‌اکنون پرداخت شد",
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Medium
+                )
+                Switch(checked = firstInstallmentPaidNow, onCheckedChange = { firstInstallmentPaidNow = it })
+            }
+        }
 
-                Spacer(modifier = Modifier.height(8.dp))
-
+        com.example.ui.components.FormSection(
+            title = "شهریه و اقساط",
+            icon = Icons.Default.Payments,
+            accent = MaterialTheme.colorScheme.secondary
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("شهریه مصوب:", style = MaterialTheme.typography.bodySmall)
+                Text(PersianDateUtil.formatCurrency(baseTuition), fontWeight = FontWeight.Bold)
+            }
+            if (discount > 0) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    Text("تعداد اقساط:", style = MaterialTheme.typography.bodyMedium)
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        IconButton(
-                            onClick = { if (installmentCount > 1) installmentCount-- },
-                            enabled = installmentCount > 1
-                        ) {
-                            Icon(Icons.Default.Remove, contentDescription = "کاهش")
-                        }
-                        Text(
-                            text = PersianDateUtil.toPersianDigits(installmentCount.toString()),
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold,
-                            modifier = Modifier.padding(horizontal = 8.dp)
-                        )
-                        IconButton(
-                            onClick = { if (installmentCount < 12) installmentCount++ },
-                            enabled = installmentCount < 12
-                        ) {
-                            Icon(Icons.Default.Add, contentDescription = "افزایش")
-                        }
-                    }
-                }
-
-                // First Installment Date & Payment Status
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    OutlinedTextField(
-                        value = firstInstallmentDateShamsi,
-                        onValueChange = { firstInstallmentDateShamsi = it },
-                        label = { Text("سررسید قسط اول") },
-                        leadingIcon = { Icon(Icons.Default.CalendarMonth, contentDescription = null) },
-                        modifier = Modifier.weight(1f)
-                    )
-                }
-
-                Spacer(modifier = Modifier.height(8.dp))
-
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.2f))
-                        .padding(horizontal = 12.dp, vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
+                    Text("تخفیف:", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
                     Text(
-                        text = "قسط اول هم‌اکنون پرداخت شد",
-                        style = MaterialTheme.typography.bodyMedium,
-                        fontWeight = FontWeight.Medium
-                    )
-                    Switch(
-                        checked = firstInstallmentPaidNow,
-                        onCheckedChange = { firstInstallmentPaidNow = it }
-                    )
-                }
-
-                Spacer(modifier = Modifier.height(12.dp))
-
-                // Installments Breakdown & Custom Amounts
-                Text(
-                    text = "جدول مبالغ اقساط:",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-
-                Spacer(modifier = Modifier.height(6.dp))
-
-                customAmounts.forEachIndexed { index, amount ->
-                    val dateParts = firstInstallmentDateShamsi.split("/").mapNotNull { it.toIntOrNull() }
-                    val jalali = if (dateParts.size == 3) {
-                        PersianDateUtil.JalaliDate(dateParts[0], dateParts[1], dateParts[2]).addMonths(index).format()
-                    } else "ماه ${index + 1}"
-
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 4.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Text(
-                            text = "قسط ${index + 1} ($jalali):",
-                            style = MaterialTheme.typography.bodySmall,
-                            modifier = Modifier.width(130.dp)
-                        )
-                        OutlinedTextField(
-                            value = amount.toString(),
-                            onValueChange = { newText ->
-                                val parsed = newText.toLongOrNull() ?: 0L
-                                customAmounts[index] = parsed
-                            },
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                            modifier = Modifier.weight(1f),
-                            singleLine = true
-                        )
-                    }
-                }
-
-                if (!isSumValid) {
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text(
-                        text = "توجه: جمع اقساط (${PersianDateUtil.formatCurrency(currentSum)}) با شهریه کل (${PersianDateUtil.formatCurrency(finalFee)}) برابر نیست!",
+                        "- ${PersianDateUtil.formatCurrency(discount)}",
                         color = MaterialTheme.colorScheme.error,
-                        style = MaterialTheme.typography.bodySmall,
                         fontWeight = FontWeight.Bold
                     )
                 }
-
-                Spacer(modifier = Modifier.height(12.dp))
-
-                OutlinedTextField(
-                    value = notes,
-                    onValueChange = { notes = it },
-                    label = { Text("توضیحات و یادداشت ثبت‌نام") },
-                    modifier = Modifier.fillMaxWidth(),
-                    maxLines = 2
+            }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text("قابل پرداخت:", style = MaterialTheme.typography.bodySmall)
+                Text(
+                    PersianDateUtil.formatCurrency(finalFee),
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary
                 )
+            }
 
-                Spacer(modifier = Modifier.height(24.dp))
+            HorizontalDivider()
 
-                // Actions
+            // Installment count: one compact, equal-width control
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text("تعداد اقساط", style = MaterialTheme.typography.bodySmall)
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     OutlinedButton(
-                        onClick = onDismiss,
-                        modifier = Modifier.weight(1f)
+                        onClick = { if (installmentCount > 1) installmentCount -= 1 },
+                        shape = RoundedCornerShape(10.dp),
+                        contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp),
+                        modifier = Modifier.size(36.dp)
                     ) {
-                        Text("انصراف")
+                        Icon(Icons.Default.Remove, contentDescription = "کمتر", modifier = Modifier.size(18.dp))
                     }
-                    Button(
-                        onClick = {
-                            val s = selectedStudent
-                            val c = selectedCourse
-                            if (s != null && c != null && isSumValid) {
-                                onEnroll(
-                                    s,
-                                    c,
-                                    startDateShamsi,
-                                    discount,
-                                    installmentCount,
-                                    customAmounts.toList(),
-                                    firstInstallmentDateShamsi,
-                                    firstInstallmentPaidNow,
-                                    notes
-                                )
-                            }
-                        },
-                        enabled = selectedStudent != null && selectedCourse != null && isSumValid,
-                        modifier = Modifier
-                            .weight(1f)
-                            .testTag("submit_enroll_button")
+                    Text(
+                        text = PersianDateUtil.toPersianDigits(installmentCount.toString()),
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        modifier = Modifier.width(28.dp),
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                    )
+                    OutlinedButton(
+                        onClick = { if (installmentCount < 12) installmentCount += 1 },
+                        shape = RoundedCornerShape(10.dp),
+                        contentPadding = androidx.compose.foundation.layout.PaddingValues(0.dp),
+                        modifier = Modifier.size(36.dp)
                     ) {
-                        Text("تایید و ثبت‌نام")
+                        Icon(Icons.Default.Add, contentDescription = "بیشتر", modifier = Modifier.size(18.dp))
                     }
                 }
             }
+
+            customAmounts.forEachIndexed { index, amount ->
+                val dateParts = firstInstallmentDateShamsi.split("/").mapNotNull { it.toIntOrNull() }
+                val jalali = if (dateParts.size == 3) {
+                    PersianDateUtil.JalaliDate(dateParts[0], dateParts[1], dateParts[2]).addMonths(index).format()
+                } else "ماه ${index + 1}"
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Column(modifier = Modifier.width(96.dp)) {
+                        Text(
+                            text = "قسط ${PersianDateUtil.toPersianDigits((index + 1).toString())}",
+                            style = MaterialTheme.typography.bodySmall,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = PersianDateUtil.toPersianDigits(jalali),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    OutlinedTextField(
+                        value = amount.toString(),
+                        onValueChange = { newText ->
+                            customAmounts[index] = newText.toLongOrNull() ?: 0L
+                        },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        singleLine = true,
+                        shape = RoundedCornerShape(12.dp),
+                        colors = com.example.ui.components.FormTextFieldColors(),
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+            }
+
+            if (!isSumValid) {
+                Text(
+                    text = "جمع اقساط (${PersianDateUtil.formatCurrency(currentSum)}) با شهریه کل " +
+                        "(${PersianDateUtil.formatCurrency(finalFee)}) برابر نیست.",
+                    color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodySmall,
+                    fontWeight = FontWeight.Bold
+                )
+            }
         }
+
+        com.example.ui.components.FormSection(
+            title = "یادداشت",
+            icon = Icons.Default.Description
+        ) {
+            com.example.ui.components.FormTextField(
+                value = notes,
+                onValueChange = { notes = it },
+                label = "توضیحات ثبت‌نام (اختیاری)",
+                singleLine = false,
+                minLines = 2,
+                maxLines = 3
+            )
+        }
+        Spacer(Modifier.height(4.dp))
     }
 }

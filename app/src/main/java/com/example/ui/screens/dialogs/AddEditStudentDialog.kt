@@ -14,6 +14,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Badge
+import androidx.compose.material.icons.filled.PersonAdd
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Phone
@@ -55,164 +56,135 @@ fun AddEditStudentDialog(
     var phoneErrorText by remember { mutableStateOf("شماره موبایل الزامی است") }
     var nationalCodeError by remember { mutableStateOf(false) }
 
-    val scrollState = rememberScrollState()
+    val isEditing = studentToEdit != null
 
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = {
-            Text(
-                text = if (studentToEdit == null) "ثبت هنرجوی جدید" else "ویرایش مشخصات هنرجو",
-                style = MaterialTheme.typography.titleLarge,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.primary
+    fun submit() {
+        var hasError = false
+        if (firstName.isBlank()) {
+            firstNameError = true
+            hasError = true
+        }
+        if (lastName.isBlank()) {
+            lastNameError = true
+            hasError = true
+        }
+        if (phone.isBlank()) {
+            phoneError = true
+            phoneErrorText = "شماره موبایل الزامی است"
+            hasError = true
+        } else if (!com.example.data.util.ValidationUtil.isValidMobile(phone)) {
+            phoneError = true
+            phoneErrorText = "شماره موبایل معتبر نیست (مثال: 09121234567)"
+            hasError = true
+        }
+        if (nationalCode.isNotBlank() && !com.example.data.util.ValidationUtil.isValidNationalCode(nationalCode)) {
+            nationalCodeError = true
+            hasError = true
+        }
+        if (!hasError) {
+            onConfirm(
+                firstName,
+                lastName,
+                com.example.data.util.ValidationUtil.normalizePhone(phone),
+                nationalCode.trim(),
+                notes
             )
-        },
-        text = {
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .verticalScroll(scrollState)
-                    .padding(vertical = 8.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                // First name
-                OutlinedTextField(
+        }
+    }
+
+    com.example.ui.components.AppFormDialog(
+        title = if (isEditing) "ویرایش مشخصات هنرجو" else "ثبت هنرجوی جدید",
+        subtitle = if (isEditing) "تغییر اطلاعات شناسنامه‌ای و تماس" else "مشخصات اصلی هنرجو را کامل کنید",
+        icon = Icons.Default.PersonAdd,
+        onDismiss = onDismiss,
+        confirmText = if (isEditing) "ذخیره تغییرات" else "ثبت هنرجو",
+        onConfirm = { submit() },
+        maxHeight = 720,
+        testTag = "student_form_dialog"
+    ) {
+        com.example.ui.components.FormSection(
+            title = "هویت هنرجو",
+            icon = Icons.Default.Badge
+        ) {
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                com.example.ui.components.FormTextField(
                     value = firstName,
-                    onValueChange = {
-                        firstName = it
-                        firstNameError = false
-                    },
-                    label = { Text("نام *") },
-                    leadingIcon = { Icon(Icons.Default.Person, contentDescription = null) },
-                    singleLine = true,
+                    onValueChange = { firstName = it; firstNameError = false },
+                    label = "نام *",
+                    leadingIcon = Icons.Default.Person,
                     isError = firstNameError,
-                    supportingText = if (firstNameError) { { Text("نام الزامی است") } } else null,
+                    supportingText = if (firstNameError) "نام الزامی است" else null,
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
-                    shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .testTag("student_firstname_input")
+                    modifier = Modifier.weight(1f),
+                    testTag = "student_firstname_input"
                 )
-
-                // Last name
-                OutlinedTextField(
+                com.example.ui.components.FormTextField(
                     value = lastName,
-                    onValueChange = {
-                        lastName = it
-                        lastNameError = false
-                    },
-                    label = { Text("نام خانوادگی *") },
-                    leadingIcon = { Icon(Icons.Default.Person, contentDescription = null) },
-                    singleLine = true,
+                    onValueChange = { lastName = it; lastNameError = false },
+                    label = "نام خانوادگی *",
+                    leadingIcon = Icons.Default.Person,
                     isError = lastNameError,
-                    supportingText = if (lastNameError) { { Text("نام خانوادگی الزامی است") } } else null,
+                    supportingText = if (lastNameError) "نام خانوادگی الزامی است" else null,
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
-                    shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .testTag("student_lastname_input")
+                    modifier = Modifier.weight(1f),
+                    testTag = "student_lastname_input"
                 )
-
-                // Phone
-                OutlinedTextField(
-                    value = phone,
-                    onValueChange = {
-                        phone = it
-                        phoneError = false
-                    },
-                    label = { Text("شماره موبایل *") },
-                    leadingIcon = { Icon(Icons.Default.Phone, contentDescription = null) },
-                    singleLine = true,
-                    isError = phoneError,
-                    supportingText = if (phoneError) { { Text(phoneErrorText) } } else null,
-                    keyboardOptions = KeyboardOptions(
-                        keyboardType = KeyboardType.Phone,
-                        imeAction = ImeAction.Next
-                    ),
-                    shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .testTag("student_phone_input")
-                )
-
-                // National Code (Optional)
-                OutlinedTextField(
-                    value = nationalCode,
-                    onValueChange = { if (it.length <= 10) { nationalCode = it; nationalCodeError = false } },
-                    label = { Text("کد ملی (اختیاری)") },
-                    isError = nationalCodeError,
-                    supportingText = if (nationalCodeError) { { Text("کد ملی وارد شده معتبر نیست") } } else null,
-                    leadingIcon = { Icon(Icons.Default.Badge, contentDescription = null) },
-                    singleLine = true,
-                    keyboardOptions = KeyboardOptions(
-                        keyboardType = KeyboardType.Number,
-                        imeAction = ImeAction.Next
-                    ),
-                    shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier.fillMaxWidth()
-                )
-
-                // Notes
-                OutlinedTextField(
-                    value = notes,
-                    onValueChange = { notes = it },
-                    label = { Text("توضیحات و سوابق (اختیاری)") },
-                    leadingIcon = { Icon(Icons.Default.Description, contentDescription = null) },
-                    minLines = 2,
-                    maxLines = 4,
-                    shape = RoundedCornerShape(12.dp),
-                    modifier = Modifier.fillMaxWidth()
-                )
-            }
-        },
-        confirmButton = {
-            Button(
-                onClick = {
-                    var hasError = false
-                    if (firstName.isBlank()) {
-                        firstNameError = true
-                        hasError = true
-                    }
-                    if (lastName.isBlank()) {
-                        lastNameError = true
-                        hasError = true
-                    }
-                    if (phone.isBlank()) {
-                        phoneError = true
-                        phoneErrorText = "شماره موبایل الزامی است"
-                        hasError = true
-                    } else if (!com.example.data.util.ValidationUtil.isValidMobile(phone)) {
-                        phoneError = true
-                        phoneErrorText = "شماره موبایل معتبر نیست (مثال: 09121234567)"
-                        hasError = true
-                    }
-                    if (nationalCode.isNotBlank() && !com.example.data.util.ValidationUtil.isValidNationalCode(nationalCode)) {
-                        nationalCodeError = true
-                        hasError = true
-                    }
-                    if (!hasError) {
-                        onConfirm(
-                            firstName,
-                            lastName,
-                            com.example.data.util.ValidationUtil.normalizePhone(phone),
-                            nationalCode.trim(),
-                            notes
-                        )
-                    }
-                },
-                shape = RoundedCornerShape(10.dp),
-                modifier = Modifier.testTag("save_student_button")
-            ) {
-                Text(if (studentToEdit == null) "ثبت هنرجو" else "ذخیره تغییرات")
-            }
-        },
-        dismissButton = {
-            OutlinedButton(
-                onClick = onDismiss,
-                shape = RoundedCornerShape(10.dp)
-            ) {
-                Text("انصراف")
             }
         }
-    )
+
+        com.example.ui.components.FormSection(
+            title = "تماس و شناسنامه",
+            icon = Icons.Default.Phone,
+            accent = MaterialTheme.colorScheme.tertiary
+        ) {
+            com.example.ui.components.FormTextField(
+                value = phone,
+                onValueChange = { phone = it; phoneError = false },
+                label = "شماره موبایل *",
+                leadingIcon = Icons.Default.Phone,
+                isError = phoneError,
+                supportingText = if (phoneError) phoneErrorText else null,
+                keyboardOptions = KeyboardOptions(
+                    keyboardType = KeyboardType.Phone,
+                    imeAction = ImeAction.Next
+                ),
+                modifier = Modifier.weight(1f),
+                testTag = "student_phone_input"
+            )
+            com.example.ui.components.FormTextField(
+                value = nationalCode,
+                onValueChange = {
+                    if (it.length <= 10) {
+                        nationalCode = it
+                        nationalCodeError = false
+                    }
+                },
+                label = "کد ملی (اختیاری)",
+                leadingIcon = Icons.Default.Badge,
+                isError = nationalCodeError,
+                supportingText = if (nationalCodeError) "کد ملی وارد شده معتبر نیست" else null,
+                keyboardOptions = KeyboardOptions(
+                    keyboardType = KeyboardType.Number,
+                    imeAction = ImeAction.Next
+                )
+            )
+        }
+
+        com.example.ui.components.FormSection(
+            title = "توضیحات و سوابق",
+            icon = Icons.Default.Description,
+            accent = MaterialTheme.colorScheme.secondary
+        ) {
+            com.example.ui.components.FormTextField(
+                value = notes,
+                onValueChange = { notes = it },
+                label = "توضیحات و سوابق (اختیاری)",
+                singleLine = false,
+                minLines = 2,
+                maxLines = 4,
+                leadingIcon = null
+            )
+        }
+        Spacer(Modifier.height(4.dp))
+    }
 }

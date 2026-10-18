@@ -21,6 +21,7 @@ import androidx.compose.material.icons.filled.CalendarMonth
 import androidx.compose.material.icons.filled.CreditCard
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Numbers
+import androidx.compose.material.icons.filled.Receipt
 import androidx.compose.material.icons.filled.Payments
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material3.Button
@@ -107,259 +108,188 @@ fun RecordPaymentDialog(
     val isPartial = parsedAmount < installment.remainingAmount
     val isOver = parsedAmount > installment.remainingAmount
 
-    Dialog(
-        onDismissRequest = onDismiss,
-        properties = DialogProperties(usePlatformDefaultWidth = false)
-    ) {
-        Surface(
-            modifier = Modifier
-                .fillMaxWidth(0.95f)
-                .heightIn(max = 700.dp)
-                .clip(RoundedCornerShape(24.dp))
-                .testTag("record_payment_dialog"),
-            color = MaterialTheme.colorScheme.surface,
-            tonalElevation = 6.dp
-        ) {
-            Column(
-                modifier = Modifier
-                    .padding(24.dp)
-                    .verticalScroll(rememberScrollState())
-            ) {
-                // Header
-                Text(
-                    text = "ثبت تراکنش دریافت شهریه",
-                    style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.primary
+    com.example.ui.components.AppFormDialog(
+        title = "ثبت دریافت شهریه",
+        subtitle = "مبلغ، تاریخ و روش پرداخت را ثبت کنید",
+        icon = Icons.Default.Payments,
+        onDismiss = onDismiss,
+        confirmText = "ثبت و صدور رسید",
+        onConfirm = {
+            if (isValidAmount) {
+                onRecordPayment(
+                    parsedAmount,
+                    paymentDateShamsi,
+                    paymentTime,
+                    selectedMethod.first,
+                    selectedAccount?.id ?: "",
+                    selectedAccount?.accountTitle ?: "حساب آموزشگاه",
+                    trackingNumber,
+                    notes
                 )
+            }
+        },
+        confirmEnabled = isValidAmount,
+        maxHeight = 760,
+        testTag = "record_payment_dialog"
+    ) {
+        com.example.ui.components.FormSection(title = "جزئیات قسط", icon = Icons.Default.Receipt) {
+            InfoRow("هنرجو", "${student.fullName} (${student.studentCode})")
+            InfoRow("دوره و قسط", "${installment.courseTitle} - قسط ${installment.installmentNumber} از ${installment.totalInstallments}")
+            InfoRow("مبلغ کل قسط", PersianDateUtil.formatCurrency(installment.amount))
+            InfoRow(
+                "مانده قابل پرداخت",
+                PersianDateUtil.formatCurrency(installment.remainingAmount),
+                valueColor = MaterialTheme.colorScheme.primary
+            )
+        }
 
-                Spacer(modifier = Modifier.height(16.dp))
+        com.example.ui.components.FormSection(
+            title = "مبلغ و تاریخ",
+            icon = Icons.Default.Payments,
+            accent = MaterialTheme.colorScheme.tertiary
+        ) {
+            com.example.ui.components.FormTextField(
+                value = amountText,
+                onValueChange = { amountText = it },
+                label = "مبلغ واریزی (تومان) *",
+                leadingIcon = Icons.Default.Payments,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                testTag = "payment_amount_input"
+            )
+            if (isPartial) {
+                Text(
+                    text = "این پرداخت ناقص است؛ ${PersianDateUtil.formatCurrency(installment.remainingAmount - parsedAmount)} به ماندهٔ قسط اضافه می‌شود.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.tertiary
+                )
+            }
+            if (isOver) {
+                Text(
+                    text = "مبلغ وارد شده از ماندهٔ این قسط بیشتر است.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error
+                )
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                com.example.ui.components.JalaliDateField(
+                    value = paymentDateShamsi,
+                    onValueChange = { paymentDateShamsi = it },
+                    label = "تاریخ پرداخت",
+                    modifier = Modifier.weight(1.3f)
+                )
+                com.example.ui.components.FormTextField(
+                    value = paymentTime,
+                    onValueChange = { paymentTime = it },
+                    label = "ساعت",
+                    leadingIcon = Icons.Default.AccessTime,
+                    modifier = Modifier.weight(1f)
+                )
+            }
+        }
 
-                // Installment Info Card
-                Card(
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.3f)),
-                    shape = RoundedCornerShape(12.dp)
-                ) {
-                    Column(modifier = Modifier.padding(12.dp)) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Text("هنرجو:", style = MaterialTheme.typography.bodyMedium)
-                            Text("${student.fullName} (${student.studentCode})", fontWeight = FontWeight.Bold)
-                        }
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Text("دوره و قسط:", style = MaterialTheme.typography.bodyMedium)
-                            Text("${installment.courseTitle} - قسط ${installment.installmentNumber} از ${installment.totalInstallments}", fontWeight = FontWeight.Medium)
-                        }
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Text("مبلغ کل قسط:", style = MaterialTheme.typography.bodyMedium)
-                            Text(PersianDateUtil.formatCurrency(installment.amount))
-                        }
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Text("مانده قابل پرداخت:", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold)
-                            Text(PersianDateUtil.formatCurrency(installment.remainingAmount), color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
-                        }
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(16.dp))
-
-                // Amount Field
+        com.example.ui.components.FormSection(
+            title = "روش و حساب مقصد",
+            icon = Icons.Default.AccountBalance,
+            accent = MaterialTheme.colorScheme.secondary
+        ) {
+            ExposedDropdownMenuBox(
+                expanded = methodDropdownExpanded,
+                onExpandedChange = { methodDropdownExpanded = !methodDropdownExpanded }
+            ) {
                 OutlinedTextField(
-                    value = amountText,
-                    onValueChange = { amountText = it },
-                    label = { Text("مبلغ واریزی (تومان) *") },
-                    leadingIcon = { Icon(Icons.Default.Payments, contentDescription = null) },
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    value = selectedMethod.second,
+                    onValueChange = {},
+                    readOnly = true,
+                    label = { Text("روش پرداخت") },
+                    leadingIcon = { Icon(Icons.Default.CreditCard, contentDescription = null) },
+                    trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = methodDropdownExpanded) },
+                    shape = RoundedCornerShape(14.dp),
+                    colors = com.example.ui.components.FormTextFieldColors(),
                     modifier = Modifier
                         .fillMaxWidth()
-                        .testTag("payment_amount_input"),
-                    singleLine = true
+                        .menuAnchor()
                 )
-
-                if (isPartial) {
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text(
-                        text = "توجه: این پرداخت به صورت «پرداخت ناقص» ثبت شده و مبلغ ${PersianDateUtil.formatCurrency(installment.remainingAmount - parsedAmount)} به عنوان مانده قسط باقی می‌ماند.",
-                        color = MaterialTheme.colorScheme.tertiary,
-                        style = MaterialTheme.typography.bodySmall
-                    )
-                }
-
-                if (isOver) {
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text(
-                        text = "هشدار: مبلغ وارد شده از مانده این قسط بیشتر است.",
-                        color = MaterialTheme.colorScheme.error,
-                        style = MaterialTheme.typography.bodySmall
-                    )
-                }
-
-                Spacer(modifier = Modifier.height(12.dp))
-
-                // Date & Time
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    OutlinedTextField(
-                        value = paymentDateShamsi,
-                        onValueChange = { paymentDateShamsi = it },
-                        label = { Text("تاریخ پرداخت") },
-                        leadingIcon = { Icon(Icons.Default.CalendarMonth, contentDescription = null) },
-                        modifier = Modifier.weight(1f)
-                    )
-                    OutlinedTextField(
-                        value = paymentTime,
-                        onValueChange = { paymentTime = it },
-                        label = { Text("ساعت") },
-                        leadingIcon = { Icon(Icons.Default.AccessTime, contentDescription = null) },
-                        modifier = Modifier.weight(1f)
-                    )
-                }
-
-                Spacer(modifier = Modifier.height(12.dp))
-
-                // Payment Method
-                ExposedDropdownMenuBox(
+                ExposedDropdownMenu(
                     expanded = methodDropdownExpanded,
-                    onExpandedChange = { methodDropdownExpanded = !methodDropdownExpanded }
+                    onDismissRequest = { methodDropdownExpanded = false }
+                ) {
+                    paymentMethods.forEach { method ->
+                        DropdownMenuItem(
+                            text = { Text(method.second) },
+                            onClick = {
+                                selectedMethod = method
+                                methodDropdownExpanded = false
+                            }
+                        )
+                    }
+                }
+            }
+
+            if (bankAccounts.isNotEmpty()) {
+                ExposedDropdownMenuBox(
+                    expanded = accountDropdownExpanded,
+                    onExpandedChange = { accountDropdownExpanded = !accountDropdownExpanded }
                 ) {
                     OutlinedTextField(
-                        value = selectedMethod.second,
+                        value = selectedAccount?.let { "${it.accountTitle} (${it.maskedNumber})" } ?: "انتخاب حساب/کارت مقصد",
                         onValueChange = {},
                         readOnly = true,
-                        label = { Text("روش پرداخت") },
-                        leadingIcon = { Icon(Icons.Default.CreditCard, contentDescription = null) },
-                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = methodDropdownExpanded) },
+                        label = { Text("حساب / کارت مقصد") },
+                        leadingIcon = { Icon(Icons.Default.AccountBalance, contentDescription = null) },
+                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = accountDropdownExpanded) },
+                        shape = RoundedCornerShape(14.dp),
+                        colors = com.example.ui.components.FormTextFieldColors(),
                         modifier = Modifier
                             .fillMaxWidth()
                             .menuAnchor()
                     )
                     ExposedDropdownMenu(
-                        expanded = methodDropdownExpanded,
-                        onDismissRequest = { methodDropdownExpanded = false }
+                        expanded = accountDropdownExpanded,
+                        onDismissRequest = { accountDropdownExpanded = false }
                     ) {
-                        paymentMethods.forEach { method ->
+                        bankAccounts.forEach { acc ->
                             DropdownMenuItem(
-                                text = { Text(method.second) },
+                                text = { Text("${acc.accountTitle} - ${acc.bankName} (${acc.maskedNumber})") },
                                 onClick = {
-                                    selectedMethod = method
-                                    methodDropdownExpanded = false
+                                    selectedAccount = acc
+                                    accountDropdownExpanded = false
                                 }
                             )
                         }
                     }
                 }
-
-                Spacer(modifier = Modifier.height(12.dp))
-
-                // Destination Bank Account
-                if (bankAccounts.isNotEmpty()) {
-                    ExposedDropdownMenuBox(
-                        expanded = accountDropdownExpanded,
-                        onExpandedChange = { accountDropdownExpanded = !accountDropdownExpanded }
-                    ) {
-                        OutlinedTextField(
-                            value = selectedAccount?.let { "${it.accountTitle} (${it.maskedNumber})" } ?: "انتخاب حساب/کارت مقصد",
-                            onValueChange = {},
-                            readOnly = true,
-                            label = { Text("حساب / کارت مقصد آموزشگاه") },
-                            leadingIcon = { Icon(Icons.Default.AccountBalance, contentDescription = null) },
-                            trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = accountDropdownExpanded) },
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .menuAnchor()
-                        )
-                        ExposedDropdownMenu(
-                            expanded = accountDropdownExpanded,
-                            onDismissRequest = { accountDropdownExpanded = false }
-                        ) {
-                            bankAccounts.forEach { acc ->
-                                DropdownMenuItem(
-                                    text = { Text("${acc.accountTitle} - ${acc.bankName} (${acc.maskedNumber})") },
-                                    onClick = {
-                                        selectedAccount = acc
-                                        accountDropdownExpanded = false
-                                    }
-                                )
-                            }
-                        }
-                    }
-                    Spacer(modifier = Modifier.height(12.dp))
-                }
-
-                // Tracking Number
-                OutlinedTextField(
-                    value = trackingNumber,
-                    onValueChange = { trackingNumber = it },
-                    label = { Text("شماره پیگیری / کد ارجاع بانکی") },
-                    leadingIcon = { Icon(Icons.Default.Numbers, contentDescription = null) },
-                    modifier = Modifier.fillMaxWidth()
-                )
-
-                Spacer(modifier = Modifier.height(12.dp))
-
-                // Notes
-                OutlinedTextField(
-                    value = notes,
-                    onValueChange = { notes = it },
-                    label = { Text("توضیحات و بابت") },
-                    leadingIcon = { Icon(Icons.Default.Description, contentDescription = null) },
-                    modifier = Modifier.fillMaxWidth(),
-                    maxLines = 2
-                )
-
-                Spacer(modifier = Modifier.height(24.dp))
-
-                // Actions
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    OutlinedButton(
-                        onClick = onDismiss,
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Text("انصراف")
-                    }
-                    Button(
-                        onClick = {
-                            if (isValidAmount) {
-                                onRecordPayment(
-                                    parsedAmount,
-                                    paymentDateShamsi,
-                                    paymentTime,
-                                    selectedMethod.first,
-                                    selectedAccount?.id ?: "",
-                                    selectedAccount?.accountTitle ?: "حساب آموزشگاه",
-                                    trackingNumber,
-                                    notes
-                                )
-                            }
-                        },
-                        enabled = isValidAmount,
-                        modifier = Modifier
-                            .weight(1f)
-                            .testTag("submit_payment_button")
-                    ) {
-                        Text("ثبت و صدور رسید")
-                    }
-                }
             }
+            com.example.ui.components.FormTextField(
+                value = trackingNumber,
+                onValueChange = { trackingNumber = it },
+                label = "شماره پیگیری / کد ارجاع",
+                leadingIcon = Icons.Default.Numbers
+            )
+            com.example.ui.components.FormTextField(
+                value = notes,
+                onValueChange = { notes = it },
+                label = "توضیحات و بابت (اختیاری)",
+                leadingIcon = Icons.Default.Description,
+                singleLine = false,
+                minLines = 2,
+                maxLines = 2
+            )
         }
+        Spacer(Modifier.height(4.dp))
+    }
+}
+
+@Composable
+private fun InfoRow(
+    label: String,
+    value: String,
+    valueColor: androidx.compose.ui.graphics.Color = MaterialTheme.colorScheme.onSurface
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween
+    ) {
+        Text(label, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(value, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold, color = valueColor)
     }
 }

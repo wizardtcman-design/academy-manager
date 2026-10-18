@@ -165,6 +165,20 @@ object PersianDateUtil {
         }
     }
 
+    fun toLatinDigits(text: String): String {
+        val sb = StringBuilder(text.length)
+        for (ch in text) {
+            sb.append(
+                when (ch) {
+                    in '۰'..'۹' -> ('0' + (ch - '۰'))
+                    in '٠'..'٩' -> ('0' + (ch - '٠'))
+                    else -> ch
+                }
+            )
+        }
+        return sb.toString()
+    }
+
     fun toPersianDigits(text: String): String {
         val persianNumbers = charArrayOf('۰', '۱', '۲', '۳', '۴', '۵', '۶', '۷', '۸', '۹')
         val builder = StringBuilder()
