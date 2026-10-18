@@ -74,6 +74,27 @@ jobs:
           echo "name=$VERSION" >> $GITHUB_OUTPUT
           echo "tag=v$VERSION-$CODE" >> $GITHUB_OUTPUT
 
+      - name: Collect changelog for this version
+        id: notes
+        run: |
+          VERSION="${{ steps.ver.outputs.name }}"
+          if [ ! -f CHANGELOG.md ]; then echo "missing CHANGELOG.md" && exit 1; fi
+          SECTION=$(awk -v v="$VERSION" '$0 ~ "^## "v"$" {f=1; next} /^## / {f=0} f' CHANGELOG.md)
+          if [ -z "$(printf '%s' "$SECTION" | tr -d '[:space:]')" ]; then
+            echo "CHANGELOG.md has no section for version $VERSION" && exit 1
+          fi
+          {
+            echo "### تغییرات نسخه $VERSION"
+            echo
+            printf '%s\n' "$SECTION"
+            echo
+            echo "---"
+            echo "**نصب:** فایل APK را دانلود و روی گوشی اندروید نصب کنید."
+            echo "اگر نسخه‌ای که با AI Studio ساخته شده نصب است، یک بار حذف و"
+            echo "این نسخه را نصب کنید؛ از این به بعد آپدیت‌ها عادی نصب می‌شوند."
+          } > release-notes.md
+          cat release-notes.md
+
       - name: Rename APK
         run: |
           mkdir -p out
@@ -91,11 +112,8 @@ jobs:
         with:
           tag_name: ${{ steps.ver.outputs.tag }}
           name: نسخه ${{ steps.ver.outputs.name }} (بیلد ${{ github.run_number }})
-          body: |
-            ساخت خودکار APK امضاشده از آخرین کد شاخه main.
-
-            **نصب:** فایل APK را دانلود و روی گوشی اندروید نصب کنید.
-            اگر نسخهٔ قبلی (ساخته‌شده در AI Studio) نصب است، آن را یک بار حذف و
-            این نسخه را نصب کنید؛ از این به بعد آپدیت‌ها به‌صورت عادی نصب می‌شوند.
-          files: out/*.apk
-          generate_release_notes: true
+          body_path: release-notes.md
+          files: |
+            out/*.apk
+            out/SHA256.txt
+          generate_release_notes: false
