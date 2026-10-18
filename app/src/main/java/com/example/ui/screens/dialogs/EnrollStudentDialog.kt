@@ -112,20 +112,16 @@ fun EnrollStudentDialog(
     var blockMessage by remember { mutableStateOf<String?>(null) }
 
     val customAmounts = remember { mutableStateListOf<Long>() }
-    // Grouped text shown in each installment box; index-aligned with customAmounts.
-    val customAmountTexts = remember { mutableStateListOf<String>() }
 
     // When course or discount or count changes, recalculate default split
     fun recalculateAmounts(count: Int, total: Long) {
         customAmounts.clear()
-        customAmountTexts.clear()
         if (count <= 0 || total <= 0) return
         val base = total / count
         val rem = total % count
         for (i in 0 until count) {
             val v = if (i == 0) base + rem else base
             customAmounts.add(v)
-            customAmountTexts.add(PersianDateUtil.groupDigits(v.toString()))
         }
     }
 
@@ -317,7 +313,7 @@ fun EnrollStudentDialog(
                     label = "تاریخ شروع دوره",
                     modifier = Modifier.weight(1f)
                 )
-                com.example.ui.components.FormTextField(
+                com.example.ui.components.FormNumberField(
                     value = discountText,
                     onValueChange = { discountText = it },
                     label = "تخفیف (تومان)",
@@ -439,10 +435,13 @@ fun EnrollStudentDialog(
             // Each installment is edited as a raw number string so the grouped
             // display ("۴٬۲۳۳٬۳۳۴") never fights the cursor: the field shows
             // thousands separators while typing but stores plain digits.
-            customAmountTexts.forEachIndexed { index, text ->
+                        // Grouped by the field itself: type 4233334 and it becomes ۴٬۲۳۳٬۳۳۴.
+            customAmounts.forEachIndexed { index, amount ->
                 val dateParts = firstInstallmentDateShamsi.split("/").mapNotNull { it.toIntOrNull() }
                 val jalali = if (dateParts.size == 3) {
-                    PersianDateUtil.JalaliDate(dateParts[0], dateParts[1], dateParts[2]).addMonths(index).format()
+                    PersianDateUtil.JalaliDate(8, dateParts[0], dateParts[1]).let {
+                        PersianDateUtil.JalaliDate(it.year, it.month, it.day).addMonths(index).format()
+                    }
                 } else "ماه ${index + 1}"
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -461,39 +460,17 @@ fun EnrollStudentDialog(
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
-                    OutlinedTextField(
-                        value = text,
-                        onValueChange = { newText ->
-                            val digits = newText.filter { it.isDigit() }.take(15).toString()
-                            customAmountTexts[index] = PersianDateUtil.groupDigits(digits)
+                    com.example.ui.components.FormNumberField(
+                        value = amount.toString(),
+                        onValueChange = { digits ->
                             customAmounts[index] = digits.toLongOrNull() ?: 0L
                         },
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                        singleLine = true,
-                        shape = RoundedCornerShape(12.dp),
-                        colors = com.example.ui.components.FormTextFieldColors(),
-                        textStyle = androidx.compose.ui.text.TextStyle(
-                            fontSize = 16.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            textAlign = androidx.compose.ui.text.style.TextAlign.Center
-                        ),
+                        label = "",
                         modifier = Modifier.weight(1f),
-                        suffix = {
+                        maxLength = 12,
+                        trailing = {
                             Text("تومان", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
-                    )
-                }
-            }
-
-            if (installmentCount > 0) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    Text("هر قسط حدوداً:", style = MaterialTheme.typography.bodySmall)
-                    Text(
-                        PersianDateUtil.formatCurrency(finalFee / installmentCount),
-                        fontWeight = FontWeight.SemiBold
                     )
                 }
             }

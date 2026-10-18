@@ -98,7 +98,7 @@ fun AddEditCourseDialog(
         testTag = "course_form_dialog"
     ) {
         com.example.ui.components.FormSection(title = "مشخصات دوره", icon = Icons.Default.School) {
-            com.example.ui.components.FormTextField(
+            com.example.ui.components.FormNumberField(
                 value = title,
                 onValueChange = { title = it; titleError = false },
                 label = "نام دورهٔ آموزشی *",
@@ -125,7 +125,7 @@ fun AddEditCourseDialog(
         ) {
             com.example.ui.components.FormTextField(
                 value = tuitionFeeText,
-                onValueChange = { tuitionFeeText = it.filter { ch -> ch.isDigit() }; feeError = false },
+                onValueChange = { tuitionFeeText = it; feeError = false },
                 label = "شهریهٔ دوره ($currencyUnit) *",
                 leadingIcon = Icons.Default.AttachMoney,
                 isError = feeError,

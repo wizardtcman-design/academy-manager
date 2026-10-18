@@ -284,8 +284,10 @@ fun AddEditBankAccountDialog(
             accent = MaterialTheme.colorScheme.tertiary
         ) {
             com.example.ui.components.FormTextField(
-                value = cardNumber,
-                onValueChange = { input -> cardNumber = input.filter { it.isDigit() }.take(16) },
+                value = cardNumber.chunked(4).joinToString(" "),
+                onValueChange = { input ->
+                    cardNumber = com.example.data.util.PersianDateUtil.toPlainDigits(input).take(16)
+                },
                 label = "شماره کارت (۱۶ رقم)",
                 leadingIcon = Icons.Default.CreditCard,
                 supportingText = "${cardNumber.filter { it.isDigit() }.length} از ۱۶ رقم",
@@ -307,7 +309,7 @@ fun AddEditBankAccountDialog(
             )
             com.example.ui.components.FormTextField(
                 value = accountNumber,
-                onValueChange = { accountNumber = it.filter { c -> c.isDigit() } },
+                onValueChange = { accountNumber = com.example.data.util.PersianDateUtil.toPlainDigits(it) },
                 label = "شماره حساب (اختیاری)",
                 leadingIcon = Icons.Default.CreditCard,
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)

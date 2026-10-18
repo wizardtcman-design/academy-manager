@@ -67,24 +67,44 @@ object ApkInstaller {
 
         return try {
             val uri: Uri = FileProvider.getUriForFile(ctx, authority(ctx), apk)
-            val intent = Intent(Intent.ACTION_VIEW).apply {
-                setDataAndType(uri, "application/vnd.android.package-archive")
-                // Grant read access to the installer through every channel the
-                // receiving app might look at.
+
+            // REQUEST_INSTALL_PACKAGES with a content:// URI is the only intent
+            // Android 8+ guarantees to route to the package installer. A plain
+            // ACTION_VIEW is resolved by every registered viewer, and some
+            // devices hand it to a file manager that just opens the APK zip
+            // again -> the user taps «نصب» and nothing happens.
+            val installIntent = Intent(Intent.ACTION_INSTALL_PACKAGE).apply {
+                data = uri
+                putExtra(Intent.EXTRA_NOT_UNKNOWN_SOURCE, true)
+                putExtra(Intent.EXTRA_INSTALLER_PACKAGE_NAME, ctx.packageName)
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                clipData = ClipData.newRawUri("apk", uri)
             }
 
-            // Try to launch the installer. A missing handler throws
-            // ActivityNotFoundException (distinct from a general failure), so
-            // the UI can tell the user the device has no installer.
-            try {
-                ctx.startActivity(intent)
-            } catch (_: android.content.ActivityNotFoundException) {
-                return Result.NO_INSTALLER
+            // The receiving package must be granted the URI explicitly: some
+            // ROMs (MIUI/ColorOS) ignore FLAG_GRANT_READ_URI_PERMISSION alone.
+            val targets = ctx.packageManager
+                .queryIntentActivities(installIntent, android.content.pm.PackageManager.MATCH_DEFAULT_ONLY)
+            val official = targets.firstOrNull {
+                it.activityInfo.packageName == "com.google.android.packageinstaller" ||
+                    it.activityInfo.packageName == "com.android.packageinstaller" ||
+                    it.activityInfo.packageName == "com.android.packageinstaller"
+            } ?: targets.firstOrNull()
+                ?: return Result.NO_INSTALLER
+
+            val start = Intent(installIntent).apply {
+                setClassName(official.activityInfo.packageName, official.activityInfo.name)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                // Older ROMs also look at this list for the URI grant.
+                clipData = ClipData.newRawUri("apk", uri)
             }
+            ctx.grantUriPermission(
+                official.activityInfo.packageName, uri,
+                Intent.FLAG_GRANT_READ_URI_PERMISSION
+            )
+            ctx.startActivity(start)
             Result.STARTED
+        } catch (_: android.content.ActivityNotFoundException) {
+            Result.NO_INSTALLER
         } catch (_: Exception) {
             Result.FAILED
         }

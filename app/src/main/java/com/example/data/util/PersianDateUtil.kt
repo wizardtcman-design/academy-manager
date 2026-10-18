@@ -207,6 +207,19 @@ object PersianDateUtil {
      * inputs read "۴٬۲۳۳٬۳۳۴" instead of a wall of digits. Non-digits are
      * dropped first; an empty input stays empty (so the placeholder shows).
      */
+    /** Persian (or Arabic) digits to plain ASCII digits, everything else dropped. */
+    fun toPlainDigits(input: String): String {
+        val sb = StringBuilder()
+        for (ch in input) {
+            when (ch) {
+                in '0'..'9' -> sb.append(ch)
+                in '۰'..'۹' -> sb.append('0' + (ch - '۰'))
+                in '٠'..'٩' -> sb.append('0' + (ch - '٠'))
+            }
+        }
+        return sb.toString()
+    }
+
     fun groupDigits(input: String): String {
         val digits = input.filter { it.isDigit() }
         if (digits.isEmpty()) return ""

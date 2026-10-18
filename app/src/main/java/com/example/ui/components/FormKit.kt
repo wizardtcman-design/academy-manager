@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
@@ -42,12 +43,25 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.style.TextDirection
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.unit.sp
+import androidx.compose.foundation.text.input.TextFieldState
+import androidx.compose.foundation.text.input.rememberTextFieldState
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.text.TextRange
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 
@@ -80,7 +94,14 @@ fun AppFormDialog(
         Surface(
             modifier = Modifier
                 .fillMaxWidth(0.95f)
-                .heightIn(max = maxHeight.dp)
+                .then(
+                    // Fill the screen height but never overflow it, so the footer
+                    // (انصراف / ثبت) stays pinned and visible at the bottom on
+                    // every phone, even with the keyboard open.
+                    Modifier
+                        .fillMaxHeight()
+                        .padding(vertical = 12.dp)
+                )
                 .clip(RoundedCornerShape(26.dp)),
             shape = RoundedCornerShape(26.dp),
             color = MaterialTheme.colorScheme.surface,
@@ -350,4 +371,119 @@ fun FieldCaption(label: String, required: Boolean = false, isError: Boolean = fa
         )
     }
     Caption()
+}
+
+/**
+ * Money / count input that puts the Persian thousands separator in by itself
+ * while the user types: 4 000 000 becomes "۴٬۰۰۰٬۰۰۰" after each keystroke.
+ *
+ * The field owns the display string but always reports plain ASCII digits to
+ * [onValueChange], so every caller keeps storing a clean number. The cursor is
+ * restored to the same digit position after regrouping, so deleting or typing
+ * in the middle of a number does not jump to the end.
+ */
+@Composable
+fun FormNumberField(
+    value: String,
+    onValueChange: (String) -> Unit,
+    label: String,
+    modifier: Modifier = Modifier,
+    leadingIcon: ImageVector? = null,
+    isError: Boolean = false,
+    supportingText: String? = null,
+    maxLength: Int = 15,
+    keyboardOptions: KeyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+    trailing: (@Composable () -> Unit)? = null,
+    testTag: String = ""
+) {
+    val state = rememberTextFieldState(com.example.data.util.PersianDateUtil.groupDigits(value))
+    val focusRequester = remember { FocusRequester() }
+    // Pull in a value that changed from outside (e.g. course switched) only while
+    // the user is not editing this very field.
+    val focused = remember { mutableStateOf(false) }
+    SyncFieldText(state, com.example.data.util.PersianDateUtil.groupDigits(value), enabled = !focused.value)
+
+    // Keep the caret after the same *digit* it was after before regrouping.
+    LaunchedEffect(state) {
+        snapshotFlow { state.text.toString() }.collect { text ->
+            val plain = com.example.data.util.PersianDateUtil.toPlainDigits(text).take(maxLength)
+            val regrouped = com.example.data.util.PersianDateUtil.groupDigits(plain)
+            if (regrouped != text) {
+                val caret = state.selection.end
+                val digitsBefore = com.example.data.util.PersianDateUtil.toPlainDigits(
+                    if (caret <= text.length) text.substring(0, caret) else text
+                ).length
+                state.edit {
+                    replace(0, length, regrouped)
+                    selection = TextRange(caretForDigits(regrouped, digitsBefore))
+                }
+            }
+            if (plain != value) onValueChange(plain)
+        }
+    }
+
+    Column(modifier = modifier) {
+        FieldCaption(label = label, required = label.contains("*"), isError = isError)
+        Spacer(Modifier.height(4.dp))
+        OutlinedTextField(
+            value = state.text.toString(),
+            onValueChange = { text ->
+                // Write exactly what was typed; the effect above regroups it and
+                // restores the caret after the same digit.
+                state.edit {
+                    replace(0, length, text)
+                    selection = TextRange(text.length)
+                }
+            },
+            modifier = Modifier
+                .fillMaxWidth()
+                .onFocusChanged { focused.value = it.isFocused }
+                .then(if (testTag.isNotBlank()) Modifier.testTag(testTag) else Modifier),
+            placeholder = { Text("—", fontSize = 13.sp) },
+            leadingIcon = leadingIcon?.let {
+                { Icon(it, contentDescription = null, modifier = Modifier.size(19.dp)) }
+            },
+            trailingIcon = trailing,
+            singleLine = true,
+            isError = isError,
+            textStyle = TextStyle(
+                fontSize = 15.sp,
+                fontWeight = FontWeight.SemiBold,
+                textDirection = TextDirection.Ltr
+            ),
+            keyboardOptions = keyboardOptions,
+            shape = RoundedCornerShape(14.dp),
+            colors = FormTextFieldColors()
+        )
+        if (!supportingText.isNullOrBlank()) {
+            Spacer(Modifier.height(3.dp))
+            Text(
+                text = supportingText,
+                fontSize = 10.5.sp,
+                color = if (isError) MaterialTheme.colorScheme.error
+                else MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+}
+
+/** Index in [grouped] just after the [digits]'th digit. */
+internal fun caretForDigits(grouped: String, digits: Int): Int {
+    if (digits <= 0) return 0
+    var seen = 0
+    grouped.forEachIndexed { i, ch ->
+        if (ch.isDigit()) {
+            seen++
+            if (seen == digits) return i + 1
+        }
+    }
+    return grouped.length
+}
+
+/** Pushes an externally changed value into the field without fighting typing. */
+@Composable
+internal fun SyncFieldText(state: TextFieldState, text: String, enabled: Boolean = true) {
+    if (enabled && state.text.toString() != text) {
+        state.edit { replace(0, length, text) }
+    }
 }

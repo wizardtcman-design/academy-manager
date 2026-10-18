@@ -3,4 +3,8 @@
     <cache-path name="pdf_cache" path="." />
     <external-files-path name="pdf_docs" path="." />
     <files-path name="internal_files" path="." />
+    <!-- Downloaded update APKs live in cacheDir/update/. The cache root above
+         already covers it; this explicit entry keeps the installer path working
+         even if the cache layout changes. -->
+    <cache-path name="updates" path="update/" />
 </paths>

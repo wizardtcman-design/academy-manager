@@ -148,7 +148,7 @@ fun RecordPaymentDialog(
             icon = Icons.Default.Payments,
             accent = MaterialTheme.colorScheme.tertiary
         ) {
-            com.example.ui.components.FormTextField(
+            com.example.ui.components.FormNumberField(
                 value = amountText,
                 onValueChange = { amountText = it },
                 label = "مبلغ واریزی (تومان) *",

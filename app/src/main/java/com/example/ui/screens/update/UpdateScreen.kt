@@ -41,6 +41,8 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -93,7 +95,8 @@ private fun launchInstaller(
         ApkInstaller.Result.STARTED -> null
         ApkInstaller.Result.NO_PERMISSION -> {
             ApkInstaller.openInstallPermissionSettings(ctx)
-            "برای نصب، اجازهٔ «نصب برنامه‌های ناشناس» را به این برنامه بدهید و دوباره بزنید."
+            "اجازهٔ «نصب برنامه‌های ناشناس» برای مدیریت آموزشگاه فعال نیست. " +
+                "صفحهٔ تنظیمات باز شد؛ گزینه را روشن کنید و برگردید و «نصب» را بزنید."
         }
         ApkInstaller.Result.NO_INSTALLER -> "نصب‌کنندهٔ برنامه روی این دستگاه پیدا نشد."
         ApkInstaller.Result.FAILED -> "باز کردن نصب‌کننده ممکن نشد؛ دوباره تلاش کنید."
@@ -140,6 +143,25 @@ fun UpdateScreen(onClose: () -> Unit) {
             installError = launchInstaller(ctx, state.readyFile)
             vm.consumeAutoInstall()
         }
+    }
+
+    // Coming back from the "install unknown apps" screen: if the download is
+    // already verified, offer the installer again automatically so the user
+    // does not have to hunt for the button.
+    val lifecycleOwner = LocalLifecycleOwner.current
+    var leftForPermission by remember { mutableStateOf(false) }
+    if (installError?.contains("نصب برنامه‌های ناشناس") == true) leftForPermission = true
+    DisposableEffect(lifecycleOwner) {
+        val obs = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME && leftForPermission) {
+                leftForPermission = false
+                if (ApkInstaller.canInstall(ctx)) {
+                    installError = launchInstaller(ctx, vm.state.value.readyFile)
+                }
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(obs)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(obs) }
     }
 
     Scaffold(
