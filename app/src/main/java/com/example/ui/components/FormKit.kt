@@ -2,6 +2,7 @@ package com.example.ui.components
 
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.text.BasicText
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -36,7 +37,11 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.unit.sp
@@ -241,7 +246,15 @@ fun FormTextFieldColors() = OutlinedTextFieldDefaults.colors(
     unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)
 )
 
-/** Single-line text field with the shared form look. */
+/**
+ * Single-line text field with the shared form look.
+ *
+ * The caption is drawn *above* the box instead of floating inside it: a
+ * floating label and the typed value are both small and sit on top of each
+ * other, which made phone and national code look identical. With the caption
+ * outside, every field always shows a visible name, the value stays large and
+ * the boxes keep an identical height.
+ */
 @Composable
 fun FormTextField(
     value: String,
@@ -255,27 +268,73 @@ fun FormTextField(
     singleLine: Boolean = true,
     minLines: Int = 1,
     maxLines: Int = 1,
+    trailing: (@Composable () -> Unit)? = null,
     testTag: String = ""
 ) {
-    OutlinedTextField(
-        value = value,
-        onValueChange = onValueChange,
-        label = { Text(label, fontSize = 12.5.sp) },
-        leadingIcon = leadingIcon?.let {
-            { Icon(it, contentDescription = null, modifier = Modifier.size(20.dp)) }
-        },
-        singleLine = singleLine,
-        minLines = minLines,
-        maxLines = maxLines,
-        isError = isError,
-        supportingText = if (supportingText != null) {
-            { Text(supportingText, fontSize = 11.sp) }
-        } else null,
-        keyboardOptions = keyboardOptions,
-        shape = RoundedCornerShape(14.dp),
-        colors = FormTextFieldColors(),
-        modifier = if (testTag.isNotBlank()) {
-            modifier.fillMaxWidth().then(Modifier.testTag(testTag))
-        } else modifier.fillMaxWidth()
-    )
+    Column(modifier = modifier.fillMaxWidth()) {
+        FieldCaption(label = label, required = label.contains("*"), isError = isError)
+        Spacer(Modifier.height(4.dp))
+        OutlinedTextField(
+            value = value,
+            onValueChange = onValueChange,
+            placeholder = { Text("—", fontSize = 13.sp) },
+            leadingIcon = leadingIcon?.let {
+                { Icon(it, contentDescription = null, modifier = Modifier.size(19.dp)) }
+            },
+            trailingIcon = trailing,
+            singleLine = singleLine,
+            minLines = minLines,
+            maxLines = maxLines,
+            isError = isError,
+            textStyle = TextStyle(
+                fontSize = 13.5.sp,
+                fontWeight = FontWeight.Medium
+            ),
+            keyboardOptions = keyboardOptions,
+            shape = RoundedCornerShape(14.dp),
+            colors = FormTextFieldColors(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .then(if (testTag.isNotBlank()) Modifier.testTag(testTag) else Modifier)
+        )
+        if (!supportingText.isNullOrBlank()) {
+            Spacer(Modifier.height(3.dp))
+            Text(
+                text = supportingText,
+                fontSize = 10.5.sp,
+                color = if (isError) MaterialTheme.colorScheme.error
+                else MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+}
+
+/** Small caption above a field, with a red * for required fields. */
+@Composable
+fun FieldCaption(label: String, required: Boolean = false, isError: Boolean = false) {
+    @Composable
+    fun Caption() {
+        val clean = label.replace("*", "").trim()
+        BasicText(
+            text = buildAnnotatedString {
+                append(clean)
+                if (required) {
+                    withStyle(
+                        SpanStyle(
+                            color = MaterialTheme.colorScheme.error,
+                            fontWeight = FontWeight.Bold
+                        )
+                    ) { append(" *") }
+                }
+            },
+            style = MaterialTheme.typography.labelMedium.copy(
+                fontSize = 11.sp,
+                color = if (isError) MaterialTheme.colorScheme.error
+                else MaterialTheme.colorScheme.onSurfaceVariant,
+                fontWeight = FontWeight.Medium
+            ),
+            modifier = Modifier.padding(start = 4.dp)
+        )
+    }
+    Caption()
 }

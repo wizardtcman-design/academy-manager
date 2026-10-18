@@ -55,6 +55,7 @@ fun AddEditStudentDialog(
     var phoneError by remember { mutableStateOf(false) }
     var phoneErrorText by remember { mutableStateOf("شماره موبایل الزامی است") }
     var nationalCodeError by remember { mutableStateOf(false) }
+    var nationalCodeErrorText by remember { mutableStateOf("کد ملی معتبر نیست (۱۰ رقم)") }
 
     val isEditing = studentToEdit != null
 
@@ -77,8 +78,13 @@ fun AddEditStudentDialog(
             phoneErrorText = "شماره موبایل معتبر نیست (مثال: 09121234567)"
             hasError = true
         }
-        if (nationalCode.isNotBlank() && !com.example.data.util.ValidationUtil.isValidNationalCode(nationalCode)) {
+        if (nationalCode.isBlank()) {
             nationalCodeError = true
+            nationalCodeErrorText = "کد ملی الزامی است"
+            hasError = true
+        } else if (!com.example.data.util.ValidationUtil.isValidNationalCode(nationalCode)) {
+            nationalCodeError = true
+            nationalCodeErrorText = "کد ملی معتبر نیست (۱۰ رقم)"
             hasError = true
         }
         if (!hasError) {
@@ -94,7 +100,7 @@ fun AddEditStudentDialog(
 
     com.example.ui.components.AppFormDialog(
         title = if (isEditing) "ویرایش مشخصات هنرجو" else "ثبت هنرجوی جدید",
-        subtitle = if (isEditing) "تغییر اطلاعات شناسنامه‌ای و تماس" else "مشخصات اصلی هنرجو را کامل کنید",
+        subtitle = if (isEditing) "تغییر اطلاعات شناسنامه‌ای و تماس" else "همهٔ فیلدهای ستاره‌دار الزامی هستند",
         icon = Icons.Default.PersonAdd,
         onDismiss = onDismiss,
         confirmText = if (isEditing) "ذخیره تغییرات" else "ثبت هنرجو",
@@ -154,17 +160,16 @@ fun AddEditStudentDialog(
             com.example.ui.components.FormTextField(
                 value = nationalCode,
                 onValueChange = {
-                    if (it.length <= 10) {
-                        nationalCode = it
-                        nationalCodeError = false
-                    }
+                    val digits = it.filter { ch -> ch.isDigit() }.take(10)
+                    nationalCode = digits
+                    nationalCodeError = false
                 },
-                label = "کد ملی (اختیاری)",
+                label = "کد ملی *",
                 leadingIcon = Icons.Default.Badge,
                 isError = nationalCodeError,
-                supportingText = if (nationalCodeError) "کد ملی وارد شده معتبر نیست" else null,
+                supportingText = if (nationalCodeError) nationalCodeErrorText else null,
                 keyboardOptions = KeyboardOptions(
-                    keyboardType = KeyboardType.Number,
+                    keyboardType = KeyboardType.Phone,
                     imeAction = ImeAction.Next
                 )
             )

@@ -3,6 +3,9 @@ package com.example.ui.components
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -16,6 +19,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CalendarMonth
 import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowLeft
+import androidx.compose.material.icons.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -36,6 +41,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -74,33 +80,42 @@ fun JalaliDateField(
 ) {
     var open by remember { mutableStateOf(false) }
 
-    // Enabling the field but intercepting the click keeps the ripple while
-    // still guaranteeing no keyboard can appear.
-    OutlinedTextField(
-        value = PersianDateUtil.toPersianDigits(value),
-        onValueChange = {},
-        readOnly = true,
-        enabled = false,
-        label = { Text(label, fontSize = 12.5.sp) },
-        leadingIcon = {
-            Icon(Icons.Default.CalendarMonth, contentDescription = null, modifier = Modifier.size(20.dp))
-        },
-        trailingIcon = {
-            IconButton(onClick = { open = true }) {
-                Icon(Icons.Default.KeyboardArrowDown, contentDescription = "انتخاب تاریخ")
+    Column(modifier = modifier.fillMaxWidth()) {
+        FieldCaption(label = label)
+        Spacer(Modifier.height(4.dp))
+        Surface(
+            onClick = { open = true },
+            shape = RoundedCornerShape(14.dp),
+            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Row(
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 14.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    Icons.Default.CalendarMonth,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(19.dp)
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    text = PersianDateUtil.toPersianDigits(value).ifBlank { "انتخاب تاریخ" },
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Medium,
+                    modifier = Modifier.weight(1f)
+                )
+                Icon(
+                    Icons.Default.KeyboardArrowDown,
+                    contentDescription = "انتخاب تاریخ",
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(20.dp)
+                )
             }
-        },
-        shape = RoundedCornerShape(14.dp),
-        colors = OutlinedTextFieldDefaults.colors(
-            disabledTextColor = MaterialTheme.colorScheme.onSurface,
-            disabledBorderColor = MaterialTheme.colorScheme.outlineVariant,
-            disabledContainerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f),
-            disabledLabelColor = MaterialTheme.colorScheme.onSurfaceVariant,
-            disabledLeadingIconColor = MaterialTheme.colorScheme.primary,
-            disabledTrailingIconColor = MaterialTheme.colorScheme.primary
-        ),
-        modifier = modifier.fillMaxWidth()
-    )
+        }
+    }
 
     if (open) {
         JalaliDatePickerDialog(
@@ -140,20 +155,19 @@ fun JalaliDatePickerDialog(
                 // Month + year selectors
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    verticalAlignment = Alignment.CenterVertically
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     StepBox(
-                        modifier = Modifier.weight(1.6f),
+                        modifier = Modifier.weight(1f),
                         title = monthNames[month - 1],
-                        subtitle = "ماه",
+                        subtitle = "ماه سال",
                         onPrevious = { month = if (month == 1) 12 else month - 1 },
                         onNext = { month = if (month == 12) 1 else month + 1 }
                     )
                     StepBox(
-                        modifier = Modifier.weight(1.3f),
+                        modifier = Modifier.weight(1f),
                         title = PersianDateUtil.toPersianDigits(year.toString()),
-                        subtitle = "سال",
+                        subtitle = "سال شمسی",
                         onPrevious = { year -= 1 },
                         onNext = { year += 1 }
                     )
@@ -272,12 +286,14 @@ private fun StepBox(
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f))
     ) {
         Row(
-            modifier = Modifier.padding(horizontal = 4.dp, vertical = 4.dp),
+            modifier = Modifier.padding(horizontal = 2.dp, vertical = 2.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            IconButton(onClick = onPrevious, modifier = Modifier.height(32.dp)) {
-                Icon(Icons.Default.KeyboardArrowUp, contentDescription = "قبلی", modifier = Modifier.size(18.dp))
-            }
+            TinyArrow(
+                icon = Icons.Default.KeyboardArrowRight,
+                description = "قبلی",
+                onClick = onPrevious
+            )
             Column(
                 modifier = Modifier.weight(1f),
                 horizontalAlignment = Alignment.CenterHorizontally
@@ -285,17 +301,46 @@ private fun StepBox(
                 Text(
                     text = title,
                     style = MaterialTheme.typography.bodyMedium,
-                    fontWeight = FontWeight.Bold
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1,
+                    softWrap = false
                 )
                 Text(
                     text = subtitle,
                     style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontSize = 9.sp,
+                    maxLines = 1,
+                    softWrap = false
                 )
             }
-            IconButton(onClick = onNext, modifier = Modifier.height(32.dp)) {
-                Icon(Icons.Default.KeyboardArrowDown, contentDescription = "بعدی", modifier = Modifier.size(18.dp))
-            }
+            TinyArrow(
+                icon = Icons.Default.KeyboardArrowLeft,
+                description = "بعدی",
+                onClick = onNext
+            )
         }
+    }
+}
+
+@Composable
+private fun TinyArrow(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    description: String,
+    onClick: () -> Unit
+) {
+    Box(
+        modifier = Modifier
+            .size(30.dp)
+            .clip(RoundedCornerShape(9.dp))
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = description,
+            tint = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.size(18.dp)
+        )
     }
 }

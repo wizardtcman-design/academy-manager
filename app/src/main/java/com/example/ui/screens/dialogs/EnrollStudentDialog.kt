@@ -59,6 +59,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.example.data.model.Course
@@ -133,7 +134,7 @@ fun EnrollStudentDialog(
         subtitle = "هنرجو، دوره، اقساط و تاریخ‌ها را مشخص کنید",
         icon = Icons.Default.MenuBook,
         onDismiss = onDismiss,
-        confirmText = "تأیید و ثبت‌نام",
+        confirmText = "ذخیره و ثبت‌نام",
         onConfirm = {
             val st = selectedStudent
             val crs = selectedCourse
@@ -157,17 +158,19 @@ fun EnrollStudentDialog(
     ) {
         com.example.ui.components.FormSection(title = "هنرجو و دوره", icon = Icons.Default.Person) {
             if (initialStudent == null) {
+                com.example.ui.components.FieldCaption("هنرجو", required = true)
                 ExposedDropdownMenuBox(
                     expanded = studentDropdownExpanded,
                     onExpandedChange = { studentDropdownExpanded = !studentDropdownExpanded }
                 ) {
                     OutlinedTextField(
-                        value = selectedStudent?.let { "${it.fullName} (${it.studentCode})" } ?: "انتخاب هنرجو",
+                        value = selectedStudent?.let { "${it.fullName} (${it.studentCode})" } ?: "",
                         onValueChange = {},
                         readOnly = true,
-                        label = { Text("هنرجو") },
+                        placeholder = { Text("انتخاب هنرجو", fontSize = 13.sp) },
                         leadingIcon = { Icon(Icons.Default.Person, contentDescription = null) },
                         trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = studentDropdownExpanded) },
+                        textStyle = androidx.compose.ui.text.TextStyle(fontSize = 13.5.sp, fontWeight = FontWeight.Medium),
                         shape = RoundedCornerShape(14.dp),
                         colors = com.example.ui.components.FormTextFieldColors(),
                         modifier = Modifier
@@ -238,6 +241,7 @@ fun EnrollStudentDialog(
                     }
                 }
             } else {
+                com.example.ui.components.FieldCaption("دورهٔ آموزشی", required = true)
                 ExposedDropdownMenuBox(
                     expanded = courseDropdownExpanded,
                     onExpandedChange = { courseDropdownExpanded = !courseDropdownExpanded }
@@ -245,10 +249,11 @@ fun EnrollStudentDialog(
                     OutlinedTextField(
                         value = selectedCourse?.let {
                             "${it.title} (${PersianDateUtil.formatCurrency(it.tuitionFee)})"
-                        } ?: "انتخاب دوره آموزشی",
+                        } ?: "",
                         onValueChange = {},
                         readOnly = true,
-                        label = { Text("دوره آموزشی") },
+                        placeholder = { Text("انتخاب دورهٔ آموزشی", fontSize = 13.sp) },
+                        textStyle = androidx.compose.ui.text.TextStyle(fontSize = 13.5.sp, fontWeight = FontWeight.Medium),
                         leadingIcon = { Icon(Icons.Default.MenuBook, contentDescription = null) },
                         trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = courseDropdownExpanded) },
                         shape = RoundedCornerShape(14.dp),
