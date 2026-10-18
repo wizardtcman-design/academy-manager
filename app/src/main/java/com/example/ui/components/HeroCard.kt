@@ -68,6 +68,16 @@ fun HeroCard(
         label = "heroPress"
     )
 
+    fun Color.deep(amount: Float) = Color(
+        red = red * (1f - amount),
+        green = green * (1f - amount),
+        blue = blue * (1f - amount),
+        alpha = alpha
+    )
+    val g1 = MaterialTheme.colorScheme.primary.deep(0.22f)
+    val g2 = MaterialTheme.colorScheme.primary.deep(0.05f)
+    val g3 = MaterialTheme.colorScheme.tertiary.deep(0.18f)
+
     Surface(
         modifier = modifier
             .fillMaxWidth()
@@ -89,13 +99,7 @@ fun HeroCard(
         Box(
             modifier = Modifier
                 .background(
-                    Brush.linearGradient(
-                        listOf(
-                            MaterialTheme.colorScheme.primary,
-                            MaterialTheme.colorScheme.tertiary,
-                            MaterialTheme.colorScheme.secondary
-                        )
-                    )
+                    Brush.linearGradient(listOf(g1, g2, g3))
                 )
                 .fillMaxWidth()
         ) {
