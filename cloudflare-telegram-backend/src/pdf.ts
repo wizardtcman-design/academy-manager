@@ -469,11 +469,17 @@ export function appendSignatureLayer(original: Uint8Array, layer: SignedLayer): 
             const extra = `${layer.imageWidth > 0 ? ` /Sig ${sigObj} 0 R /SigMask ${sigMaskObj} 0 R` : ''}${sealSrc ? ` /Seal ${base + 2} 0 R` : ''}${msigSrc ? ` /MSig ${base + 3} 0 R` : ''}`.trim();
             if (!extra) {
                 // no images this time
-            } else if (/\/XObject\s*<<[^>]*>>/.test(body)) {
+            } else if (/\/XObject\s*<<([^>]*)>>/.test(body)) {
                 body = body.replace(/\/XObject\s*<<([^>]*)>>/, (_m, inner) => `/XObject <<${inner} ${extra} >>`);
+            } else if (/\/Resources\b/.test(body)) {
+                // Existing resources dict: add a (new or existing) /XObject entry
+                // inside it, never as a sibling key of the page.
+                body = body.replace(/\/XObject\s+\d+\s+\d+\s+R/, '');
+                body = body.replace(/\/Resources\s*<<([\s\S]*?)>>(\s*\/Contents|\s*>>)/,
+                    (_m, inner, tail) => `/Resources <<${inner.trim()} /XObject << ${extra} >> >>${tail}`);
             } else {
-                body = body.replace(/\/Resources\s*<<([\s\S]*?)>>\s*(\/Contents|>>)/, (_m, inner, tail) =>
-                    `/Resources <<${inner} >> /XObject <<${extra} >> ${tail}`);
+                // No resources at all: create the whole dict inside the page.
+                body = body.replace(/>>\s*$/, `/Resources << /XObject << ${extra} >> >>\n>>`);
             }
             // add the new content stream to /Contents (array kept balanced)
             if (/\/Contents\s*\[[\s\S]*?\]/.test(body)) {
@@ -481,7 +487,9 @@ export function appendSignatureLayer(original: Uint8Array, layer: SignedLayer): 
             } else if (/\/Contents\s+\d+\s+\d+\s+R/.test(body)) {
                 body = body.replace(/\/Contents\s+(\d+\s+\d+\s+R)/, '/Contents [$1 ' + contentObj + ' 0 R]');
             } else {
-                body = body.replace(/>>\s*$/, `/Contents ${contentObj} 0 R\n>>`);
+                // No /Contents yet: insert the key right after the opening
+                // dict marker (never matches the page's own closing ">>").
+                body = body.replace(/<</, `<< /Contents ${contentObj} 0 R`);
             }
         }
         objectsOut.push(`${num} 0 obj${body}endobj`);

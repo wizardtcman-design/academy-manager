@@ -311,6 +311,21 @@ export async function handleSignRoute(request: Request, env: Env, url: URL): Pro
         if (!row) return errorPage('لینک معتبر نیست', 'این لینک منقضی یا نامعتبر است.', 404);
         const status = expireIfNeeded(row);
         if (status === 'REVOKED') return errorPage('لینک لغو شده است', 'برای دریافت نسخه جدید با آموزشگاه تماس بگیرید.', 410);
+        // The signature link is a bearer token: it must expire. Only the
+        // academy API (bearer key, scoped by X-Academy-Id) can read it later.
+        if (status !== 'SIGNED' && row.expires_at_epoch > 0 && row.expires_at_epoch < Date.now()) {
+            return errorPage('مهلت لینک تمام شده', 'برای دریافت لینک جدید با آموزشگاه تماس بگیرید.', 410);
+        }
+        if (status !== 'SIGNED' && status !== 'OPENED' && status !== 'ISSUED') {
+            return errorPage('دسترسی مجاز نیست', 'این لینک در وضعیت قابل دانلود نیست.', 403);
+        }
+        // Every access is logged against the contract (forensics, no PDF body).
+        try {
+            await store.event(row.academy_id, row.id, {
+                type: 'PDF_VIEW', detail: status, ip: request.headers.get('CF-Connecting-IP') || '',
+                userAgent: request.headers.get('User-Agent') || ''
+            });
+        } catch (_) {}
         const key = status === 'SIGNED' ? row.signed_pdf_key : row.pdf_key;
         const bytes = key ? await readContractFile(env, key) : null;
         if (!bytes) return errorPage('فایل در دسترس نیست', 'فایل قرارداد پیدا نشد.', 404);
