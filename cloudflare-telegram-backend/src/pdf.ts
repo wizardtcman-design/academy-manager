@@ -548,6 +548,9 @@ export function appendSignatureLayer(original: Uint8Array, layer: SignedLayer): 
     // Images are assembled inline (header + raw bytes) inside assemblePdf, so the
     // binary body must not be joined with the text objects.
     const imageBodies = new Map<number, { header: string; payload: Uint8Array }>();
+    // The new content stream is registered in the page dict at the end.
+    const opsBytes = new TextEncoder().encode(ops);
+    objectsOut.push(`${contentObj} 0 obj\n<< /Length ${opsBytes.length} >>\nstream\n${ops}\nendstream\nendobj`);
     // The PNG fallback is stored raw, so its header must not claim a Flate stream.
 
     if (decoded && layer.imageWidth > 0 && layer.imageHeight > 0) {
@@ -560,8 +563,6 @@ export function appendSignatureLayer(original: Uint8Array, layer: SignedLayer): 
         imageBodies.set(sigMaskObj, { header: maskHeader, payload: decoded.mask });
         if (!imageBodies.has(sigMaskObj) || !decoded.mask.length) imageBodies.delete(sigMaskObj);
     }
-    const opsBytes = new TextEncoder().encode(ops);
-    objectsOut.push(`${contentObj} 0 obj\n<< /Length ${opsBytes.length} >>\nstream\n${ops}\nendstream\nendobj`);
     // A PNG seal/signature is flattened to RGB first: RGB has no alpha channel,
     // so the soft mask keeps the transparent background from painting white.
     const flattenPng = (bytes: Uint8Array, w: number, h: number) => {
@@ -599,8 +600,7 @@ export function appendSignatureLayer(original: Uint8Array, layer: SignedLayer): 
     ].filter(Boolean).join(' ');
 
     // The page is patched last: /Sig is only referenced once the mask object
-    // actually exists in imageBodies.
-    objectsOut = [];
+    // actually exists in imageBodies. The content stream object added above stays.
     for (const [num, obj] of objects) {
         const body = num === pageObjNum ? patchPage(obj.body) : obj.body;
         objectsOut.push(`${num} 0 obj${body}endobj`);
