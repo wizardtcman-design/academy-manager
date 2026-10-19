@@ -239,8 +239,8 @@ export async function handleContractsApi(request: Request, env: Env, url: URL): 
     // separately through the per-student route, which checks ownership.
     if (url.pathname === '/api/admin/backup' && request.method === 'GET') {
         const read = async (sql: string) => ((await env.DB!.prepare(sql).bind(academyId).all<any>()).results || []);
-        const contracts = await read(`SELECT * FROM contracts WHERE academy_id = '${academyId.replace(/'/g, "''")}'`);
-        const events = await read(`SELECT * FROM contract_events WHERE academy_id = '${academyId.replace(/'/g, "''")}' ORDER BY id ASC`);
+        const contracts = await read('SELECT * FROM contracts WHERE academy_id = ?');
+        const events = await read('SELECT * FROM contract_events WHERE academy_id = ? ORDER BY id ASC');
         const files = await read(
             `SELECT f.key, f.sha256, f.created_at_epoch,
                     (SELECT COUNT(*) FROM contract_file_chunks c WHERE c.file_key = f.key) AS chunk_count,
