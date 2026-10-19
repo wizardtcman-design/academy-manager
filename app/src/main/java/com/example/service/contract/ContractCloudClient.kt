@@ -213,25 +213,13 @@ class ContractCloudClient(
                     partial.delete()
                     return Result(false, error = "دانلود ناقص است ($size از $expected بایت)", code = 0)
                 }
-                val digest = MessageDigest.getInstance("SHA-256")
-                partial.inputStream().use { input ->
-                    val buf = ByteArray(64 * 1024)
-                    while (true) {
-                        val n = input.read(buf)
-                        if (n < 0) break
-                        digest.update(buf, 0, n)
-                    }
-                }
-                val sha = digest.digest().joinToString("") { "%02x".format(it) }
-                val head = partial.inputStream().use { input -> ByteArray(5).also { input.read(it) } }
-                val wanted = (res.header("X-Content-SHA256") ?: expectedSha256).trim().lowercase()
-                if (wanted.isNotEmpty() && sha != wanted) {
+                val headSha = res.header("X-Content-SHA256")?.trim()?.lowercase().orEmpty()
+                verifyDownload(
+                    partial,
+                    expectedSha256 = expectedSha256.ifBlank { headSha }
+                )?.let { problem ->
                     partial.delete()
-                    return Result(false, error = "فایل با نسخه ثبت‌شده مطابقت ندارد", code = 0)
-                }
-                if (!head.contentEquals("%PDF-".toByteArray())) {
-                    partial.delete()
-                    return Result(false, error = "فایل PDF معتبر نیست", code = 0)
+                    return Result(false, error = problem, code = 0)
                 }
                 if (target.exists()) target.delete()
                 if (!partial.renameTo(target)) {
@@ -268,6 +256,41 @@ class ContractCloudClient(
     }
 
     companion object {
+        /**
+         * Null when the file is a complete PDF whose SHA-256 matches the
+         * recorded one; otherwise a Persian reason. A partial file fails
+         * BOTH checks: it has no %%EOF trailer and a different hash.
+         */
+        fun verifyDownload(file: File, expectedSha256: String): String? {
+            if (!file.exists() || file.length() == 0L) return "فایل خالی است"
+            val size = file.length()
+            val head = file.inputStream().use { input -> ByteArray(5).also { input.read(it) } }
+            if (!head.contentEquals("%PDF-".toByteArray())) return "فایل PDF معتبر نیست"
+            val tailSize = minOf(1024L, size).toInt()
+            val tailBytes = java.io.RandomAccessFile(file, "r").use { raf ->
+                raf.seek(size - tailSize)
+                ByteArray(tailSize).also { raf.readFully(it) }
+            }
+            if (!String(tailBytes, Charsets.ISO_8859_1).contains("%%EOF")) {
+                return "فایل ناقص است (پایان PDF پیدا نشد)"
+            }
+            val wanted = expectedSha256.trim().lowercase()
+            if (wanted.isNotEmpty()) {
+                val digest = MessageDigest.getInstance("SHA-256")
+                file.inputStream().use { input ->
+                    val buf = ByteArray(64 * 1024)
+                    while (true) {
+                        val n = input.read(buf)
+                        if (n < 0) break
+                        digest.update(buf, 0, n)
+                    }
+                }
+                val sha = digest.digest().joinToString("") { "%02x".format(it) }
+                if (sha != wanted) return "فایل با نسخه ثبت‌شده مطابقت ندارد"
+            }
+            return null
+        }
+    
         fun fromSettings(settings: AcademySettings?): ContractCloudClient =
             ContractCloudClient(
                 baseUrl = settings?.telegramWorkerUrl.orEmpty(),

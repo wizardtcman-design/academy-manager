@@ -162,15 +162,10 @@ data class AcademySettings(
      * manager's Google account and must never hold a credential that unlocks
      * every contract (API key) or the bot itself (bot token).
      */
-    val localOnlySecrets: Map<String, Any> = mapOf(
-        "telegramApiSecret" to telegramApiSecret,
-        "telegramBotToken" to telegramBotToken,
-        "rubikaBotToken" to rubikaBotToken,
-        "smsApiKey" to smsApiKey
+    /** Cloud copy: everything except this device's credentials, which stay local. */
+    fun toCloudMap(): Map<String, Any> = toMap() - setOf(
+        "telegramApiSecret", "telegramBotToken", "rubikaBotToken", "smsApiKey"
     )
-
-    /** Cloud copy: everything except [localOnlySecrets]. */
-    fun toCloudMap(): Map<String, Any> = toMap() - localOnlySecrets.keys
 
     /** Re-attaches this device's secrets to settings that came from the cloud. */
     fun withLocalSecrets(local: AcademySettings?): AcademySettings {
