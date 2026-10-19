@@ -415,7 +415,6 @@ export function appendSignatureLayer(original: Uint8Array, layer: SignedLayer): 
     const msigSrc = layer.managerSignaturePng || layer.managerSignatureJpeg;
     const sealObj = sealSrc ? base + 2 : 0;
     const msigObj = msigSrc ? base + 3 : 0;
-    let sinkMask = true;
     const pageObjNum = page.pageRef ? Number(page.pageRef.split(' ')[0]) : 0;
     const pageBody = pageObjNum ? objects.get(pageObjNum)?.body ?? '' : '';
 
@@ -473,13 +472,7 @@ export function appendSignatureLayer(original: Uint8Array, layer: SignedLayer): 
     }
     ops += asciiText(boxX + 8, boxY - 10, `signed ${new Date(now).toISOString().slice(0, 19)}Z`, 4, false);
 
-    // Page dictionary: register the new XObjects and the new content stream in
-    // one balanced edit (a regex on the page body alone can unbalance the dict).
-    const extra = [
-        layer.imageWidth > 0 && layer.imageHeight > 0 ? `/Sig ${sigObj} 0 R${sinkMask ? ` /SigMask ${sigMaskObj} 0 R` : ''}` : '',
-        sealSrc ? `/Seal ${sealObj} 0 R` : '',
-        msigSrc ? `/MSig ${msigObj} 0 R` : ''
-    ].filter(Boolean).join(' ');
+
 
     // Minimal dictionary walk: find the top-level key `name` inside `dict` and
     // return its range, so a nested ">>" never ends the parent dict early.
@@ -543,11 +536,7 @@ export function appendSignatureLayer(original: Uint8Array, layer: SignedLayer): 
         return head + dict;
     }
 
-    const objectsOut: string[] = [];
-    for (const [num, obj] of objects) {
-        const body = num === pageObjNum ? patchPage(obj.body) : obj.body;
-        objectsOut.push(`${num} 0 obj${body}endobj`);
-    }
+    let objectsOut: string[] = [];
 
     const imgHeader = (jpeg: Uint8Array, iw: number, ih: number, isPng = false, smaskObj = 0) =>
         isPng
@@ -569,10 +558,7 @@ export function appendSignatureLayer(original: Uint8Array, layer: SignedLayer): 
         imageBodies.set(sigObj, { header: imgHeader(decoded.alpha, layer.imageWidth, layer.imageHeight, true, sigMaskObj), payload: decoded.alpha });
         const maskHeader = `<< /Type /XObject /Subtype /Image /Width ${layer.imageWidth} /Height ${layer.imageHeight} /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /FlateDecode /Length ${decoded.mask.length} >>`;
         imageBodies.set(sigMaskObj, { header: maskHeader, payload: decoded.mask });
-        if (!imageBodies.has(sigMaskObj) || !decoded.mask.length) {
-            imageBodies.delete(sigMaskObj);
-            sinkMask = false;
-        }
+        if (!imageBodies.has(sigMaskObj) || !decoded.mask.length) imageBodies.delete(sigMaskObj);
     }
     const opsBytes = new TextEncoder().encode(ops);
     objectsOut.push(`${contentObj} 0 obj\n<< /Length ${opsBytes.length} >>\nstream\n${ops}\nendstream\nendobj`);
@@ -601,6 +587,23 @@ export function appendSignatureLayer(original: Uint8Array, layer: SignedLayer): 
             header: imgHeader(layer.managerSignatureJpeg, layer.managerSignatureWidth || 1, layer.managerSignatureHeight || 1),
             payload: layer.managerSignatureJpeg
         });
+    }
+
+    const maskReady = imageBodies.has(sigMaskObj);
+    // Page dictionary: register the new XObjects and the new content stream in
+    // one balanced edit (a regex on the page body alone can unbalance the dict).
+    const extra = [
+        layer.imageWidth > 0 && layer.imageHeight > 0 ? `/Sig ${sigObj} 0 R${maskReady ? ` /SigMask ${sigMaskObj} 0 R` : ''}` : '',
+        sealSrc ? `/Seal ${sealObj} 0 R` : '',
+        msigSrc ? `/MSig ${msigObj} 0 R` : ''
+    ].filter(Boolean).join(' ');
+
+    // The page is patched last: /Sig is only referenced once the mask object
+    // actually exists in imageBodies.
+    objectsOut = [];
+    for (const [num, obj] of objects) {
+        const body = num === pageObjNum ? patchPage(obj.body) : obj.body;
+        objectsOut.push(`${num} 0 obj${body}endobj`);
     }
 
     return assemblePdf(
