@@ -11,5 +11,9 @@
     </cloud-backup>
     <device-transfer>
         <exclude domain="sharedpref" path="academy_auth_prefs.xml" />
+        <!-- Contracts, letterhead/seal images and signatures stay off any transfer -->
+        <exclude domain="file" path="contracts" />
+        <exclude domain="file" path="contracts_signed" />
+        <exclude domain="file" path="letterhead" />
     </device-transfer>
 </data-extraction-rules>

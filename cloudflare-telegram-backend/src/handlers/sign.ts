@@ -13,7 +13,7 @@ import { Env } from '../types';
 import { ContractStore, ContractRow } from '../contracts-store';
 import { sha256Hex, maskPhone, maskNational } from '../crypto';
 import { appendSignatureLayer, toPersianDigits } from '../pdf';
-import { readContractFile, writeContractFile } from './contracts-api';
+import { readContractFile, writeContractFile, bearerAuthorized } from './contracts-api';
 
 const MAX_FAILED = 5;
 const LOCK_WINDOW_MS = 30 * 60 * 1000;
@@ -313,8 +313,12 @@ export async function handleSignRoute(request: Request, env: Env, url: URL): Pro
         if (status === 'REVOKED') return errorPage('لینک لغو شده است', 'برای دریافت نسخه جدید با آموزشگاه تماس بگیرید.', 410);
         // The signature link is a bearer token: it must expire. Only the
         // academy API (bearer key, scoped by X-Academy-Id) can read it later.
-        if (status !== 'SIGNED' && row.expires_at_epoch > 0 && row.expires_at_epoch < Date.now()) {
-            return errorPage('مهلت لینک تمام شده', 'برای دریافت لینک جدید با آموزشگاه تماس بگیرید.', 410);
+        if (row.expires_at_epoch > 0 && row.expires_at_epoch < Date.now()) {
+            // The signing token is a bearer credential: after expiry only the
+            // academy's own API key can read the file (archive / support).
+            if (!bearerAuthorized(request, env)) {
+                return errorPage('مهلت لینک تمام شده', 'برای دریافت لینک جدید با آموزشگاه تماس بگیرید.', 410);
+            }
         }
         if (status !== 'SIGNED' && status !== 'OPENED' && status !== 'ISSUED') {
             return errorPage('دسترسی مجاز نیست', 'این لینک در وضعیت قابل دانلود نیست.', 403);

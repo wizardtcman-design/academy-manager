@@ -13,6 +13,8 @@ import {
 } from '../types';
 import { TelegramBotClient } from '../telegram';
 import { AcademyDatabase } from '../db';
+import { ContractStore } from '../contracts-store';
+import { readContractFileForStudent } from './contracts-api';
 
 // JSON response helper
 function jsonResponse<T>(data: ApiResponse<T>, status: number = 200): Response {
@@ -25,6 +27,23 @@ function jsonResponse<T>(data: ApiResponse<T>, status: number = 200): Response {
             'Access-Control-Allow-Headers': 'Content-Type, Authorization'
         }
     });
+}
+
+/**
+ * The academy's own bot token when it has one; the deployment secret otherwise.
+ * A bot token therefore never has to be copied into the app.
+ */
+async function botTokenFor(env: Env, academyId: string): Promise<string> {
+    if (env.DB) {
+        try {
+            const row = await env.DB
+                .prepare('SELECT bot_token FROM academies WHERE id = ?')
+                .bind(academyId)
+                .first<{ bot_token: string }>();
+            if (row?.bot_token) return row.bot_token;
+        } catch (_) {}
+    }
+    return (env.TELEGRAM_BOT_TOKEN || '').trim();
 }
 
 // Authentication middleware
@@ -85,6 +104,64 @@ export async function handleApiRequest(
 
     const bot = new TelegramBotClient(botToken);
     const db = new AcademyDatabase(env);
+
+    // ============================================================
+    // 0. Contract PDF delivery (no public URL, no token ever in a message)
+    // ============================================================
+    if (path === '/api/send-document' && request.method === 'POST') {
+        let body: any;
+        try {
+            body = await request.json();
+        } catch {
+            return jsonResponse({ success: false, message: 'بدنهٔ درخواست معتبر نیست.', errorCode: 400 }, 400);
+        }
+        const contractId = String(body.contractId || '').trim();
+        const studentId = String(body.studentId || '').trim();
+        const chatId = String(body.chatId || '').trim();
+        if (!contractId || !studentId || !chatId) {
+            return jsonResponse({ success: false, message: 'شناسه قرارداد، هنرجو و چت الزامی است.', errorCode: 400 }, 400);
+        }
+        const student = await db.getStudentById(studentId, db.academyId);
+        if (!student) {
+            return jsonResponse({ success: false, message: 'هنرجو در این آموزشگاه پیدا نشد.', errorCode: 404 }, 404);
+        }
+        // The chat must be the one THIS student linked in Telegram.
+        if (!student.telegram_chat_id || student.telegram_chat_id !== chatId) {
+            return jsonResponse({ success: false, message: 'این چت تلگرام به این هنرجو متصل نیست.', errorCode: 403 }, 403);
+        }
+        const botToken = await botTokenFor(env, db.academyId);
+        if (!botToken) {
+            return jsonResponse({ success: false, message: 'ربات تلگرام این آموزشگاه متصل نیست.', errorCode: 409 }, 409);
+        }
+        const bot = new TelegramBotClient(botToken);
+        const store = new ContractStore(env);
+        const row = await store.findById(db.academyId, contractId);
+        if (!row || row.student_id !== studentId) {
+            return jsonResponse({ success: false, message: 'قرارداد پیدا نشد.', errorCode: 404 }, 404);
+        }
+        if (row.status !== 'SIGNED') {
+            return jsonResponse({ success: false, message: 'این قرارداد هنوز امضا نشده است.', errorCode: 409 }, 409);
+        }
+        const file = await readContractFileForStudent(
+            env, db.academyId, contractId, studentId, row.signed_pdf_key, row.signed_pdf_sha256
+        );
+        if (!file.bytes) {
+            return jsonResponse({ success: false, message: file.error, errorCode: file.status }, file.status);
+        }
+        const sent = await bot.sendDocument({
+            chatId,
+            fileName: `contract-${contractId.slice(0, 8)}.pdf`,
+            bytes: file.bytes,
+            caption: `📄 قرارداد امضاشدهٔ شما (${row.course_title || 'دوره آموزشی'})`
+        });
+        if (!sent.ok) {
+            return jsonResponse({ success: false, message: 'ارسال فایل در تلگرام ناموفق بود: ' + (sent.description || ''), errorCode: 502 }, 502);
+        }
+        try {
+            await store.event(db.academyId, row.id, { type: 'PDF_SENT', detail: 'telegram:api' });
+        } catch (_) {}
+        return jsonResponse({ success: true, message: 'فایل قرارداد در تلگرام ارسال شد.', data: { messageId: sent.result?.message_id } });
+    }
 
     // ============================================================
     // 1. Bot Connection & Webhook Management
@@ -326,7 +403,7 @@ export async function handleApiRequest(
                 is_telegram_connected: body.isTelegramConnected ? 1 : 0
             });
 
-            const synced = await db.getStudentById(body.id);
+            const synced = await db.getStudentById(body.id, db.academyId);
 
             return jsonResponse({
                 success: true,

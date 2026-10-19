@@ -159,6 +159,45 @@ class TelegramProvider(
     }
 
     /**
+     * Asks the Worker to put a SIGNED contract file in the student's Telegram
+     * chat. The file is never exposed through a public URL: the Worker checks
+     * that the contract belongs to the student and that the chat is the one
+     * that student linked.
+     */
+    suspend fun sendSignedContractViaWorker(
+        workerUrl: String,
+        apiSecret: String,
+        studentId: String,
+        contractId: String,
+        chatId: String
+    ): Pair<Boolean, String> = withContext(Dispatchers.IO) {
+        val cleanUrl = workerUrl.trim().removeSuffix("/")
+        if (cleanUrl.isBlank()) return@withContext Pair(false, "آدرس سرور Cloudflare تنظیم نشده است.")
+        try {
+            val payload = JSONObject()
+                .put("studentId", studentId)
+                .put("contractId", contractId)
+                .put("chatId", chatId)
+            val req = Request.Builder()
+                .url("$cleanUrl/api/send-document")
+                .addHeader("Authorization", "Bearer ${apiSecret.trim()}")
+                .addHeader("X-Academy-Id", "default")
+                .post(payload.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
+                .build()
+            httpClient.newCall(req).execute().use { response ->
+                val body = response.body?.string() ?: ""
+                val json = runCatching { JSONObject(body) }.getOrNull()
+                val ok = response.isSuccessful && json?.optBoolean("success", false) == true
+                Pair(ok, json?.optString("message", "").orEmpty().ifBlank {
+                    if (ok) "ارسال شد." else "خطای ارسال (${response.code})"
+                })
+            }
+        } catch (e: Exception) {
+            Pair(false, "خطا در ارسال فایل قرارداد: ${e.localizedMessage ?: e.message}")
+        }
+    }
+
+    /**
      * Generates standard Telegram Reply Keyboard JSON with real interactive student buttons
      */
     fun getStudentMenuReplyMarkupJson(): String {
@@ -1128,6 +1167,7 @@ class TelegramProvider(
         )
 
         if (context != null) {
+            val contractManager = com.example.service.contract.ContractManager(context)
             for (enrollment in enrollments) {
                 try {
                     val course = if (enrollment.courseId.isNotBlank()) {
@@ -1152,6 +1192,38 @@ class TelegramProvider(
                         append("📚 دوره: <b>${course?.title ?: enrollment.courseTitle}</b>\n")
                         append("👤 هنرجو: ${student.fullName}\n")
                         append("🗓 تاریخ ثبت‌نام: ${enrollment.registrationDateShamsi}")
+                    }
+
+                    // A signed contract is the official copy: send the server's
+                    // SIGNED file (hash checked) instead of a freshly drawn one.
+                    val signed = contractManager.refresh(enrollment)?.takeIf { it.isSigned }
+                    val signedFile = signed?.let { c ->
+                        c.localSignedPdfPath.takeIf { it.isNotBlank() }?.let(::File)?.takeIf { it.exists() && it.length() > 0 }
+                    }
+                    val cfg = settings
+                    if (signed != null && signedFile != null && cfg != null && cfg.telegramUseWorker &&
+                        cfg.telegramWorkerUrl.isNotBlank()
+                    ) {
+                        val (ok, desc) = sendSignedContractViaWorker(
+                            workerUrl = cfg.telegramWorkerUrl,
+                            apiSecret = cfg.telegramApiSecret,
+                            studentId = student.id,
+                            contractId = signed.remoteId,
+                            chatId = chatId
+                        )
+                        if (ok) continue
+                        Log.w(tag, "worker send-document failed, falling back: $desc")
+                    }
+                    val official = signedFile
+                    if (official != null) {
+                        sendDocumentToChatInternal(
+                            botToken = botToken,
+                            chatId = chatId,
+                            file = official,
+                            caption = "📄 <b>نسخهٔ امضاشدهٔ قرارداد</b>\n📚 ${course?.title ?: enrollment.courseTitle}\n👤 ${student.fullName}",
+                            customFileName = "Contract_Signed_${signed?.id?.take(8) ?: enrollment.id.take(8)}.pdf"
+                        )
+                        continue
                     }
 
                     val sanitizedCourseName = (course?.title ?: enrollment.courseTitle).replace("\\s+".toRegex(), "_")

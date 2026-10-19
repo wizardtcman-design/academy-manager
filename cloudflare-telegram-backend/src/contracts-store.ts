@@ -210,7 +210,13 @@ export class ContractStore {
 
         // Re-issue: the contract row and its id stay the same; only the token,
         // the PDF and the expiry change (a signed contract never reaches here).
-        const newTokenHash = input.rotateToken ? input.tokenHash : existing.token_hash;
+        // Without a new token the stored hash must be kept; it is always present.
+        const newTokenHash =
+            (input.rotateToken && input.tokenHash) ? input.tokenHash : (existing.token_hash || input.tokenHash);
+        // Same token => the pending link row keeps its hash; a rotated one drops it.
+        if (input.rotateToken) {
+            await this.env.DB!.prepare('DELETE FROM contract_pending_links WHERE contract_id = ?').bind(existing.id).run();
+        }
         await this.env.DB!.prepare(
             `UPDATE contracts SET
                 student_name = ?, course_title = ?, status = 'ISSUED', token_hash = ?, expires_at_epoch = ?,
@@ -235,13 +241,35 @@ export class ContractStore {
     }
 
     /**
-     * The signing page accepts the token the app generated (so the app can show
-     * the same, stable link) while keeping only its hash here.
+     * The app generates the link token (so it can show a stable, offline-built
+     * link) and already sends its hash in `upsert`. That hash is stored there;
+     * the raw token is never sent. Kept for compatibility with old clients.
      */
     async setAppToken(academyId: string, id: string, tokenHash: string): Promise<void> {
         await this.env.DB!.prepare(
             'UPDATE contracts SET token_hash = ?, updated_at_epoch = ? WHERE academy_id = ? AND id = ? AND status != ?'
         ).bind(tokenHash, Date.now(), academyId, id, 'SIGNED').run();
+    }
+
+    /** Raw token of an untouched contract, so the server can resend the same, stable link. */
+    async storePendingToken(academyId: string, id: string, token: string): Promise<void> {
+        const h = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(token));
+        const hex = [...new Uint8Array(h)].map((b) => b.toString(16).padStart(2, '0')).join('');
+        await this.env.DB!.prepare(
+            `INSERT OR REPLACE INTO contract_pending_links (contract_id, academy_id, sha256, token, expires_at_epoch)
+             VALUES (?,?,?,?, (SELECT expires_at_epoch FROM contracts WHERE academy_id = ? AND id = ?))`
+        ).bind(id, academyId, hex, token, academyId, id).run();
+    }
+
+    /** The exact link the app generated, only while the contract is unsigned and unexpired. */
+    async pendingToken(academyId: string, id: string, sha256: string): Promise<string> {
+        const row = await this.env.DB!.prepare(
+            `SELECT p.token AS token FROM contract_pending_links p
+             JOIN contracts c ON c.id = p.contract_id AND c.academy_id = p.academy_id
+             WHERE p.academy_id = ? AND p.contract_id = ? AND p.sha256 = ?
+               AND c.status IN ('ISSUED','OPENED') AND c.expires_at_epoch > ?`
+        ).bind(academyId, id, sha256, Date.now()).first<{ token: string }>();
+        return row?.token || '';
     }
 
     async event(academyId: string, contractId: string, ev: ContractEvent): Promise<void> {
@@ -286,12 +314,15 @@ export class ContractStore {
              WHERE academy_id = ? AND id = ? AND status != 'SIGNED'`
         ).bind(now, input.signedAtShamsi, input.signerName, input.signedPdfKey, input.signedSha,
             input.ip, input.ua, now, academyId, row.id).run();
+        // Signed: the signing link is no longer needed anywhere.
+        await this.env.DB!.prepare('DELETE FROM contract_pending_links WHERE contract_id = ?').bind(row.id).run();
     }
 
     async revoke(academyId: string, row: ContractRow): Promise<void> {
         await this.env.DB!.prepare(
             `UPDATE contracts SET status = 'REVOKED', updated_at_epoch = ? WHERE academy_id = ? AND id = ? AND status != 'SIGNED'`
         ).bind(Date.now(), academyId, row.id).run();
+        await this.env.DB!.prepare('DELETE FROM contract_pending_links WHERE contract_id = ?').bind(row.id).run();
     }
 
     async listForStudent(academyId: string, studentId: string): Promise<ContractRow[]> {

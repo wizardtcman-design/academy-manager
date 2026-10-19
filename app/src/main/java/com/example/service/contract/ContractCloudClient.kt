@@ -10,6 +10,7 @@ import okhttp3.RequestBody.Companion.asRequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
 import java.io.File
+import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
 
 /**
@@ -169,6 +170,79 @@ class ContractCloudClient(
                 Result(true, target)
             }
         } catch (e: Exception) {
+            Result(false, error = e.message ?: "خطای دانلود")
+        }
+    }
+
+    /**
+     * Secure per-student download: the server checks that the contract BELONGS
+     * to this student and that the file hash matches the one recorded when it
+     * was signed. The file is written to a temporary name first and only moved
+     * into place when it is a complete PDF, so a cut-off download never looks
+     * like a saved contract.
+     */
+    fun downloadContractForStudent(
+        studentId: String,
+        contractId: String,
+        signed: Boolean,
+        target: File,
+        expectedSha256: String = ""
+    ): Result<File> {
+        if (!isConfigured()) return Result(false, error = "اتصال تنظیم نشده است.")
+        val kind = if (signed) "signed-pdf" else "pdf"
+        val partial = File(target.parentFile, target.name + ".part")
+        return try {
+            val req = Request.Builder()
+                .url(endpoint("/api/students/${java.net.URLEncoder.encode(studentId, "UTF-8")}" +
+                    "/contracts/${java.net.URLEncoder.encode(contractId, "UTF-8")}/$kind"))
+                .addHeader("Authorization", "Bearer $apiSecret")
+                .get()
+                .build()
+            http.newCall(req).execute().use { res ->
+                if (!res.isSuccessful) {
+                    val text = res.body?.string().orEmpty()
+                    return Result(false, error = "HTTP ${res.code} ${text.take(120)}", code = res.code)
+                }
+                val expected = res.header("Content-Length")?.toLongOrNull() ?: -1L
+                partial.parentFile?.mkdirs()
+                partial.outputStream().use { out ->
+                    res.body?.byteStream()?.copyTo(out) ?: return Result(false, error = "فایل خالی")
+                }
+                val size = partial.length()
+                if (expected >= 0 && size != expected) {
+                    partial.delete()
+                    return Result(false, error = "دانلود ناقص است ($size از $expected بایت)", code = 0)
+                }
+                val digest = MessageDigest.getInstance("SHA-256")
+                partial.inputStream().use { input ->
+                    val buf = ByteArray(64 * 1024)
+                    while (true) {
+                        val n = input.read(buf)
+                        if (n < 0) break
+                        digest.update(buf, 0, n)
+                    }
+                }
+                val sha = digest.digest().joinToString("") { "%02x".format(it) }
+                val head = partial.inputStream().use { input -> ByteArray(5).also { input.read(it) } }
+                val wanted = (res.header("X-Content-SHA256") ?: expectedSha256).trim().lowercase()
+                if (wanted.isNotEmpty() && sha != wanted) {
+                    partial.delete()
+                    return Result(false, error = "فایل با نسخه ثبت‌شده مطابقت ندارد", code = 0)
+                }
+                if (!head.contentEquals("%PDF-".toByteArray())) {
+                    partial.delete()
+                    return Result(false, error = "فایل PDF معتبر نیست", code = 0)
+                }
+                if (target.exists()) target.delete()
+                if (!partial.renameTo(target)) {
+                    partial.copyTo(target, overwrite = true)
+                    partial.delete()
+                }
+                Result(true, target)
+            }
+        } catch (e: Exception) {
+            partial.delete()
+            Log.w(tag, "download failed: ${e.message}")
             Result(false, error = e.message ?: "خطای دانلود")
         }
     }

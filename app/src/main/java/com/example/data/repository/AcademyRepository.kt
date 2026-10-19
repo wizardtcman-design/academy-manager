@@ -2237,7 +2237,10 @@ class AcademyRepository(
                     remoteSettings.copy(
                         telegramBotToken = if (remoteSettings.telegramBotToken.isNotBlank()) remoteSettings.telegramBotToken else localSettings.telegramBotToken,
                         rubikaBotToken = if (remoteSettings.rubikaBotToken.isNotBlank()) remoteSettings.rubikaBotToken else localSettings.rubikaBotToken,
-                        appLockPin = if (remoteSettings.appLockPin.isNotBlank()) remoteSettings.appLockPin else localSettings.appLockPin
+                        appLockPin = if (remoteSettings.appLockPin.isNotBlank()) remoteSettings.appLockPin else localSettings.appLockPin,
+                        // Device-only credentials are never taken from the cloud.
+                        telegramApiSecret = localSettings.telegramApiSecret,
+                        smsApiKey = localSettings.smsApiKey
                     )
                 } else {
                     localSettings
