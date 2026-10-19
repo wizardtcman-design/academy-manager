@@ -565,15 +565,15 @@ export function appendSignatureLayer(original: Uint8Array, layer: SignedLayer): 
     }
     // A PNG seal/signature is flattened to RGB first: RGB has no alpha channel,
     // so the soft mask keeps the transparent background from painting white.
-    const flattenPng = (bytes: Uint8Array, w: number, h: number) => {
+    const flattenPng = (bytes: Uint8Array, w: number, h: number, maskObj: number) => {
         const px = pngToRgb(bytes);
         if (!px || !w || !h) return null;
-        return { rgb: px.rgb, mask: px.mask, header: `<< /Type /XObject /Subtype /Image /Width ${w} /Height ${h} /ColorSpace /DeviceRGB /BitsPerComponent 8 /SMask ${base + 5} 0 R /Filter /FlateDecode /Length ${px.rgb.length} >>`, maskHeader: `<< /Type /XObject /Subtype /Image /Width ${w} /Height ${h} /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /FlateDecode /Length ${px.mask.length} >>` };
+        return { rgb: px.rgb, mask: px.mask, header: `<< /Type /XObject /Subtype /Image /Width ${w} /Height ${h} /ColorSpace /DeviceRGB /BitsPerComponent 8 /SMask ${maskObj} 0 R /Filter /FlateDecode /Length ${px.rgb.length} >>`, maskHeader: `<< /Type /XObject /Subtype /Image /Width ${w} /Height ${h} /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /FlateDecode /Length ${px.mask.length} >>` };
     };
     const sealIsPng = Boolean(layer.sealPng);
     const msigIsPng = Boolean(layer.managerSignaturePng);
-    const flatSeal = sealIsPng && sealSrc ? flattenPng(sealSrc, layer.sealWidth || 0, layer.sealHeight || 0) : null;
-    const flatMsig = msigIsPng && msigSrc ? flattenPng(msigSrc, layer.managerSignatureWidth || 0, layer.managerSignatureHeight || 0) : null;
+    const flatSeal = sealIsPng && sealSrc ? flattenPng(sealSrc, layer.sealWidth || 0, layer.sealHeight || 0, sealObj + 3) : null;
+    const flatMsig = msigIsPng && msigSrc ? flattenPng(msigSrc, layer.managerSignatureWidth || 0, layer.managerSignatureHeight || 0, msigObj + 3) : null;
     if (flatSeal && sealSrc) {
         imageBodies.set(sealObj, { header: flatSeal.header, payload: flatSeal.rgb });
         imageBodies.set(sealObj + 3, { header: flatSeal.maskHeader, payload: flatSeal.mask });
