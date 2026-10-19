@@ -514,8 +514,17 @@ export function appendSignatureLayer(original: Uint8Array, layer: SignedLayer): 
             if (res) {
                 const resDict = dict.slice(res.valueStart, res.end);
                 const xo = findKey(resDict, 'XObject');
+                // A page that already carries /Sig must not get a second entry
+                // with the same name: in viewers the last one always wins.
+                const cleanXo = xo
+                    ? resDict.slice(xo.valueStart, xo.end)
+                        .replace(/\/SigMask\s+\d+\s+\d+\s+R/g, '')
+                        .replace(/\/Sig\s+\d+\s+\d+\s+R/g, '')
+                        .replace(/\s+/g, ' ')
+                        .replace(/<</, '<< ')
+                    : '';
                 const patchedRes = xo
-                    ? resDict.slice(0, xo.end - 2) + ' ' + extra + ' >>' + resDict.slice(xo.end)
+                    ? resDict.slice(0, xo.valueStart) + cleanXo.trimEnd().replace(/\s*>>$/, ' ') + extra + ' >>' + resDict.slice(xo.end)
                     : resDict.slice(0, resDict.length - 2) + `/XObject << ${extra} >> ` + resDict.slice(resDict.length - 2);
                 dict = dict.slice(0, res.valueStart) + patchedRes + dict.slice(res.end);
             } else {
