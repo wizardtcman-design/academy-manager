@@ -351,6 +351,40 @@ class TelegramProvider(
     }
 
     /**
+     * Saves the bot token on the Cloudflare Worker and points Telegram's webhook
+     * at it. Success is only reported when the Worker confirms that Telegram
+     * itself shows the new webhook — never just "saved".
+     */
+    suspend fun connectBotOnWorker(
+        workerUrl: String,
+        apiSecret: String,
+        botToken: String
+    ): Pair<Boolean, String> = withContext(Dispatchers.IO) {
+        val cleanUrl = workerUrl.trim().removeSuffix("/")
+        if (cleanUrl.isBlank()) return@withContext Pair(false, "آدرس Cloudflare Worker وارد نشده است.")
+        try {
+            val req = Request.Builder()
+                .url("$cleanUrl/api/bot/connect")
+                .addHeader("Authorization", "Bearer ${apiSecret.trim()}")
+                .addHeader("X-Academy-Id", "default")
+                .post(JSONObject().put("token", botToken.trim()).toString()
+                    .toRequestBody("application/json; charset=utf-8".toMediaType()))
+                .build()
+            httpClient.newCall(req).execute().use { response ->
+                val body = response.body?.string() ?: ""
+                val json = runCatching { JSONObject(body) }.getOrNull()
+                val ok = response.isSuccessful && json?.optBoolean("success", false) == true
+                val msg = json?.optString("message", "").orEmpty().ifBlank {
+                    if (ok) "ربات متصل شد." else "خطای سرور (${response.code})"
+                }
+                Pair(ok, msg)
+            }
+        } catch (e: Exception) {
+            Pair(false, "ارتباط با سرور برقرار نشد: ${e.localizedMessage ?: e.message}")
+        }
+    }
+
+    /**
      * Sends a message via Cloudflare Worker HTTPS REST API
      */
     suspend fun sendMessageViaCloudflareWorker(

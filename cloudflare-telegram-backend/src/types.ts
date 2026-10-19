@@ -15,6 +15,12 @@ export interface Env {
     PUBLIC_BASE_URL?: string;
     /** Set once a real SMS provider is chosen; sending stays disabled while empty. */
     SMS_PROVIDER?: string;
+    /**
+     * Production must never answer from process memory: the isolate can be
+     * recycled between requests and the user would see a fake success.
+     * Defaults to "true" in production (ENVIRONMENT !== 'development').
+     */
+    STRICT_STORAGE?: string;
 
     // Secrets (configured via `wrangler secret put <KEY>` or Cloudflare Dashboard)
     TELEGRAM_BOT_TOKEN: string; // Server-side secret Telegram Bot Token

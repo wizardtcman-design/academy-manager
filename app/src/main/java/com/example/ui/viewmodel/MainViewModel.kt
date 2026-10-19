@@ -349,6 +349,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         reminderScheduler.scheduleRemindersForInstallment(inst, currentSettings)
                     }
                 }
+                // After enrollment the contract link is created and sent in the
+                // background: SMS + Telegram link open the sign page, and the bot
+                // serves the signed contract once it is done.
+                autoSendContractAfterEnrollment(student)
                 onComplete(true, null)
             } else {
                 onComplete(false, res.exceptionOrNull()?.message)
@@ -665,6 +669,56 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             )
             onResult(res.ok, res.message)
             showMessage(res.message)
+        }
+    }
+
+    /**
+     * Post-enrollment automation: create the e-sign link and deliver it on the
+     * student's channels (SMS when the academy has a provider, plus the
+     * Telegram deep link that starts the bot). Failures stay silent for the
+     * enrollment itself so a missing cloud config never blocks registration.
+     */
+    fun autoSendContractAfterEnrollment(
+        student: Student,
+        onResult: (Boolean, String) -> Unit = { _, _ -> }
+    ) {
+        viewModelScope.launch {
+            val enrollments = academyRepository.getEnrollmentsForStudent(student.id).firstOrNull().orEmpty()
+            val enrollment = enrollments.maxByOrNull { it.registrationDateEpoch } ?: return@launch
+            val res = contractManager.issueLink(
+                enrollment = enrollment,
+                validityDays = com.example.service.contract.ContractManager.LINK_VALIDITY_DAYS,
+                forceRenew = false
+            )
+            if (!res.ok || res.contract == null) {
+                showMessage("قرارداد ثبت شد اما لینک امضا ساخته نشد: ${res.message}")
+                onResult(false, res.message)
+                return@launch
+            }
+            val signUrl = res.contract.signUrl
+            if (signUrl.isBlank()) {
+                onResult(false, "لینک امضا خالی است.")
+                return@launch
+            }
+            val botLink = runCatching { getStudentTelegramLink(student) }.getOrDefault("")
+            val text = buildString {
+                append("سلام ${student.fullName} عزیز 🌸\n")
+                append("قرارداد آموزشی شما آماده امضاست. با لینک زیر آن را مطالعه و آنلاین امضا کنید:\n")
+                append(signUrl)
+                if (botLink.isNotBlank() && !student.isTelegramConnected) {
+                    append("\n\nبرای دریافت نسخهٔ امضاشده در تلگرام، ربات را از لینک زیر استارت کنید:\n")
+                    append(botLink)
+                }
+            }
+            val (sendResult, log) = messagingManager.sendMessage(student, text, "AUTO")
+            val delivered = sendResult is MessageSendResult.Success
+            when (sendResult) {
+                is MessageSendResult.Success -> showMessage("لینک قرارداد برای ${student.fullName} ارسال شد.")
+                is MessageSendResult.ManualActionRequired -> showMessage("قرارداد ساخته شد؛ متن لینک برای ارسال دستی آماده شد.")
+                is MessageSendResult.NotConnected -> showMessage("قرارداد ساخته شد؛ هنرجو برای دریافت خودکار باید ربات تلگرام را متصل کند.")
+                is MessageSendResult.Failed -> showMessage("قرارداد ساخته شد ولی ارسال لینک ناموفق بود: ${sendResult.error}")
+            }
+            onResult(delivered, log.messageText)
         }
     }
 

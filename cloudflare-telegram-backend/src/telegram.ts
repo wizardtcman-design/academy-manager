@@ -57,6 +57,15 @@ export class TelegramBotClient {
         return await res.json() as TelegramApiResponse<boolean>;
     }
 
+    /** Telegram's own view of the webhook (url, pending updates, last error). */
+    async getWebhookInfo(): Promise<TelegramApiResponse<any>> {
+        const res = await fetch(`${this.baseUrl}/getWebhookInfo`, {
+            method: 'GET',
+            headers: { 'Content-Type': 'application/json' }
+        });
+        return await res.json() as TelegramApiResponse<any>;
+    }
+
     /**
      * Sends a text message to a specific Telegram chat with optional formatting and keyboard
      */
@@ -82,6 +91,21 @@ export class TelegramBotClient {
             body: JSON.stringify(payload)
         });
 
+        return await res.json() as TelegramApiResponse<any>;
+    }
+
+    /** Sends a file (PDF) already rendered by us. */
+    async sendDocument(params: {
+        chatId: string | number;
+        fileName: string;
+        bytes: Uint8Array;
+        caption?: string;
+    }): Promise<TelegramApiResponse<any>> {
+        const form = new FormData();
+        form.append('chat_id', String(params.chatId));
+        form.append('document', new Blob([params.bytes], { type: 'application/pdf' }), params.fileName);
+        if (params.caption) form.append('caption', params.caption);
+        const res = await fetch(`${this.baseUrl}/sendDocument`, { method: 'POST', body: form });
         return await res.json() as TelegramApiResponse<any>;
     }
 

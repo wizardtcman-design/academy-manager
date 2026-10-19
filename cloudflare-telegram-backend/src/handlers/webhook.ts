@@ -5,27 +5,55 @@
 import { Env, TelegramUpdate, StudentRecord } from '../types';
 import { TelegramBotClient } from '../telegram';
 import { AcademyDatabase } from '../db';
+import { ContractStore, ContractRow } from '../contracts-store';
+import { readContractFile } from './contracts-api';
 
 /** Telegram stops retrying an update after ~1 minute; finish sending before then. */
 const SEND_TIMEOUT_MS = 25_000;
 
 export async function handleTelegramWebhook(
     request: Request,
-    env: Env
+    env: Env,
+    url?: URL
 ): Promise<Response> {
     if (request.method !== 'POST') {
         return new Response('Method Not Allowed', { status: 405 });
     }
 
+    // One webhook URL per academy (`/webhook/<academyId>`); each academy has its
+    // own bot token and its own webhook secret, so a bot can never be hijacked
+    // by another tenant. The legacy `/webhook` keeps using the global secret.
+    const pathAcademy = url?.pathname.startsWith('/webhook/')
+        ? decodeURIComponent(url.pathname.slice('/webhook/'.length))
+        : '';
+    let botToken: string | undefined = env.TELEGRAM_BOT_TOKEN;
+    let webhookSecret: string | undefined = env.WEBHOOK_SECRET;
+    let academyId = 'default';
+    const store = new ContractStore(env);
+
+    if (pathAcademy) {
+        const allowed = (env.ACADEMY_IDS || 'default').split(',').map((s) => s.trim());
+        if (!allowed.includes(pathAcademy)) {
+            return new Response('Unknown academy', { status: 404 });
+        }
+        academyId = pathAcademy;
+        let row = null;
+        try {
+            row = await store.getAcademy(pathAcademy);
+        } catch (_) {}
+        if (!row?.bot_token) return new Response('Bot not connected', { status: 404 });
+        botToken = row.bot_token;
+        webhookSecret = row.webhook_secret || env.WEBHOOK_SECRET;
+    }
+
     // Verify Telegram Webhook Secret Token if configured
-    if (env.WEBHOOK_SECRET) {
+    if (webhookSecret) {
         const receivedToken = request.headers.get('X-Telegram-Bot-Api-Secret-Token');
-        if (receivedToken !== env.WEBHOOK_SECRET) {
+        if (receivedToken !== webhookSecret) {
             return new Response('Unauthorized Webhook Source', { status: 401 });
         }
     }
 
-    const botToken = env.TELEGRAM_BOT_TOKEN;
     if (!botToken) {
         return new Response('Telegram Bot Token not configured on server', { status: 500 });
     }
@@ -38,7 +66,7 @@ export async function handleTelegramWebhook(
     }
 
     const bot = new TelegramBotClient(botToken);
-    const db = new AcademyDatabase(env);
+    const db = new AcademyDatabase(env, academyId);
 
     try {
         // Bounded processing: never let Telegram see a timeout and retry the update,
@@ -182,7 +210,7 @@ async function processUpdate(
     } else if (normalized === '🧾 رسیدهای من' || normalized.includes('رسیدهای من') || normalized === '/receipts') {
         await handleReceipts(bot, db, student, chatId);
     } else if (normalized === '📄 قرارداد من' || normalized.includes('قرارداد من') || normalized === '/contract') {
-        await handleContract(bot, db, student, chatId);
+        await handleContract(bot, env, student, chatId);
     } else if (normalized === '📞 تماس با آموزشگاه' || normalized.includes('تماس با آموزشگاه') || normalized === '/contact') {
         await handleContactInfo(bot, db, chatId);
     } else if (normalized === '🔄 بروزرسانی اطلاعات' || normalized.includes('بروزرسانی') || normalized === '/refresh') {
@@ -416,22 +444,51 @@ async function handleReceipts(bot: TelegramBotClient, db: AcademyDatabase, stude
 }
 
 // 📄 Contract Handler
-async function handleContract(bot: TelegramBotClient, db: AcademyDatabase, student: StudentRecord, chatId: string) {
-    const summary = await db.getFinancialSummary(student.id);
-    const courseTitle = summary?.courses_summary || 'دوره‌های تخصصی';
-
+async function handleContract(bot: TelegramBotClient, env: Env, student: StudentRecord, chatId: string) {
+    const academyId = (env.ACADEMY_IDS || 'default').split(',')[0].trim() || 'default';
+    const store = new ContractStore(env);
+    let rows: ContractRow[] = [];
+    try {
+        rows = await store.findByStudent(academyId, student.id);
+    } catch {
+        rows = [];
+    }
+    const signed = rows.find((r) => r.status === 'SIGNED');
+    if (signed) {
+        const bytes = await readContractFile(env, signed.signed_pdf_key);
+        if (bytes) {
+            await bot.sendDocument({
+                chatId,
+                fileName: `contract-${signed.id.slice(0, 8)}.pdf`,
+                bytes,
+                caption: `📄 قرارداد امضاشدهٔ شما (${signed.course_title || 'دوره آموزشی'})`
+            });
+            await bot.sendMessage({
+                chatId,
+                text: `✅ این نسخهٔ نهایی و امضاشدهٔ قرارداد شماست.\nکد قرارداد: <code>${signed.id.slice(0, 8)}</code>`,
+                parseMode: 'HTML',
+                replyMarkup: TelegramBotClient.getStudentReplyKeyboard()
+            });
+            return;
+        }
+    }
+    const open = rows.find((r) => r.status === 'ISSUED' || r.status === 'OPENED');
+    if (open) {
+        await bot.sendMessage({
+            chatId,
+            text: `📝 قرارداد شما هنوز امضا نشده است.\n` +
+                `لینک امضای ارسال‌شده توسط آموزشگاه را باز کنید، شماره و کد ملی را وارد کنید و با انگشت امضا کنید.\n` +
+                `بعد از امضا، نسخهٔ نهایی خودکار همین‌جا ارسال می‌شود.`,
+            parseMode: 'HTML',
+            replyMarkup: TelegramBotClient.getStudentReplyKeyboard()
+        });
+        return;
+    }
     const res = `📄 <b>قرارداد آموزشی</b>\n` +
         `━━━━━━━━━━━━━━━━━━━\n` +
-        `👤 <b>هنرجو:</b> ${student.full_name}\n` +
-        `📚 <b>دوره:</b> ${courseTitle}\n\n` +
+        `👤 <b>هنرجو:</b> ${student.full_name}\n\n` +
         `✅ قرارداد رسمی شما در سیستم آموزشگاه ثبت گردیده است. جهت دریافت نسخه چاپی به دفتر آموزشگاه مراجعه فرمایید.`;
-
-    await bot.sendMessage({
-        chatId,
-        text: res,
-        parseMode: 'HTML',
-        replyMarkup: TelegramBotClient.getStudentReplyKeyboard()
-    });
+    await bot.sendMessage({ chatId, text: res, parseMode: 'HTML', replyMarkup: TelegramBotClient.getStudentReplyKeyboard() });
 }
 
 // 📞 Contact Info Handler

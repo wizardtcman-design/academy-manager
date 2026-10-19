@@ -27,11 +27,18 @@ export class AcademyDatabase {
     private kv?: KVNamespace;
     /** Tenant of this database handle: every contract query is scoped by it. */
     public readonly academyId: string;
+    /**
+     * When true the in-memory maps are never read or written: a D1 failure is
+     * reported instead of pretending the write succeeded on a volatile isolate.
+     */
+    private readonly strict: boolean;
 
     constructor(env: Env, academyId: string = 'default') {
         this.db = env.DB;
         this.kv = env.STUDENT_KV;
         this.academyId = academyId;
+        const flag = (env.STRICT_STORAGE || '').trim().toLowerCase();
+        this.strict = flag === 'true' || (flag === '' && env.ENVIRONMENT !== 'development');
     }
 
     public isD1Configured(): boolean {
@@ -123,11 +130,12 @@ export class AcademyDatabase {
                 }
                 return record;
             } catch (e) {
-                console.warn('[DB] D1 query failed, checking memory store:', e);
+                console.warn('[DB] D1 getStudentByChatId failed:', e);
             }
         }
+        if (this.strict) return null;
 
-        // Memory fallback
+        // Memory fallback (local dev only)
         const memStudentId = memoryChatMap.get(chatId);
         if (memStudentId) {
             return memoryStudents.get(memStudentId) || null;
@@ -187,10 +195,12 @@ export class AcademyDatabase {
             }
         }
 
-        // Always update memory store
-        memoryStudents.set(record.id, record);
-        if (record.telegram_chat_id) {
-            memoryChatMap.set(record.telegram_chat_id, record.id);
+        // Update the dev-only memory store (never used in production).
+        if (!this.strict) {
+            memoryStudents.set(record.id, record);
+            if (record.telegram_chat_id) {
+                memoryChatMap.set(record.telegram_chat_id, record.id);
+            }
         }
 
         // Update KV cache if present
@@ -230,8 +240,10 @@ export class AcademyDatabase {
         student.is_telegram_connected = 1;
         student.updated_at_epoch = now;
 
-        memoryStudents.set(studentId, student);
-        memoryChatMap.set(chatId, studentId);
+        if (!this.strict) {
+            memoryStudents.set(studentId, student);
+            memoryChatMap.set(chatId, studentId);
+        }
 
         if (this.kv) {
             try {
@@ -256,7 +268,7 @@ export class AcademyDatabase {
                 console.warn('[DB] D1 getInstallments failed:', e);
             }
         }
-        return memoryInstallments.get(studentId) || [];
+        return this.strict ? [] : (memoryInstallments.get(studentId) || []);
     }
 
     async upsertInstallments(installments: InstallmentRecord[]): Promise<void> {
@@ -296,7 +308,7 @@ export class AcademyDatabase {
         }
 
         const studentId = installments[0].student_id;
-        memoryInstallments.set(studentId, installments);
+        if (!this.strict) memoryInstallments.set(studentId, installments);
     }
 
     async getFinancialSummary(studentId: string): Promise<FinancialSummaryRecord | null> {
@@ -308,7 +320,7 @@ export class AcademyDatabase {
                 console.warn('[DB] D1 getFinancialSummary failed:', e);
             }
         }
-        return memoryFinancials.get(studentId) || null;
+        return this.strict ? null : (memoryFinancials.get(studentId) || null);
     }
 
     async upsertFinancialSummary(summary: FinancialSummaryRecord): Promise<void> {
@@ -336,7 +348,7 @@ export class AcademyDatabase {
                 console.warn('[DB] D1 upsertFinancialSummary failed:', e);
             }
         }
-        memoryFinancials.set(summary.student_id, summary);
+        if (!this.strict) memoryFinancials.set(summary.student_id, summary);
     }
 
     // ============================================================
@@ -361,7 +373,7 @@ export class AcademyDatabase {
                 console.warn('[DB] D1 addReminder failed:', e);
             }
         }
-        memoryReminders.set(reminder.id, reminder);
+        if (!this.strict) memoryReminders.set(reminder.id, reminder);
     }
 
     async getDueReminders(maxEpoch: number, limit: number = 50): Promise<ReminderRecord[]> {
@@ -535,8 +547,10 @@ export class AcademyDatabase {
                 console.warn('[DB] D1 logMessage failed:', e);
             }
         }
-        memoryLogs.unshift(log);
-        if (memoryLogs.length > 200) memoryLogs.pop();
+        if (!this.strict) {
+            memoryLogs.unshift(log);
+            if (memoryLogs.length > 200) memoryLogs.pop();
+        }
     }
 
     async getRecentLogs(limit: number = 100): Promise<MessageLogRecord[]> {
@@ -549,7 +563,7 @@ export class AcademyDatabase {
                 console.warn('[DB] D1 getRecentLogs failed:', e);
             }
         }
-        return memoryLogs.slice(0, limit);
+        return this.strict ? [] : memoryLogs.slice(0, limit);
     }
 
     async getSetting(key: string, defaultValue: string = ''): Promise<string> {
@@ -562,7 +576,7 @@ export class AcademyDatabase {
                 console.warn('[DB] D1 getSetting failed:', e);
             }
         }
-        return memorySettings.get(key) || defaultValue;
+        return (this.strict ? undefined : memorySettings.get(key)) || defaultValue;
     }
 
     async setSetting(key: string, value: string): Promise<void> {
@@ -578,6 +592,6 @@ export class AcademyDatabase {
                 console.warn('[DB] D1 setSetting failed:', e);
             }
         }
-        memorySettings.set(key, value);
+        if (!this.strict) memorySettings.set(key, value);
     }
 }

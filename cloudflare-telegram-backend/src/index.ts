@@ -8,6 +8,7 @@ import { handleApiRequest } from './handlers/api';
 import { handleScheduledEvent } from './handlers/cron';
 import { handleContractsApi } from './handlers/contracts-api';
 import { handleSignRoute } from './handlers/sign';
+import { handleTelegramConnect } from './handlers/telegram-connect';
 
 export default {
     async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -35,9 +36,16 @@ export default {
             return await handleContractsApi(request, env, url);
         }
 
+        // 0.b Per-academy bot token management (authenticated with the API key).
+        //    The token lives in D1 (or the TELEGRAM_BOT_TOKEN secret); binding it
+        //    to the bot does not need a redeploy.
+        if (url.pathname.startsWith('/api/bot/')) {
+            return await handleTelegramConnect(request, env, url);
+        }
+
         // 1. Route Telegram Webhook
-        if (url.pathname === '/webhook' || url.pathname === '/telegram/webhook') {
-            return await handleTelegramWebhook(request, env);
+        if (url.pathname === '/webhook' || url.pathname === '/telegram/webhook' || url.pathname.startsWith('/webhook/')) {
+            return await handleTelegramWebhook(request, env, url);
         }
 
         // 2. Route Android App REST API

@@ -153,19 +153,9 @@ export async function handleContractsApi(request: Request, env: Env, url: URL): 
             sigInfo = undefined;
         }
 
-        let pdfKey = `contracts/${academyId}/${enrollmentId}/original.pdf`;
-        if (env.CONTRACTS) {
-            await env.CONTRACTS.put(pdfKey, pdfBytes, {
-                httpMetadata: { contentType: 'application/pdf' },
-                customMetadata: { sha256: pdfSha, enrollmentId, academyId }
-            });
-        } else {
-            // No R2 bucket yet: keep the PDF in D1 so nothing is lost.
-            await env.DB.prepare(
-                `INSERT OR REPLACE INTO contract_files (key, academy_id, content, sha256, created_at_epoch)
-                 VALUES (?,?,?,?,?)`
-            ).bind(pdfKey, academyId, pdfBytes, pdfSha, Date.now()).run();
-        }
+        // One path for both backends: R2 when bound, otherwise chunked D1 rows.
+        const pdfKey = `contracts/${academyId}/${enrollmentId}/original.pdf`;
+        await writeContractFile(env, pdfKey, pdfBytes, pdfSha, academyId, 'application/pdf');
 
         // The link is issued by the app; the Worker never needs the token itself.
         const res = await store.upsert({
@@ -284,8 +274,25 @@ export async function readContractFile(env: Env, key: string): Promise<Uint8Arra
         return new Uint8Array(await obj.arrayBuffer());
     }
     const row = await env.DB!.prepare('SELECT content FROM contract_files WHERE key = ?').bind(key).first<any>();
-    if (!row?.content) return null;
-    return row.content instanceof ArrayBuffer ? new Uint8Array(row.content) : Uint8Array.from(row.content);
+    if (row?.content) {
+        // Legacy rows: the whole file in one BLOB, written before chunking.
+        return row.content instanceof ArrayBuffer ? new Uint8Array(row.content) : Uint8Array.from(row.content);
+    }
+    const { results } = await env.DB!.prepare(
+        'SELECT part, content FROM contract_file_chunks WHERE file_key = ? ORDER BY part ASC'
+    ).bind(key).all<any>();
+    if (!results || results.length === 0) return null;
+    const parts = results.map((r) =>
+        r.content instanceof ArrayBuffer ? new Uint8Array(r.content) : Uint8Array.from(r.content)
+    );
+    const total = parts.reduce((n, p) => n + p.length, 0);
+    const out = new Uint8Array(total);
+    let offset = 0;
+    for (const p of parts) {
+        out.set(p, offset);
+        offset += p.length;
+    }
+    return out;
 }
 
 export async function writeContractFile(
@@ -296,10 +303,21 @@ export async function writeContractFile(
             httpMetadata: { contentType },
             customMetadata: { sha256, academyId }
         });
-    } else {
-        await env.DB!.prepare(
-            `INSERT OR REPLACE INTO contract_files (key, academy_id, content, sha256, created_at_epoch)
-             VALUES (?,?,?,?,?)`
-        ).bind(key, academyId, bytes, sha256, Date.now()).run();
+        return;
     }
+    // D1 caps a row at 2 MB, so a file is split into 256 KB parts. The metadata
+    // row is written last: a half-written file is never visible to readers.
+    const chunkSize = 256 * 1024;
+    const parts = Math.max(1, Math.ceil(bytes.length / chunkSize));
+    await env.DB!.prepare('DELETE FROM contract_file_chunks WHERE file_key = ?').bind(key).run();
+    for (let i = 0; i < parts; i++) {
+        const slice = bytes.subarray(i * chunkSize, Math.min(bytes.length, (i + 1) * chunkSize));
+        await env.DB!.prepare(
+            'INSERT OR REPLACE INTO contract_file_chunks (file_key, part, content) VALUES (?,?,?)'
+        ).bind(key, i, slice).run();
+    }
+    await env.DB!.prepare(
+        `INSERT OR REPLACE INTO contract_files (key, academy_id, content, sha256, created_at_epoch)
+         VALUES (?,?,NULL,?,?)`
+    ).bind(key, academyId, sha256, Date.now()).run();
 }

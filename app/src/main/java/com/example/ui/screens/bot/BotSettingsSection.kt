@@ -59,6 +59,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.model.AcademySettings
@@ -356,6 +357,46 @@ fun BotSettingsSection(
                         shape = RoundedCornerShape(12.dp),
                         singleLine = true
                     )
+
+                    // Connect the bot: the token goes to the Worker over HTTPS and
+                    // only success confirmed by Telegram is reported.
+                    var isConnectingBot by remember { mutableStateOf(false) }
+                    Button(
+                        onClick = {
+                            val cleanUrl = telegramWorkerUrl.trim().removeSuffix("/")
+                            val token = botToken.trim()
+                            if (cleanUrl.isBlank()) {
+                                Toast.makeText(context, "لطفاً آدرس سرور Cloudflare را وارد نمایید.", Toast.LENGTH_SHORT).show()
+                                return@Button
+                            }
+                            if (token.isBlank()) {
+                                Toast.makeText(context, "لطفاً توکن ربات را وارد نمایید.", Toast.LENGTH_SHORT).show()
+                                return@Button
+                            }
+                            isConnectingBot = true
+                            val provider = com.example.service.messaging.TelegramProvider(context, settings)
+                            coroutineScope.launch {
+                                val (ok, msg) = provider.connectBotOnWorker(cleanUrl, telegramApiSecret, token)
+                                isConnectingBot = false
+                                testResultDialogText = Pair(ok, msg)
+                            }
+                        },
+                        enabled = !isConnectingBot && telegramWorkerUrl.isNotBlank(),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("bot_connect_server_btn"),
+                        shape = RoundedCornerShape(10.dp)
+                    ) {
+                        if (isConnectingBot) {
+                            CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp, color = Color.White)
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("در حال اتصال ربات به سرور...")
+                        } else {
+                            Icon(Icons.Default.CheckCircle, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("اتصال ربات به سرور (فعال‌سازی وبهوک)")
+                        }
+                    }
 
                     // Test Worker Connection Button
                     OutlinedButton(

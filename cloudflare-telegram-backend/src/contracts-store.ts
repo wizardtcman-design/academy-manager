@@ -8,6 +8,18 @@ import { Env } from './types';
 
 export type ContractStatus = 'ISSUED' | 'OPENED' | 'SIGNED' | 'EXPIRED' | 'REVOKED';
 
+export interface AcademyRow {
+    id: string;
+    name: string;
+    created_at_epoch: number;
+    bot_token: string;
+    bot_username: string;
+    bot_id: string;
+    webhook_secret: string;
+    bot_connected_at_epoch: number;
+    last_update_id: number;
+}
+
 export interface ContractRow {
     id: string;
     academy_id: string;
@@ -78,6 +90,54 @@ export class ContractStore {
             .prepare('SELECT * FROM contracts WHERE academy_id = ? AND enrollment_id = ?')
             .bind(academyId, enrollmentId)
             .first<ContractRow>();
+    }
+
+    /** Every contract of one student, newest first. */
+    async findByStudent(academyId: string, studentId: string): Promise<ContractRow[]> {
+        const res = await this.env.DB!
+            .prepare('SELECT * FROM contracts WHERE academy_id = ? AND student_id = ? ORDER BY issued_at_epoch DESC')
+            .bind(academyId, studentId)
+            .all<ContractRow>();
+        return (res.results || []) as ContractRow[];
+    }
+
+    /** One row per academy: its own bot token, username and webhook secret. */
+    async getAcademy(id: string): Promise<AcademyRow | null> {
+        return this.env.DB!
+            .prepare('SELECT * FROM academies WHERE id = ?')
+            .bind(id)
+            .first<AcademyRow>();
+    }
+
+    async findAcademyByBotId(botId: string): Promise<AcademyRow | null> {
+        if (!botId) return null;
+        return this.env.DB!
+            .prepare('SELECT * FROM academies WHERE bot_id = ?')
+            .bind(botId)
+            .first<AcademyRow>();
+    }
+
+    /**
+     * Stores the bot of one academy. Only this academy's row is touched, so
+     * connecting a new bot never affects the other tenants.
+     */
+    async saveAcademyBot(input: {
+        id: string;
+        botToken: string;
+        botUsername: string;
+        botId: string;
+        webhookSecret: string;
+    }): Promise<void> {
+        await this.env.DB!.prepare(
+            `INSERT INTO academies (id, name, created_at_epoch, bot_token, bot_username, bot_id, webhook_secret, bot_connected_at_epoch)
+             VALUES (?,?,?,?,?,?,?,?)
+             ON CONFLICT(id) DO UPDATE SET
+                bot_token = excluded.bot_token,
+                bot_username = excluded.bot_username,
+                bot_id = excluded.bot_id,
+                webhook_secret = excluded.webhook_secret,
+                bot_connected_at_epoch = excluded.bot_connected_at_epoch`
+        ).bind(input.id, input.id, Date.now(), input.botToken, input.botUsername, input.botId, input.webhookSecret, Date.now()).run();
     }
 
     async findByTokenHash(tokenHash: string): Promise<ContractRow | null> {

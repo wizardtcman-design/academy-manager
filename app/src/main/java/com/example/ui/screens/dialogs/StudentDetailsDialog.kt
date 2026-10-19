@@ -256,40 +256,41 @@ fun StudentDetailsDialog(
 
                 Spacer(modifier = Modifier.height(10.dp))
 
-                // Quick Communication Bar
+                // Quick Communication Bar: primary action on its own line so the
+                // labels never squeeze into vertical "شکسته" words.
+                Button(
+                    onClick = { onSendMessage(student, financialSummary.nearestDueInstallment) },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(46.dp),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Icon(Icons.Default.Send, contentDescription = null, modifier = Modifier.size(17.dp))
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("ارسال پیام / یادآوری", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                }
+
+                Spacer(modifier = Modifier.height(8.dp))
+
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
-                    OutlinedButton(
+                    QuickActionButton(
+                        icon = Icons.Default.Phone,
+                        label = "تماس",
+                        modifier = Modifier.weight(1f),
                         onClick = {
                             val intent = Intent(Intent.ACTION_DIAL, Uri.parse("tel:${student.phone}"))
                             context.startActivity(intent)
-                        },
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Icon(Icons.Default.Phone, contentDescription = null, modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text("تماس", style = MaterialTheme.typography.bodySmall)
-                    }
-
-                    Button(
-                        onClick = { onSendMessage(student, financialSummary.nearestDueInstallment) },
-                        modifier = Modifier.weight(1.4f)
-                    ) {
-                        Icon(Icons.Default.Send, contentDescription = null, modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text("ارسال پیام/یادآوری", style = MaterialTheme.typography.bodySmall)
-                    }
-
-                    OutlinedButton(
-                        onClick = { onNewEnrollment(student) },
-                        modifier = Modifier.weight(1.3f)
-                    ) {
-                        Icon(Icons.Default.Add, contentDescription = null, modifier = Modifier.size(16.dp))
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text("+ ثبت دوره", style = MaterialTheme.typography.bodySmall)
-                    }
+                        }
+                    )
+                    QuickActionButton(
+                        icon = Icons.Default.Add,
+                        label = "ثبت دوره",
+                        modifier = Modifier.weight(1f),
+                        onClick = { onNewEnrollment(student) }
+                    )
                 }
 
                 Spacer(modifier = Modifier.height(10.dp))
@@ -303,7 +304,16 @@ fun StudentDetailsDialog(
                         Tab(
                             selected = selectedTabIndex == index,
                             onClick = { selectedTabIndex = index },
-                            text = { Text(title, style = MaterialTheme.typography.bodySmall, fontWeight = if (selectedTabIndex == index) FontWeight.Bold else FontWeight.Normal) }
+                            text = {
+                                Text(
+                                    title,
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontSize = 12.sp,
+                                    maxLines = 1,
+                                    softWrap = false,
+                                    fontWeight = if (selectedTabIndex == index) FontWeight.Bold else FontWeight.Normal
+                                )
+                            }
                         )
                     }
                 }
@@ -763,24 +773,40 @@ private fun PaymentsTab(
                                 horizontalArrangement = Arrangement.End,
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                OutlinedButton(
-                                    onClick = { onReversePayment(p) },
-                                    contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp, vertical = 2.dp),
-                                    modifier = Modifier.height(28.dp)
+                                Row(
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    Icon(Icons.Default.Undo, contentDescription = null, modifier = Modifier.size(14.dp))
-                                    Spacer(modifier = Modifier.width(4.dp))
-                                    Text("اصلاح / لغو", style = MaterialTheme.typography.labelSmall)
-                                }
-                                Spacer(modifier = Modifier.width(8.dp))
-                                OutlinedButton(
-                                    onClick = { onViewReceipt(p) },
-                                    contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp, vertical = 2.dp),
-                                    modifier = Modifier.height(28.dp)
-                                ) {
-                                    Icon(Icons.Default.Receipt, contentDescription = null, modifier = Modifier.size(14.dp))
-                                    Spacer(modifier = Modifier.width(4.dp))
-                                    Text("رسید دیجیتال", style = MaterialTheme.typography.labelSmall)
+                                    OutlinedButton(
+                                        onClick = { onViewReceipt(p) },
+                                        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp),
+                                        modifier = Modifier.height(34.dp),
+                                        shape = RoundedCornerShape(9.dp)
+                                    ) {
+                                        Icon(Icons.Default.Receipt, contentDescription = null, modifier = Modifier.size(15.dp))
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text(
+                                            "رسید دیجیتال",
+                                            style = MaterialTheme.typography.labelMedium,
+                                            maxLines = 1,
+                                            softWrap = false
+                                        )
+                                    }
+                                    OutlinedButton(
+                                        onClick = { onReversePayment(p) },
+                                        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp),
+                                        modifier = Modifier.height(34.dp),
+                                        shape = RoundedCornerShape(9.dp)
+                                    ) {
+                                        Icon(Icons.Default.Undo, contentDescription = null, modifier = Modifier.size(15.dp))
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text(
+                                            "اصلاح / لغو",
+                                            style = MaterialTheme.typography.labelMedium,
+                                            maxLines = 1,
+                                            softWrap = false
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -850,6 +876,30 @@ private fun TelegramAndMessagesTab(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun QuickActionButton(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    label: String,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit
+) {
+    OutlinedButton(
+        onClick = onClick,
+        modifier = modifier.height(42.dp),
+        shape = RoundedCornerShape(12.dp),
+        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp)
+    ) {
+        Icon(icon, contentDescription = null, modifier = Modifier.size(16.dp))
+        Spacer(modifier = Modifier.width(6.dp))
+        Text(
+            label,
+            style = MaterialTheme.typography.bodySmall,
+            maxLines = 1,
+            softWrap = false
+        )
     }
 }
 
