@@ -267,6 +267,21 @@ function imageDims(bytes: Uint8Array): { width: number; height: number } {
     return { width: 0, height: 0 };
 }
 
+export function toBinary(value: unknown): Uint8Array {
+    if (value == null) return new Uint8Array(0);
+    if (value instanceof Uint8Array) return value;
+    if (value instanceof ArrayBuffer) return new Uint8Array(value);
+    if (ArrayBuffer.isView(value)) return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+    if (Array.isArray(value)) return Uint8Array.from(value as number[]);
+    if (typeof value === 'string') {
+        // Some D1 clients hand back binary columns as a latin1 string.
+        const out = new Uint8Array(value.length);
+        for (let i = 0; i < value.length; i++) out[i] = value.charCodeAt(i) & 0xff;
+        return out;
+    }
+    return new Uint8Array(0);
+}
+
 export async function readContractFile(env: Env, key: string): Promise<Uint8Array | null> {
     if (env.CONTRACTS) {
         const obj = await env.CONTRACTS.get(key);
@@ -276,15 +291,13 @@ export async function readContractFile(env: Env, key: string): Promise<Uint8Arra
     const row = await env.DB!.prepare('SELECT content FROM contract_files WHERE key = ?').bind(key).first<any>();
     if (row?.content) {
         // Legacy rows: the whole file in one BLOB, written before chunking.
-        return row.content instanceof ArrayBuffer ? new Uint8Array(row.content) : Uint8Array.from(row.content);
+        return toBinary(row.content);
     }
     const { results } = await env.DB!.prepare(
         'SELECT part, content FROM contract_file_chunks WHERE file_key = ? ORDER BY part ASC'
     ).bind(key).all<any>();
     if (!results || results.length === 0) return null;
-    const parts = results.map((r) =>
-        r.content instanceof ArrayBuffer ? new Uint8Array(r.content) : Uint8Array.from(r.content)
-    );
+    const parts = results.map((r) => toBinary(r.content));
     const total = parts.reduce((n, p) => n + p.length, 0);
     const out = new Uint8Array(total);
     let offset = 0;

@@ -415,6 +415,7 @@ export function appendSignatureLayer(original: Uint8Array, layer: SignedLayer): 
     const msigSrc = layer.managerSignaturePng || layer.managerSignatureJpeg;
     const sealObj = sealSrc ? base + 2 : 0;
     const msigObj = msigSrc ? base + 3 : 0;
+    let sinkMask = true;
     const pageObjNum = page.pageRef ? Number(page.pageRef.split(' ')[0]) : 0;
     const pageBody = pageObjNum ? objects.get(pageObjNum)?.body ?? '' : '';
 
@@ -425,12 +426,23 @@ export function appendSignatureLayer(original: Uint8Array, layer: SignedLayer): 
     const boxY = margin + 20;
     const boxX = margin;
 
+    // Canvas input: the student drew with the mouse, so the PNG's aspect ratio
+    // is what keeps the strokes from looking stretched on paper.
+    const sigW = layer.imageWidth || 1;
+    const sigH = layer.imageHeight || 1;
+    const sigBoxW = 150;
+    const sigBoxH = Math.min(100, (sigBoxW * sigH) / sigW);
+
     // ---- content stream (signature image + seal + receipt text) ----
     let ops = 'q\n';
     ops += `1 1 1 rg ${boxX} ${boxY} ${w - margin * 2} ${boxH} re f\n`;
     ops += `0.58 0.63 0.70 RG 0.8 w ${boxX} ${boxY} ${w - margin * 2} ${boxH} re S\n`;
-    ops += `q ${boxX + 10} ${boxY + 34} 150 100 re W n `;
-    ops += layer.imageWidth > 0 && layer.imageHeight > 0 ? `q 150 0 0 100 ${boxX + 10} ${boxY + 34} cm /Sig Do Q Q\n` : 'Q\n';
+    ops += `q ${boxX + 10} ${boxY + 30} ${sigBoxW} ${sigBoxH} re W n `;
+    if (layer.imageWidth > 0 && layer.imageHeight > 0) {
+        ops += `q ${sigBoxW} 0 0 ${sigBoxH.toFixed(2)} ${boxX + 10} ${boxY + 30} cm /Sig Do Q Q\n`;
+    } else {
+        ops += 'Q\n';
+    }
     // Seal keeps its own aspect ratio; the manager signature sits left of it.
     if (sealSrc) {
         const sw = layer.sealWidth || 1, sh = layer.sealHeight || 1;
@@ -452,7 +464,7 @@ export function appendSignatureLayer(original: Uint8Array, layer: SignedLayer): 
         ops += persianText(boxX + 12, textY, line, 8, '0.10 0.15 0.20', 0.9, false);
         textY -= 13;
     }
-    ops += persianText(boxX + 12, boxY + 118, 'امضای هنرجو', 4.4, '0.35 0.39 0.45', 0.5, false);
+    ops += persianText(boxX + 12, boxY + 30 + sigBoxH + 6, 'امضای هنرجو', 4.4, '0.35 0.39 0.45', 0.5, false);
     // verification facts are Latin-only, so the compact font keeps them legible
     let vY = boxY + 24;
     for (const v of layer.verifyLines) {
@@ -461,37 +473,79 @@ export function appendSignatureLayer(original: Uint8Array, layer: SignedLayer): 
     }
     ops += asciiText(boxX + 8, boxY - 10, `signed ${new Date(now).toISOString().slice(0, 19)}Z`, 4, false);
 
-    const objectsOut: string[] = [];
-    for (const [num, obj] of objects) {
-        let body = obj.body;
-        if (num === pageObjNum) {
-            // register the new XObjects in the page resources
-            const extra = `${layer.imageWidth > 0 ? ` /Sig ${sigObj} 0 R /SigMask ${sigMaskObj} 0 R` : ''}${sealSrc ? ` /Seal ${base + 2} 0 R` : ''}${msigSrc ? ` /MSig ${base + 3} 0 R` : ''}`.trim();
-            if (!extra) {
-                // no images this time
-            } else if (/\/XObject\s*<<([^>]*)>>/.test(body)) {
-                body = body.replace(/\/XObject\s*<<([^>]*)>>/, (_m, inner) => `/XObject <<${inner} ${extra} >>`);
-            } else if (/\/Resources\b/.test(body)) {
-                // Existing resources dict: add a (new or existing) /XObject entry
-                // inside it, never as a sibling key of the page.
-                body = body.replace(/\/XObject\s+\d+\s+\d+\s+R/, '');
-                body = body.replace(/\/Resources\s*<<([\s\S]*?)>>(\s*\/Contents|\s*>>)/,
-                    (_m, inner, tail) => `/Resources <<${inner.trim()} /XObject << ${extra} >> >>${tail}`);
-            } else {
-                // No resources at all: create the whole dict inside the page.
-                body = body.replace(/>>\s*$/, `/Resources << /XObject << ${extra} >> >>\n>>`);
+    // Page dictionary: register the new XObjects and the new content stream in
+    // one balanced edit (a regex on the page body alone can unbalance the dict).
+    const extra = [
+        layer.imageWidth > 0 && layer.imageHeight > 0 ? `/Sig ${sigObj} 0 R${sinkMask ? ` /SigMask ${sigMaskObj} 0 R` : ''}` : '',
+        sealSrc ? `/Seal ${sealObj} 0 R` : '',
+        msigSrc ? `/MSig ${msigObj} 0 R` : ''
+    ].filter(Boolean).join(' ');
+
+    // Minimal dictionary walk: find the top-level key `name` inside `dict` and
+    // return its range, so a nested ">>" never ends the parent dict early.
+    function findKey(dict: string, name: string): { start: number; valueStart: number; end: number } | null {
+        const idx = dict.indexOf('/' + name);
+        if (idx < 0) return null;
+        let i = idx + name.length + 1;
+        while (i < dict.length && /\s/.test(dict[i])) i++;
+        if (dict.startsWith('<<', i)) {
+            let depth = 0;
+            for (let j = i; j < dict.length; j++) {
+                if (dict.startsWith('<<', j)) { depth++; j++; continue; }
+                if (dict.startsWith('>>', j)) { depth--; j++; if (depth === 0) return { start: idx, valueStart: i, end: j + 1 }; }
             }
-            // add the new content stream to /Contents (array kept balanced)
-            if (/\/Contents\s*\[[\s\S]*?\]/.test(body)) {
-                body = body.replace(/\/Contents\s*\[([\s\S]*?)\]/, (_m, inner) => `/Contents [${inner.trim()} ${contentObj} 0 R]`);
-            } else if (/\/Contents\s+\d+\s+\d+\s+R/.test(body)) {
-                body = body.replace(/\/Contents\s+(\d+\s+\d+\s+R)/, '/Contents [$1 ' + contentObj + ' 0 R]');
+            return null;
+        }
+        if (dict[i] === '[') {
+            let depth = 0;
+            for (let j = i; j < dict.length; j++) {
+                if (dict[j] === '[') depth++;
+                else if (dict[j] === ']') { depth--; if (depth === 0) return { start: idx, valueStart: i, end: j + 1 }; }
+            }
+            return null;
+        }
+        const m = /^\d+\s+\d+\s+R/.exec(dict.slice(i));
+        if (m) return { start: idx, valueStart: i, end: i + m[0].length };
+        return null;
+    }
+
+    function patchPage(body: string): string {
+        let out = body;
+        const open = out.indexOf('<<');
+        if (open < 0) return out;
+        const head = out.slice(0, open);
+        let dict = out.slice(open);
+
+        if (extra) {
+            const res = findKey(dict, 'Resources');
+            if (res) {
+                const resDict = dict.slice(res.valueStart, res.end);
+                const xo = findKey(resDict, 'XObject');
+                const patchedRes = xo
+                    ? resDict.slice(0, xo.end - 2) + ' ' + extra + ' >>' + resDict.slice(xo.end)
+                    : resDict.slice(0, resDict.length - 2) + `/XObject << ${extra} >> ` + resDict.slice(resDict.length - 2);
+                dict = dict.slice(0, res.valueStart) + patchedRes + dict.slice(res.end);
             } else {
-                // No /Contents yet: insert the key right after the opening
-                // dict marker (never matches the page's own closing ">>").
-                body = body.replace(/<</, `<< /Contents ${contentObj} 0 R`);
+                dict = dict.slice(0, 2) + `/Resources << /XObject << ${extra} >> >> ` + dict.slice(2);
             }
         }
+
+        const contents = findKey(dict, 'Contents');
+        if (contents) {
+            const value = dict.slice(contents.valueStart, contents.end);
+            const merged = value.startsWith('[')
+                ? value.slice(0, -1).trimEnd() + ` ${contentObj} 0 R ]`
+                : `[${value} ${contentObj} 0 R]`;
+            dict = dict.slice(0, contents.valueStart) + merged + dict.slice(contents.end);
+        } else {
+            dict = dict.slice(0, 2) + `/Contents ${contentObj} 0 R ` + dict.slice(2);
+        }
+        return head + dict;
+    }
+
+    const objectsOut: string[] = [];
+    for (const [num, obj] of objects) {
+        const body = num === pageObjNum ? patchPage(obj.body) : obj.body;
         objectsOut.push(`${num} 0 obj${body}endobj`);
     }
 
@@ -510,11 +564,18 @@ export function appendSignatureLayer(original: Uint8Array, layer: SignedLayer): 
     if (decoded && layer.imageWidth > 0 && layer.imageHeight > 0) {
         // The image paints black ink on white paper; the soft mask carries the
         // canvas alpha so the paper vanishes but the stroke keeps its soft edge.
+        // A PNG whose decode only produced rows is stored as an inverted image:
+        // the mask object is optional, the page must never reference a gap.
         imageBodies.set(sigObj, { header: imgHeader(decoded.alpha, layer.imageWidth, layer.imageHeight, true, sigMaskObj), payload: decoded.alpha });
         const maskHeader = `<< /Type /XObject /Subtype /Image /Width ${layer.imageWidth} /Height ${layer.imageHeight} /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /FlateDecode /Length ${decoded.mask.length} >>`;
         imageBodies.set(sigMaskObj, { header: maskHeader, payload: decoded.mask });
+        if (!imageBodies.has(sigMaskObj) || !decoded.mask.length) {
+            imageBodies.delete(sigMaskObj);
+            sinkMask = false;
+        }
     }
-    objectsOut.push(`${contentObj} 0 obj\n<< /Length ${ops.length} >>\nstream\n${ops}endstream\nendobj`);
+    const opsBytes = new TextEncoder().encode(ops);
+    objectsOut.push(`${contentObj} 0 obj\n<< /Length ${opsBytes.length} >>\nstream\n${ops}\nendstream\nendobj`);
     // A PNG seal/signature is flattened to RGB first: RGB has no alpha channel,
     // so the soft mask keeps the transparent background from painting white.
     const flattenPng = (bytes: Uint8Array, w: number, h: number) => {
@@ -889,6 +950,15 @@ function assemblePdf(
         objectBodies.set(num, s);
     }
 
+    // The signature content stream is regenerated on every pass, so its body is
+    // taken from updatedStrings only (a stale body would duplicate the layers).
+    // Image objects live only in imageBodies: the text objects never carry them,
+    // so a signature image without a body entry must not be referenced.
+    for (const num of imageBodies.keys()) objectBodies.delete(num);
+    // The xref must also cover trailing object numbers that carry no body (an
+    // optional mask that was skipped): the size is the highest number present
+    // in the file, never derived from the emitted list alone.
+    const highest = Math.max(maxObject, ...[...objectBodies.keys(), ...imageBodies.keys()]);
     const order = [...new Set([...objectBodies.keys(), ...imageBodies.keys()])].sort((a, b) => a - b);
     for (const num of order) {
         offsets.set(num, offset);
@@ -902,7 +972,7 @@ function assemblePdf(
         }
     }
 
-    const size = Math.max(...order) + 1;
+    const size = Math.max(highest, ...order) + 1;
     const xrefStart = offset;
     let xref = `xref\n0 ${size}\n0000000000 65535 f \n`;
     for (let i = 1; i < size; i++) {
