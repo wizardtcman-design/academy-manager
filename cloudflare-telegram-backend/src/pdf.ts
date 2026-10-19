@@ -955,9 +955,8 @@ function assemblePdf(
 
     // The signature content stream is regenerated on every pass, so its body is
     // taken from updatedStrings only (a stale body would duplicate the layers).
-    // Image objects live only in imageBodies: the text objects never carry them,
-    // so a signature image without a body entry must not be referenced.
-    for (const num of imageBodies.keys()) objectBodies.delete(num);
+    // Image objects live only in imageBodies, so their placeholder body (if any)
+    // is dropped: the loop below writes the binary body instead.
     // The xref must also cover trailing object numbers that carry no body (an
     // optional mask that was skipped): the size is the highest number present
     // in the file, never derived from the emitted list alone.
