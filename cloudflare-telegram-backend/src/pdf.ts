@@ -595,8 +595,8 @@ export function appendSignatureLayer(original: Uint8Array, layer: SignedLayer): 
     // one balanced edit (a regex on the page body alone can unbalance the dict).
     const extra = [
         layer.imageWidth > 0 && layer.imageHeight > 0 ? `/Sig ${sigObj} 0 R${maskReady ? ` /SigMask ${sigMaskObj} 0 R` : ''}` : '',
-        sealSrc ? `/Seal ${sealObj} 0 R` : '',
-        msigSrc ? `/MSig ${msigObj} 0 R` : ''
+        imageBodies.has(sealObj) ? `/Seal ${sealObj} 0 R` : '',
+        imageBodies.has(msigObj) ? `/MSig ${msigObj} 0 R` : ''
     ].filter(Boolean).join(' ');
 
     // The page is patched last: /Sig is only referenced once the mask object
