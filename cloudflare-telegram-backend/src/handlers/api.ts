@@ -11,11 +11,11 @@ import {
     InstallmentRecord,
     FinancialSummaryRecord
 } from '../types';
-import { TelegramBotClient } from '../telegram';
+import { TelegramBotClient, academyBotToken, academyBotUsername } from '../telegram';
 import { AcademyDatabase } from '../db';
 import { ContractStore } from '../contracts-store';
 import { readContractFileForStudent } from './contracts-api';
-import { timingSafeEqual } from '../crypto';
+import { timingSafeEqual, sha256Hex, randomToken } from '../crypto';
 
 // JSON response helper
 function jsonResponse<T>(data: ApiResponse<T>, status: number = 200): Response {
@@ -32,19 +32,11 @@ function jsonResponse<T>(data: ApiResponse<T>, status: number = 200): Response {
 
 /**
  * The academy's own bot token when it has one; the deployment secret otherwise.
- * A bot token therefore never has to be copied into the app.
+ * Shared implementation lives in telegram.ts (also used by the signed-PDF
+ * auto-delivery after signing).
  */
 async function botTokenFor(env: Env, academyId: string): Promise<string> {
-    if (env.DB) {
-        try {
-            const row = await env.DB
-                .prepare('SELECT bot_token FROM academies WHERE id = ?')
-                .bind(academyId)
-                .first<{ bot_token: string }>();
-            if (row?.bot_token) return row.bot_token;
-        } catch (_) {}
-    }
-    return (env.TELEGRAM_BOT_TOKEN || '').trim();
+    return academyBotToken(env, academyId);
 }
 
 // Authentication middleware
@@ -353,7 +345,9 @@ export async function handleApiRequest(
                 national_code: body.nationalCode || '',
                 telegram_chat_id: body.telegramChatId || '',
                 telegram_username: body.telegramUsername || '',
-                is_telegram_connected: body.isTelegramConnected ? 1 : 0
+                is_telegram_connected: body.isTelegramConnected ? 1 : 0,
+                telegramLinkHash: body.telegramLinkHash || '',
+                telegramLinkExpires: body.telegramLinkExpires || 0
             });
 
             const synced = await db.getStudentById(body.id, db.academyId);
@@ -389,7 +383,9 @@ export async function handleApiRequest(
                         national_code: s.nationalCode || '',
                         telegram_chat_id: s.telegramChatId || '',
                         telegram_username: s.telegramUsername || '',
-                        is_telegram_connected: s.isTelegramConnected ? 1 : 0
+                        is_telegram_connected: s.isTelegramConnected ? 1 : 0,
+                        telegramLinkHash: s.telegramLinkHash || '',
+                        telegramLinkExpires: s.telegramLinkExpires || 0
                     });
                 }
             }
@@ -498,26 +494,39 @@ export async function handleApiRequest(
     }
 
     // ============================================================
-    // 5. Deep Link Generation Endpoint
+    // 5. Deep Link Generation Endpoint (Stage 2: token-based, never raw ids)
     // ============================================================
     if (path === '/api/generate-link' && request.method === 'POST') {
         try {
             const body = await request.json() as { studentId: string; botUsername?: string };
-            let botUsername = (body.botUsername || env.BOT_USERNAME || '').replace('@', '').trim();
-            if (!botUsername) {
-                const me = await bot.getMe();
-                if (me.ok && me.result?.username) {
-                    botUsername = me.result.username;
-                }
+            if (!body.studentId) {
+                return jsonResponse({ success: false, message: 'studentId الزامی است.', errorCode: 400 }, 400);
             }
-
-            const link = botUsername
-                ? `https://t.me/${botUsername}?start=${body.studentId}`
-                : `https://t.me/?start=${body.studentId}`;
+            const student = await db.getStudentById(body.studentId, db.academyId);
+            if (!student) {
+                return jsonResponse({ success: false, message: 'هنرجو در این آموزشگاه پیدا نشد.', errorCode: 404 }, 404);
+            }
+            const botUsername = await academyBotUsername(env, db.academyId, body.botUsername || '');
+            if (!botUsername) {
+                return jsonResponse({
+                    success: false,
+                    message: 'نام کاربری ربات تلگرام تنظیم نشده است؛ ابتدا ربات را متصل کنید.',
+                    errorCode: 409
+                }, 409);
+            }
+            // One-time token: the raw value only ever lives inside the returned
+            // link; the server keeps the SHA-256 and burns it after first use.
+            const token = randomToken(24);
+            await db.setTelegramLinkHash(
+                student.id,
+                await sha256Hex(token),
+                Date.now() + 30 * 86400000
+            );
+            const link = `https://t.me/${botUsername}?start=${token}`;
 
             return jsonResponse({
                 success: true,
-                message: 'لینک اتصال اختصاصی تلگرام تولید شد',
+                message: 'لینک اختصاصی یک‌بارمصرف تلگرام تولید شد',
                 data: { link, botUsername }
             });
         } catch (err: any) {

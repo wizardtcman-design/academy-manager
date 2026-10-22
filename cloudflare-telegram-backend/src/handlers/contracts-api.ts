@@ -11,10 +11,23 @@
 
 import { Env } from '../types';
 import { ContractStore } from '../contracts-store';
-import { sha256Hex, sha256HexBytes, sha256HexLegacyLatin1, maskPhone, maskNational, timingSafeEqual } from '../crypto';
+import { sha256Hex, sha256HexBytes, sha256HexLegacyLatin1, maskPhone, maskNational, timingSafeEqual, randomToken } from '../crypto';
+import { AcademyDatabase } from '../db';
+import { academyBotUsername, telegramDeepLink } from '../telegram';
 
 const MAX_PDF_BYTES = 6 * 1024 * 1024;
 const MAX_SEAL_BYTES = 512 * 1024;
+/** One-time /start link tokens live for 30 days or until used. */
+const LINK_TOKEN_TTL_DAYS = 30;
+
+/** Persian welcome message shown/queued for a newly registered student. */
+export function welcomeMessageText(academyName: string, fullName: string, botLink: string): string {
+    const name = (fullName || '').trim() || 'هنرجو';
+    return `سلام ${name} عزیز! 👋\n\n` +
+        `به خانواده <b>${academyName}</b> خوش آمدید. 🌱\n` +
+        `برای دریافت اعلان‌های اقساط، رسیدها و قرارداد آموزشی خود در تلگرام، روی لینک زیر بزنید و Start را بزنید:\n\n${botLink}\n\n` +
+        `🔒 این لینک مخصوص شماست و فقط یک بار قابل استفاده است.`;
+}
 
 function json(data: unknown, status = 200): Response {
     return new Response(JSON.stringify(data), {
@@ -293,6 +306,95 @@ export async function handleContractsApi(request: Request, env: Env, url: URL): 
         ).bind(key).first<{ n: number }>();
         const parts = (results || []).map((r) => ({ part: Number(r.part), data: b64(toBinary(r.content)) }));
         return ok('بخش فایل', { key, sha256: record.sha256, totalParts: Number(totalRow?.n || 0), from, parts });
+    }
+
+    // ---- Stage 2: secure /start link token + welcome SMS preparation ----
+    //   POST /api/students/:studentId/telegram-link  -> fresh one-time bot link
+    //   POST /api/students/:studentId/welcome        -> welcome text + bot link,
+    //      queued in sms_outbox as DISABLED (no SMS provider is configured yet,
+    //      so nothing is ever sent from here).
+    const linkMatch = /^\/api\/students\/([^/]+)\/(telegram-link|welcome)$/.exec(url.pathname);
+    if (linkMatch) {
+        if (request.method !== 'POST') return fail('روش پشتیبانی نمی‌شود.', 405);
+        const studentId = decodeURIComponent(linkMatch[1]);
+        const kind = linkMatch[2];
+        const student = await env.DB!.prepare(
+            'SELECT id, full_name, phone FROM students WHERE id = ? AND academy_id = ?'
+        ).bind(studentId, academyId).first<any>();
+        if (!student) return fail('هنرجو پیدا نشد.', 404);
+
+        let body: any = {};
+        try { body = await request.json(); } catch (_) {}
+
+        const db = new AcademyDatabase(env, academyId);
+
+        // Resolve the bot username FIRST: without it no working link can be
+        // built, and we must not rotate the student's token for nothing.
+        const botUsername = await academyBotUsername(env, academyId, String(body?.botUsername || ''));
+        if (!botUsername) {
+            return fail('نام کاربری ربات تلگرام تنظیم نشده است؛ ابتدا ربات را متصل کنید.', 409);
+        }
+
+        if (kind === 'welcome') {
+            // Idempotent: a second call returns the ALREADY queued text (with its
+            // original, still-working link) instead of minting a new token that
+            // would silently kill the link inside the queued SMS.
+            const existingOutbox = await env.DB!.prepare(
+                'SELECT body, status, error FROM sms_outbox WHERE id = ?'
+            ).bind(`welcome-${studentId}`).first<any>();
+            if (existingOutbox) {
+                const storedLink = /(https:\/\/t\.me\/[^\s]+)/.exec(existingOutbox.body || '')?.[1] || '';
+                return ok('پیام خوش‌آمد قبلاً آماده شده است.', {
+                    message: existingOutbox.body,
+                    botLink: storedLink,
+                    sms: { status: existingOutbox.status, reason: existingOutbox.error },
+                    deduped: true
+                });
+            }
+        }
+
+        // Fresh one-time token (rotates any previous link of this student).
+        const token = randomToken(24);
+        const expiresAt = Date.now() + LINK_TOKEN_TTL_DAYS * 86400000;
+        await env.DB!.prepare(
+            'UPDATE students SET telegram_link_hash = ?, telegram_link_expires = ?, updated_at_epoch = ? WHERE id = ? AND academy_id = ?'
+        ).bind(await sha256Hex(token), expiresAt, Date.now(), studentId, academyId).run();
+
+        const botLink = telegramDeepLink(botUsername, token);
+        if (!botLink) return fail('ساخت لینک ربات ممکن نشد.', 500);
+
+        if (kind === 'telegram-link') {
+            return ok('لینک اختصاصی یک‌بارمصرف ساخته شد.', { botLink, expiresAtEpoch: expiresAt });
+        }
+
+        // ---- welcome (SMS prepared but DISABLED) ----
+        const academyName = await db.getSetting('academy_name', 'آموزشگاه');
+        const text = welcomeMessageText(academyName, student.full_name || '', botLink);
+        const outboxId = `welcome-${studentId}`;
+        await env.DB!.prepare(
+            `INSERT INTO sms_outbox (id, academy_id, reminder_id, phone, body, status, error, created_at_epoch)
+             VALUES (?,?,?,?,?,?,?,?)`
+        ).bind(outboxId, academyId, 'WELCOME', student.phone || '', text, 'DISABLED',
+            'sms_provider_not_configured', Date.now()).run();
+        await db.logMessage({
+            id: crypto.randomUUID(),
+            student_id: studentId,
+            student_name: student.full_name || '',
+            chat_id: '',
+            message_type: 'WELCOME_PREPARED',
+            content: 'welcome sms queued as DISABLED (no provider)',
+            status: 'SUCCESS',
+            error_message: '',
+            timestamp_epoch: Date.now(),
+            timestamp_shamsi: ''
+        });
+        return ok('پیام خوش‌آمد آماده شد؛ ارسال پیامک فعال نیست.', {
+            message: text,
+            botLink,
+            tokenExpiresAtEpoch: expiresAt,
+            sms: { status: 'DISABLED', reason: 'sms_provider_not_configured' },
+            deduped: false
+        });
     }
 
     // ---- per-student secure download ----

@@ -249,11 +249,13 @@ fun BotStudentsSection(
             }
         } else {
             filteredStudents.forEach { student ->
-                val deepLink = if (botUsername.isNotBlank()) {
-                    "https://t.me/$botUsername?start=${student.id}"
-                } else {
-                    "https://t.me/?start=${student.id}"
-                }
+                // Stage 2: the personal one-time token is the link payload.
+                val deepLink = com.example.service.messaging.TelegramStudentLink
+                    .deepLink(botUsername, student.telegramLinkToken)
+                    .ifBlank {
+                        com.example.service.messaging.TelegramStudentLink
+                            .legacyDeepLink(botUsername, student.id)
+                    }
 
                 BotStudentCard(
                     student = student,
@@ -296,11 +298,12 @@ fun BotStudentsSection(
     // Dialog for Link Details
     if (showLinkDialogForStudent != null) {
         val student = showLinkDialogForStudent!!
-        val deepLink = if (botUsername.isNotBlank()) {
-            "https://t.me/$botUsername?start=${student.id}"
-        } else {
-            "https://t.me/?start=${student.id}"
-        }
+        val deepLink = com.example.service.messaging.TelegramStudentLink
+            .deepLink(botUsername, student.telegramLinkToken)
+            .ifBlank {
+                com.example.service.messaging.TelegramStudentLink
+                    .legacyDeepLink(botUsername, student.id)
+            }
 
         AlertDialog(
             onDismissRequest = { showLinkDialogForStudent = null },

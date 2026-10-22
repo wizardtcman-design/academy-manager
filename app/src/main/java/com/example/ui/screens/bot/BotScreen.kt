@@ -277,7 +277,13 @@ fun BotScreen(
     if (directMessageStudent != null) {
         val student = directMessageStudent!!
         val botUsername = settings?.telegramBotUsername ?: ""
-        val deepLink = if (botUsername.isNotBlank()) "https://t.me/${botUsername.removePrefix("@")}?start=${student.id}" else ""
+        // Stage 2: personal one-time token as the link payload.
+        val deepLink = com.example.service.messaging.TelegramStudentLink
+            .deepLink(botUsername, student.telegramLinkToken)
+            .ifBlank {
+                com.example.service.messaging.TelegramStudentLink
+                    .legacyDeepLink(botUsername, student.id)
+            }
 
         SendMessageDialog(
             student = student,

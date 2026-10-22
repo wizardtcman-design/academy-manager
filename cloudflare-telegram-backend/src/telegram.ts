@@ -2,7 +2,7 @@
 // Server-Side Telegram Bot API Client for Cloudflare Workers
 // ============================================================
 
-import { TelegramApiResponse, TelegramUser } from './types';
+import { Env, TelegramApiResponse, TelegramUser } from './types';
 
 export class TelegramBotClient {
     private botToken: string;
@@ -124,4 +124,54 @@ export class TelegramBotClient {
             is_persistent: true
         };
     }
+}
+
+// ============================================================
+// Stage 2 helpers: per-academy bot credentials
+// ============================================================
+
+/**
+ * The academy's own bot token when it has one (D1, migration 0004); the
+ * deployment secret otherwise. A bot token therefore never has to be copied
+ * into the app and one tenant can never send through another tenant's bot.
+ */
+export async function academyBotToken(env: Env, academyId: string): Promise<string> {
+    if (env.DB) {
+        try {
+            const row = await env.DB
+                .prepare('SELECT bot_token FROM academies WHERE id = ?')
+                .bind(academyId)
+                .first<{ bot_token: string }>();
+            if (row?.bot_token) return row.bot_token;
+        } catch (_) {}
+    }
+    return (env.TELEGRAM_BOT_TOKEN || '').trim();
+}
+
+/**
+ * Bot username used to build https://t.me/<username>?start=<token> links.
+ * Priority: the connected bot of THIS academy, then the deployment var,
+ * then the app-provided fallback. Returns '' when nothing is known — callers
+ * must NOT fabricate a link in that case.
+ */
+export async function academyBotUsername(env: Env, academyId: string, fallback = ''): Promise<string> {
+    let username = '';
+    if (env.DB) {
+        try {
+            const row = await env.DB
+                .prepare('SELECT bot_username FROM academies WHERE id = ?')
+                .bind(academyId)
+                .first<{ bot_username: string }>();
+            username = (row?.bot_username || '').replace('@', '').trim();
+        } catch (_) {}
+    }
+    if (!username) username = (env.BOT_USERNAME || '').replace('@', '').trim();
+    if (!username) username = (fallback || '').replace('@', '').trim();
+    return username;
+}
+
+export function telegramDeepLink(botUsername: string, startParam: string): string {
+    const user = (botUsername || '').replace('@', '').trim();
+    if (!user || !startParam) return '';
+    return `https://t.me/${user}?start=${encodeURIComponent(startParam)}`;
 }

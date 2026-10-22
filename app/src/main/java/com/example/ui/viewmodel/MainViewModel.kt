@@ -221,9 +221,35 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             )
             if (res.isSuccess) {
                 showMessage("هنرجوی جدید (${res.getOrNull()?.studentCode}) با موفقیت ثبت شد.")
+                res.getOrNull()?.let { prepareWelcomeAfterRegistration(it) }
                 onComplete(true, null)
             } else {
                 onComplete(false, res.exceptionOrNull()?.message)
+            }
+        }
+    }
+
+    /**
+     * Stage 2: prepare the welcome path for a newly registered student. The
+     * welcome text (with the student's personal bot link) goes out on Telegram
+     * when the student is already linked, and otherwise stays as a prepared
+     * manual message. NO SMS is sent: no SMS provider is configured yet — the
+     * server-side queue (sms_outbox) keeps it DISABLED.
+     */
+    private fun prepareWelcomeAfterRegistration(student: Student) {
+        viewModelScope.launch {
+            runCatching {
+                val botLink = getStudentTelegramLink(student)
+                if (botLink.isBlank()) return@runCatching
+                val academyName = settings.value?.academyName.orEmpty()
+                val text = com.example.service.messaging.TelegramStudentLink
+                    .welcomeText(academyName, student.fullName, botLink)
+                val (sendResult, _) = messagingManager.sendMessage(student, text, "AUTO")
+                when (sendResult) {
+                    is MessageSendResult.ManualActionRequired ->
+                        showMessage("پیام خوش‌آمد برای ارسال دستی آماده شد (ارسال خودکار پیامک فعال نیست).")
+                    else -> {}
+                }
             }
         }
     }

@@ -503,6 +503,11 @@ class TelegramProvider(
                 put("telegramChatId", student.telegramChatId)
                 put("telegramUsername", student.telegramUsername)
                 put("isTelegramConnected", student.isTelegramConnected)
+                // Stage 2 secure linking: only the token hash leaves the device.
+                put("telegramLinkHash",
+                    if (student.telegramLinkToken.isBlank()) ""
+                    else com.example.data.util.SecureToken.sha256Hex(student.telegramLinkToken))
+                put("telegramLinkExpires", 0)
             }
 
             val reqBuilder = Request.Builder()
@@ -570,17 +575,19 @@ class TelegramProvider(
     }
 
     /**
-     * Generates deep link for student onboarding with real student ID
-     * Format: https://t.me/BOT_USERNAME?start=STUDENT_ID
+     * Generates deep link for student onboarding. Stage 2: the payload is the
+     * student's ONE-TIME link token (never the raw id) whenever one exists —
+     * the Worker webhook refuses raw ids. Returns "" when the bot username is
+     * unknown instead of building a broken `https://t.me/?start=...` link.
+     * Format: https://t.me/BOT_USERNAME?start=<token>
      */
     fun generateStudentDeepLink(student: Student, botUsername: String = ""): String {
         val candidate = if (botUsername.isNotBlank()) botUsername else (settings?.telegramBotUsername ?: "")
         val cleanUsername = candidate.removePrefix("@").trim()
-        return if (cleanUsername.isNotBlank()) {
-            "https://t.me/$cleanUsername?start=${student.id}"
-        } else {
-            "https://t.me/?start=${student.id}"
-        }
+        if (cleanUsername.isBlank()) return ""
+        val param = com.example.service.messaging.TelegramStudentLink.tokenOf(student)
+            .ifBlank { student.id } // legacy app-poll fallback before first sync
+        return "https://t.me/$cleanUsername?start=$param"
     }
 
     /**

@@ -149,9 +149,22 @@ export class AcademyDatabase {
         return null;
     }
 
-    async upsertStudent(student: Partial<StudentRecord> & { id: string; full_name: string }): Promise<void> {
+    async upsertStudent(student: Partial<StudentRecord> & {
+        id: string;
+        full_name: string;
+        /** Optional secure /start link token hash (Stage 2). Empty/omitted keeps the stored one. */
+        telegramLinkHash?: string;
+        telegramLinkExpires?: number;
+    }): Promise<void> {
         const now = Date.now();
-        const existing = await this.getStudentById(student.id);
+        // Tenant-aware lookup: the preserve-existing logic below must see THIS
+        // academy's row, or a bot link made in the webhook would be wiped by
+        // the next app sync for every non-default academy.
+        const existing = await this.getStudentById(student.id, this.academyId);
+        const incomingLinkHash = (student.telegramLinkHash || '').trim().toLowerCase();
+        const incomingLinkExpires = Number(student.telegramLinkExpires || 0);
+        const storedLinkHash = incomingLinkHash || (existing as any)?.telegram_link_hash || '';
+        const storedLinkExpires = incomingLinkHash ? (incomingLinkExpires || 0) : (Number((existing as any)?.telegram_link_expires) || 0);
 
         const record: StudentRecord = {
             id: student.id,
@@ -176,8 +189,9 @@ export class AcademyDatabase {
                     INSERT INTO students (
                         id, student_code, full_name, phone, national_code,
                         telegram_chat_id, telegram_username, is_telegram_connected,
-                        linked_at_epoch, created_at_epoch, updated_at_epoch
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        linked_at_epoch, created_at_epoch, updated_at_epoch,
+                        telegram_link_hash, telegram_link_expires
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(id) DO UPDATE SET
                         student_code = excluded.student_code,
                         full_name = excluded.full_name,
@@ -187,11 +201,14 @@ export class AcademyDatabase {
                         telegram_username = excluded.telegram_username,
                         is_telegram_connected = excluded.is_telegram_connected,
                         linked_at_epoch = excluded.linked_at_epoch,
-                        updated_at_epoch = excluded.updated_at_epoch
+                        updated_at_epoch = excluded.updated_at_epoch,
+                        telegram_link_hash = excluded.telegram_link_hash,
+                        telegram_link_expires = excluded.telegram_link_expires
                 `).bind(
                     record.id, record.student_code, record.full_name, record.phone, record.national_code,
                     record.telegram_chat_id, record.telegram_username, record.is_telegram_connected,
-                    record.linked_at_epoch, record.created_at_epoch, record.updated_at_epoch
+                    record.linked_at_epoch, record.created_at_epoch, record.updated_at_epoch,
+                    storedLinkHash, storedLinkExpires
                 ).run();
             } catch (e) {
                 console.warn('[DB] D1 upsertStudent failed:', e);
@@ -218,7 +235,8 @@ export class AcademyDatabase {
     }
 
     async linkTelegramChat(studentId: string, chatId: string, username: string): Promise<boolean> {
-        const student = await this.getStudentById(studentId);
+        // Tenant-aware: the student must belong to THIS academy's bot.
+        const student = await this.getStudentById(studentId, this.academyId);
         if (!student) return false;
 
         const now = Date.now();
@@ -255,6 +273,49 @@ export class AcademyDatabase {
             } catch (_) {}
         }
         return true;
+    }
+
+    /**
+     * Stage 2 secure linking: the /start payload is a one-time random token
+     * whose SHA-256 is stored on the student row. A raw student id can never
+     * be used to grab somebody else's chat.
+     */
+    async getStudentByLinkHash(linkHash: string, academyId: string = this.academyId): Promise<StudentRecord | null> {
+        const hash = (linkHash || '').trim().toLowerCase();
+        if (!hash || !this.db) return null;
+        try {
+            return await this.db
+                .prepare('SELECT * FROM students WHERE telegram_link_hash = ? AND academy_id = ?')
+                .bind(hash, academyId)
+                .first<StudentRecord>() ?? null;
+        } catch (e) {
+            console.warn('[DB] D1 getStudentByLinkHash failed:', e);
+            return null;
+        }
+    }
+
+    /** Stores (or rotates) the /start link token of one student (hash + expiry). */
+    async setTelegramLinkHash(studentId: string, linkHash: string, expiresAtEpoch: number): Promise<void> {
+        if (!this.db) return;
+        try {
+            await this.db.prepare(
+                'UPDATE students SET telegram_link_hash = ?, telegram_link_expires = ?, updated_at_epoch = ? WHERE id = ? AND academy_id = ?'
+            ).bind((linkHash || '').trim().toLowerCase(), expiresAtEpoch || 0, Date.now(), studentId, this.academyId).run();
+        } catch (e) {
+            console.warn('[DB] D1 setTelegramLinkHash failed:', e);
+        }
+    }
+
+    /** Single-use semantics: the token stops working right after one successful binding. */
+    async consumeTelegramLinkToken(studentId: string): Promise<void> {
+        if (!this.db) return;
+        try {
+            await this.db.prepare(
+                'UPDATE students SET telegram_link_hash = ?, telegram_link_expires = 0, updated_at_epoch = ? WHERE id = ? AND academy_id = ?'
+            ).bind('', Date.now(), studentId, this.academyId).run();
+        } catch (e) {
+            console.warn('[DB] D1 consumeTelegramLinkToken failed:', e);
+        }
     }
 
     // ============================================================

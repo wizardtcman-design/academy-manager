@@ -14,6 +14,8 @@ import { ContractStore, ContractRow } from '../contracts-store';
 import { sha256Hex, sha256HexBytes, maskPhone, maskNational } from '../crypto';
 import { appendSignatureLayer, toPersianDigits } from '../pdf';
 import { readContractFile, writeContractFile, bearerAuthorized } from './contracts-api';
+import { AcademyDatabase } from '../db';
+import { TelegramBotClient, academyBotToken } from '../telegram';
 
 const MAX_FAILED = 5;
 const LOCK_WINDOW_MS = 30 * 60 * 1000;
@@ -299,6 +301,14 @@ export async function handleSignRoute(request: Request, env: Env, url: URL): Pro
         });
         await store.event(row.academy_id, row.id, { type: 'SIGNED', detail: `sha=${signedSha.slice(0, 16)}`, ip, userAgent: ua });
 
+        // Stage 2: push the final PDF to the student's own Telegram chat right
+        // after signing — once per contract, never blocking the sign response.
+        try {
+            await deliverSignedPdfToStudent(env, row, signed);
+        } catch (e: any) {
+            console.error('signed pdf auto-delivery failed:', e?.message || e);
+        }
+
         return api({
             success: true,
             message: 'قرارداد با موفقیت امضا شد.',
@@ -398,3 +408,76 @@ function imageSize(bytes: Uint8Array): { width: number; height: number } {
 
 import SIGN_PAGE_TEMPLATE from '../templates/sign.html';
 const SIGN_PAGE_HTML = SIGN_PAGE_TEMPLATE;
+
+// ============================================================
+// Stage 2: signed-PDF auto-delivery (Telegram)
+// The student's own linked chat gets the final file right after signing.
+// Delivery is claimed exactly once per contract (contract_deliveries), so
+// retries, webhook re-deliveries and double posts never send twice. When the
+// student has not linked a chat yet nothing is claimed — the first
+// "📄 قرارداد من" menu request delivers instead.
+// ============================================================
+export async function deliverSignedPdfToStudent(env: Env, row: ContractRow, bytes: Uint8Array): Promise<void> {
+    const store = new ContractStore(env);
+    const db = new AcademyDatabase(env, row.academy_id);
+    const student = await db.getStudentById(row.student_id, row.academy_id);
+    const chatId = (student?.telegram_chat_id || '').trim();
+    if (!chatId) return;
+
+    const claimed = await store.claimContractDelivery(row.academy_id, row.id, 'SIGNED_PDF_TELEGRAM');
+    if (!claimed) return; // already delivered or being delivered by another attempt
+
+    const token = await academyBotToken(env, row.academy_id);
+    if (!token) {
+        await store.finishContractDelivery(row.academy_id, row.id, 'SIGNED_PDF_TELEGRAM', false);
+        await store.event(row.academy_id, row.id, { type: 'DELIVERY_FAILED', detail: 'bot not connected' });
+        return;
+    }
+
+    const bot = new TelegramBotClient(token);
+    let sent: Awaited<ReturnType<TelegramBotClient['sendDocument']>>;
+    try {
+        sent = await bot.sendDocument({
+            chatId,
+            fileName: `contract-${row.id.slice(0, 8)}.pdf`,
+            bytes,
+            caption: `📄 قرارداد امضاشدهٔ شما (${row.course_title || 'دوره آموزشی'})`
+        });
+    } catch (e: any) {
+        // Network failure against Telegram: never crash the sign response.
+        sent = { ok: false, description: `network: ${e?.message || e}` } as any;
+    }
+
+    if (sent.ok) {
+        await store.finishContractDelivery(row.academy_id, row.id, 'SIGNED_PDF_TELEGRAM', true);
+        await store.event(row.academy_id, row.id, { type: 'PDF_SENT', detail: 'telegram:auto-after-sign' });
+        await db.logMessage({
+            id: crypto.randomUUID(),
+            student_id: row.student_id,
+            student_name: row.student_name,
+            chat_id: chatId,
+            message_type: 'SIGNED_PDF_SENT',
+            content: `contract ${row.id.slice(0, 8)} (auto after sign)`,
+            status: 'SUCCESS',
+            error_message: '',
+            timestamp_epoch: Date.now(),
+            timestamp_shamsi: ''
+        });
+    } else {
+        // The bot menu ("📄 قرارداد من") stays available as the manual retry.
+        await store.finishContractDelivery(row.academy_id, row.id, 'SIGNED_PDF_TELEGRAM', false);
+        await store.event(row.academy_id, row.id, { type: 'DELIVERY_FAILED', detail: `telegram: ${sent.description || 'unknown'}` });
+        await db.logMessage({
+            id: crypto.randomUUID(),
+            student_id: row.student_id,
+            student_name: row.student_name,
+            chat_id: chatId,
+            message_type: 'SIGNED_PDF_SENT',
+            content: `contract ${row.id.slice(0, 8)} (auto after sign)`,
+            status: 'FAILED',
+            error_message: sent.description || 'telegram send failed',
+            timestamp_epoch: Date.now(),
+            timestamp_shamsi: ''
+        });
+    }
+}

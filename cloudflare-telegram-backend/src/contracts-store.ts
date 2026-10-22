@@ -335,6 +335,35 @@ export class ContractStore {
 
     // ---------- delivery status (Telegram + SMS tracked separately) ----------
 
+    /**
+     * Claims the delivery slot of one contract+kind (Stage 2). The unique
+     * primary key makes retries and Telegram webhook re-deliveries safe: only
+     * the FIRST caller may send. A slot left at sent_at_epoch = 0 (crashed
+     * attempt) is atomically re-claimed via compare-and-set; a finished slot
+     * (-1 = skipped, >0 = sent) can never be claimed again.
+     */
+    async claimContractDelivery(academyId: string, contractId: string, kind: string): Promise<boolean> {
+        const key = `${kind}:${contractId}`;
+        const insert = await this.env.DB!.prepare(
+            `INSERT OR IGNORE INTO contract_deliveries (key, academy_id, contract_id, kind, sent_at_epoch)
+             VALUES (?,?,?,?,0)`
+        ).bind(key, academyId, contractId, kind).run();
+        if ((insert.meta?.changes ?? 0) > 0) return true;
+        // Crashed attempt: an unfinished slot (0) is reclaimable exactly once.
+        const reclaim = await this.env.DB!.prepare(
+            'UPDATE contract_deliveries SET sent_at_epoch = -1 WHERE academy_id = ? AND key = ? AND sent_at_epoch = 0'
+        ).bind(academyId, key).run();
+        return (reclaim.meta?.changes ?? 0) > 0;
+    }
+
+    /** Marks a claimed delivery as finished (sent or permanently skipped). */
+    async finishContractDelivery(academyId: string, contractId: string, kind: string, sent: boolean): Promise<void> {
+        const key = `${kind}:${contractId}`;
+        await this.env.DB!.prepare(
+            'UPDATE contract_deliveries SET sent_at_epoch = ? WHERE academy_id = ? AND key = ?'
+        ).bind(sent ? Date.now() : -1, academyId, key).run();
+    }
+
     /** Claims a delivery slot; returns false when another run already claimed it. */
     async claimDelivery(academyId: string, reminderId: string, channel: string): Promise<boolean> {
         const res = await this.env.DB!.prepare(

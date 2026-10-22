@@ -78,6 +78,9 @@ class BotCloudBridge(private val context: Context) {
         }
 
         val repo = AcademyRepository(db, com.example.data.remote.FirebaseManager())
+        // Stage 2: mint one-time /start link tokens before pushing, so the
+        // webhook can verify sha256(token) instead of trusting a raw student id.
+        runCatching { repo.ensureTelegramLinkTokens() }
         val students = db.studentDao().getAllStudentsDirect()
         val installments = mutableListOf<Installment>()
         for (s in students) {
@@ -98,6 +101,13 @@ class BotCloudBridge(private val context: Context) {
                 put("telegramChatId", s.telegramChatId)
                 put("telegramUsername", s.telegramUsername)
                 put("isTelegramConnected", s.isTelegramConnected)
+                // Stage 2 secure linking: only the SHA-256 of the token is sent.
+                put("telegramLinkHash",
+                    if (s.telegramLinkToken.isBlank()) ""
+                    else com.example.data.util.SecureToken.sha256Hex(s.telegramLinkToken))
+                // 0 = no server-side expiry for app-managed tokens; they are
+                // single-use (consumed by the first successful /start).
+                put("telegramLinkExpires", 0)
             })
         }
 

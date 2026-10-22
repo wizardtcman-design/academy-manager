@@ -195,4 +195,11 @@ export interface SyncStudentRequest {
     telegramChatId?: string;
     telegramUsername?: string;
     isTelegramConnected?: boolean;
+    /**
+     * SHA-256 of the app-generated /start link token (Stage 2 secure linking).
+     * The raw token never leaves the app; the server keeps only this hash plus
+     * an expiry. Omitted / empty keeps the value already stored server-side.
+     */
+    telegramLinkHash?: string;
+    telegramLinkExpires?: number;
 }

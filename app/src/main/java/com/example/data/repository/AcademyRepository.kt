@@ -304,6 +304,24 @@ class AcademyRepository(
         return converted to legacy.size
     }
 
+    /**
+     * Stage 2 secure linking: every student gets a one-time /start link token
+     * (raw token stays on the device; only SecureToken.sha256Hex of it is ever
+     * pushed to the Worker). Idempotent — students that already have a token
+     * are left untouched, so their existing links keep working.
+     */
+    suspend fun ensureTelegramLinkTokens(): Int = withContext(Dispatchers.IO) {
+        var created = 0
+        for (s in studentDao.getAllStudentsDirect()) {
+            if (s.telegramLinkToken.isBlank()) {
+                studentDao.updateStudent(s.copy(telegramLinkToken = com.example.data.util.SecureToken.newToken()))
+                created++
+            }
+        }
+        if (created > 0) Log.d("AcademyRepository", "telegram link tokens minted: $created")
+        created
+    }
+
     suspend fun addStudent(
         firstName: String,
         lastName: String,

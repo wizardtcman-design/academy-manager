@@ -7,7 +7,7 @@ import { TelegramBotClient } from '../telegram';
 import { AcademyDatabase } from '../db';
 import { ContractStore, ContractRow } from '../contracts-store';
 import { readContractFile } from './contracts-api';
-import { timingSafeEqual } from '../crypto';
+import { timingSafeEqual, sha256Hex } from '../crypto';
 
 /** Telegram stops retrying an update after ~1 minute; finish sending before then. */
 const SEND_TIMEOUT_MS = 25_000;
@@ -108,14 +108,18 @@ async function processUpdate(
 
     // ============================================================
     // 1. Handle /start and Deep Links
+    //    Stage 2 secure linking: the payload must be a ONE-TIME random token
+    //    whose SHA-256 the server stores on the student row. A raw student id
+    //    is never accepted — a forwarded/guessed id must not hand somebody
+    //    else's financial data to another chat.
     // ============================================================
     if (text.startsWith('/start')) {
         const cleaned = text.replace('/start', '').trim();
-        const studentIdParam = cleaned.startsWith('=')
+        const startParam = cleaned.startsWith('=')
             ? cleaned.substring(1).trim()
             : cleaned.split(/\s+/)[0]?.trim() || '';
 
-        if (!studentIdParam) {
+        if (!startParam) {
             // User clicked /start without deep link parameter
             const existingStudent = await db.getStudentByChatId(chatId);
             if (existingStudent) {
@@ -138,59 +142,90 @@ async function processUpdate(
             return;
         }
 
-        // Student ID passed via Deep Link!
-        const student = await db.getStudentById(studentIdParam, db.academyId);
-        if (!student) {
-            const errorMsg = `❌ هنرجوی گرامی، شناسه کاربری (<code>${studentIdParam}</code>) در سیستم آموزشگاه یافت نشد.\nلطفاً با مدیریت آموزشگاه تماس حاصل فرمایید.`;
-            await bot.sendMessage({ chatId, text: errorMsg, parseMode: 'HTML' });
-            await db.logMessage({
-                id: crypto.randomUUID(),
-                student_id: studentIdParam,
-                student_name: firstName,
-                chat_id: chatId,
-                message_type: 'START_LINK_FAILED',
-                content: text,
-                status: 'FAILED',
-                error_message: 'Student ID not found in database',
-                timestamp_epoch: Date.now(),
-                timestamp_shamsi: ''
-            });
-            return;
+        // ---- Secure token flow (Stage 2) ----
+        if (/^[A-Za-z0-9_-]{20,64}$/.test(startParam)) {
+            const linkHash = await sha256Hex(startParam);
+            const tokenStudent = await db.getStudentByLinkHash(linkHash, db.academyId);
+            if (tokenStudent) {
+                const expires = Number((tokenStudent as any).telegram_link_expires || 0);
+                if (expires > 0 && expires < Date.now()) {
+                    await bot.sendMessage({
+                        chatId,
+                        text: '⏳ مهلت این لینک اتصال به پایان رسیده است. لطفاً از آموزشگاه لینک جدید بگیرید.',
+                        parseMode: 'HTML'
+                    });
+                    await db.logMessage({
+                        id: crypto.randomUUID(),
+                        student_id: tokenStudent.id,
+                        student_name: tokenStudent.full_name,
+                        chat_id: chatId,
+                        message_type: 'START_LINK_EXPIRED',
+                        content: 'link token expired',
+                        status: 'FAILED',
+                        error_message: 'Telegram link token expired',
+                        timestamp_epoch: Date.now(),
+                        timestamp_shamsi: ''
+                    });
+                    return;
+                }
+
+                // Prevent linking same Telegram Chat ID to a different student
+                const conflicting = await db.getStudentByChatId(chatId);
+                if (conflicting && conflicting.id !== tokenStudent.id) {
+                    const conflictMsg = `⚠️ این حساب تلگرام قبلاً به هنرجوی دیگری (<b>${conflicting.full_name}</b>) متصل شده است.\nجهت تغییر ابتدا باید اتصال قبلی در سیستم لغو گردد.`;
+                    await bot.sendMessage({ chatId, text: conflictMsg, parseMode: 'HTML' });
+                    return;
+                }
+
+                // Bind the chat, then burn the token: exactly one successful use.
+                await db.linkTelegramChat(tokenStudent.id, chatId, username);
+                await db.consumeTelegramLinkToken(tokenStudent.id);
+
+                const welcomeMsg = `🎉 سلام <b>${tokenStudent.full_name}</b> عزیز!\n\n` +
+                    `اتصال حساب تلگرام شما به سامانه هوشمند آموزشگاه با موفقیت برقرار شد. ✅\n\n` +
+                    `👤 <b>نام هنرجو:</b> ${tokenStudent.full_name}\n` +
+                    (tokenStudent.student_code ? `🆔 <b>کد هنرجویی:</b> ${tokenStudent.student_code}\n` : '') +
+                    `\nاز منوی زیر می‌توانید وضعیت مالی، اقساط، سوابق پرداختی و قراردادهای آموزشی خود را مشاهده نمایید 👇`;
+
+                await bot.sendMessage({
+                    chatId,
+                    text: welcomeMsg,
+                    parseMode: 'HTML',
+                    replyMarkup: TelegramBotClient.getStudentReplyKeyboard()
+                });
+
+                await db.logMessage({
+                    id: crypto.randomUUID(),
+                    student_id: tokenStudent.id,
+                    student_name: tokenStudent.full_name,
+                    chat_id: chatId,
+                    message_type: 'START_LINK_SUCCESS',
+                    content: 'Connected via one-time secure link token',
+                    status: 'SUCCESS',
+                    error_message: '',
+                    timestamp_epoch: Date.now(),
+                    timestamp_shamsi: ''
+                });
+                return;
+            }
         }
 
-        // Prevent linking same Telegram Chat ID to a different student
-        const conflictingStudent = await db.getStudentByChatId(chatId);
-        if (conflictingStudent && conflictingStudent.id !== student.id) {
-            const conflictMsg = `⚠️ این حساب تلگرام قبلاً به هنرجوی دیگری (<b>${conflictingStudent.full_name}</b>) متصل شده است.\nجهت تغییر ابتدا باید اتصال قبلی در سیستم لغو گردد.`;
-            await bot.sendMessage({ chatId, text: conflictMsg, parseMode: 'HTML' });
-            return;
-        }
-
-        // Successfully link the student to Telegram Chat ID
-        await db.linkTelegramChat(student.id, chatId, username);
-
-        const welcomeMsg = `🎉 سلام <b>${student.full_name}</b> عزیز!\n\n` +
-            `اتصال حساب تلگرام شما به سامانه هوشمند آموزشگاه با موفقیت برقرار شد. ✅\n\n` +
-            `👤 <b>نام هنرجو:</b> ${student.full_name}\n` +
-            (student.student_code ? `🆔 <b>کد هنرجویی:</b> ${student.student_code}\n` : '') +
-            `\nاز منوی زیر می‌توانید وضعیت مالی، اقساط، سوابق پرداختی و قراردادهای آموزشی خود را مشاهده نمایید 👇`;
-
+        // ---- Raw student ids are no longer accepted (spoofing guard) ----
+        // The same neutral answer whether the id exists or not: no existence leak.
         await bot.sendMessage({
             chatId,
-            text: welcomeMsg,
-            parseMode: 'HTML',
-            replyMarkup: TelegramBotClient.getStudentReplyKeyboard()
+            text: '🔒 برای اتصال حساب، لطفاً از <b>لینک اختصاصی شخصی</b> استفاده کنید که آموزشگاه برای شما ارسال کرده است.\nهر لینک فقط یک بار و فقط برای هنرجوی خودش کار می‌کند.',
+            parseMode: 'HTML'
         });
-
         await db.logMessage({
             id: crypto.randomUUID(),
-            student_id: student.id,
-            student_name: student.full_name,
+            student_id: '',
+            student_name: firstName,
             chat_id: chatId,
-            message_type: 'START_LINK_SUCCESS',
-            content: `Connected via Telegram Chat ID ${chatId} (@${username})`,
-            status: 'SUCCESS',
-            error_message: '',
+            message_type: 'START_LINK_REJECTED',
+            content: 'legacy raw-id start refused',
+            status: 'FAILED',
+            error_message: 'Raw student id linking is disabled',
             timestamp_epoch: Date.now(),
             timestamp_shamsi: ''
         });
@@ -473,6 +508,10 @@ async function handleContract(bot: TelegramBotClient, env: Env, student: Student
                 bytes,
                 caption: `📄 قرارداد امضاشدهٔ شما (${signed.course_title || 'دوره آموزشی'})`
             });
+            // Forensics: the student asked for the file again from the bot menu.
+            try {
+                await store.event(academyId, signed.id, { type: 'PDF_SENT', detail: 'telegram:bot-menu' });
+            } catch (_) {}
             await bot.sendMessage({
                 chatId,
                 text: `✅ این نسخهٔ نهایی و امضاشدهٔ قرارداد شماست.\nکد قرارداد: <code>${signed.id.slice(0, 8)}</code>`,
