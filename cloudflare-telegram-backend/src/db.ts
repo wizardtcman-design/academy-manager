@@ -53,11 +53,12 @@ export class AcademyDatabase {
     // Student Methods
     // ============================================================
 
-    async getStudentById(id: string, academyId: string = 'default'): Promise<StudentRecord | null> {
-        // Fast-path: Check KV cache first if available
+    async getStudentById(id: string, academyId: string = this.academyId): Promise<StudentRecord | null> {
+        // Fast-path: Check KV cache first if available. The cache key carries the
+        // tenant so two academies can never read each other's cached row.
         if (this.kv) {
             try {
-                const cached = await this.kv.get(`student:${id}`, 'json');
+                const cached = await this.kv.get(`student:${academyId}:${id}`, 'json');
                 if (cached) return cached as StudentRecord;
             } catch (_) {}
         }
@@ -67,7 +68,7 @@ export class AcademyDatabase {
                 const stmt = this.db.prepare('SELECT * FROM students WHERE id = ? AND academy_id = ?').bind(id, academyId);
                 const record = await stmt.first<StudentRecord>();
                 if (record && this.kv) {
-                    await this.kv.put(`student:${id}`, JSON.stringify(record), { expirationTtl: 3600 });
+                    await this.kv.put(`student:${academyId}:${id}`, JSON.stringify(record), { expirationTtl: 3600 });
                 }
                 return record;
             } catch (e) {
@@ -75,15 +76,15 @@ export class AcademyDatabase {
             }
         }
 
-        // Memory fallback
-        return memoryStudents.get(id) || null;
+        // Memory fallback (dev only; strict mode never reads it)
+        return (memoryStudents.get(`${academyId}:${id}`) || memoryStudents.get(id) || null) as StudentRecord | null;
     }
 
-    async getStudentByCode(studentCode: string): Promise<StudentRecord | null> {
+    async getStudentByCode(studentCode: string, academyId: string = this.academyId): Promise<StudentRecord | null> {
         if (!studentCode) return null;
         if (this.db) {
             try {
-                return await this.db.prepare('SELECT * FROM students WHERE student_code = ?').bind(studentCode).first<StudentRecord>();
+                return await this.db.prepare('SELECT * FROM students WHERE student_code = ? AND academy_id = ?').bind(studentCode, academyId).first<StudentRecord>() ?? null;
             } catch (e) {
                 console.warn('[DB] D1 getStudentByCode failed:', e);
             }
@@ -94,13 +95,13 @@ export class AcademyDatabase {
         return null;
     }
 
-    /** All students that are linked to Telegram (used for admin broadcast). */
-    async getAllConnectedStudents(): Promise<StudentRecord[]> {
+    /** All students of THIS academy that are linked to Telegram (broadcast / link pull). */
+    async getAllConnectedStudents(academyId: string = this.academyId): Promise<StudentRecord[]> {
         if (this.db) {
             try {
                 const { results } = await this.db.prepare(
-                    "SELECT * FROM students WHERE is_telegram_connected = 1 AND telegram_chat_id != ''"
-                ).all<StudentRecord>();
+                    "SELECT * FROM students WHERE is_telegram_connected = 1 AND telegram_chat_id != '' AND academy_id = ?"
+                ).bind(academyId).all<StudentRecord>();
                 return results || [];
             } catch (e) {
                 console.warn('[DB] D1 getAllConnectedStudents failed:', e);
@@ -109,13 +110,13 @@ export class AcademyDatabase {
         return Array.from(memoryStudents.values()).filter(s => s.is_telegram_connected === 1 && s.telegram_chat_id);
     }
 
-    async getStudentByChatId(chatId: string): Promise<StudentRecord | null> {
+    async getStudentByChatId(chatId: string, academyId: string = this.academyId): Promise<StudentRecord | null> {
         if (!chatId) return null;
         if (this.kv) {
             try {
-                const studentId = await this.kv.get(`chat:${chatId}`);
+                const studentId = await this.kv.get(`chat:${academyId}:${chatId}`);
                 if (studentId) {
-                    const student = await this.getStudentById(studentId);
+                    const student = await this.getStudentById(studentId, academyId);
                     if (student) return student;
                 }
             } catch (_) {}
@@ -129,7 +130,7 @@ export class AcademyDatabase {
                     .bind(chatId, this.academyId);
                 const record = await stmt.first<StudentRecord>();
                 if (record && this.kv) {
-                    await this.kv.put(`chat:${chatId}`, record.id, { expirationTtl: 3600 });
+                    await this.kv.put(`chat:${academyId}:${chatId}`, record.id, { expirationTtl: 3600 });
                 }
                 return record;
             } catch (e) {
@@ -155,7 +156,7 @@ export class AcademyDatabase {
         /** Optional secure /start link token hash (Stage 2). Empty/omitted keeps the stored one. */
         telegramLinkHash?: string;
         telegramLinkExpires?: number;
-    }): Promise<void> {
+    }): Promise<boolean> {
         const now = Date.now();
         // Tenant-aware lookup: the preserve-existing logic below must see THIS
         // academy's row, or a bot link made in the webhook would be wiped by
@@ -187,11 +188,11 @@ export class AcademyDatabase {
             try {
                 await this.db.prepare(`
                     INSERT INTO students (
-                        id, student_code, full_name, phone, national_code,
+                        id, academy_id, student_code, full_name, phone, national_code,
                         telegram_chat_id, telegram_username, is_telegram_connected,
                         linked_at_epoch, created_at_epoch, updated_at_epoch,
                         telegram_link_hash, telegram_link_expires
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(id) DO UPDATE SET
                         student_code = excluded.student_code,
                         full_name = excluded.full_name,
@@ -205,13 +206,16 @@ export class AcademyDatabase {
                         telegram_link_hash = excluded.telegram_link_hash,
                         telegram_link_expires = excluded.telegram_link_expires
                 `).bind(
-                    record.id, record.student_code, record.full_name, record.phone, record.national_code,
+                    record.id, this.academyId, record.student_code, record.full_name, record.phone, record.national_code,
                     record.telegram_chat_id, record.telegram_username, record.is_telegram_connected,
                     record.linked_at_epoch, record.created_at_epoch, record.updated_at_epoch,
                     storedLinkHash, storedLinkExpires
                 ).run();
             } catch (e) {
+                // Surfaced to the caller (sync API) so a failed row is reported
+                // instead of a silent 200 with nothing stored.
                 console.warn('[DB] D1 upsertStudent failed:', e);
+                return false;
             }
         }
 
@@ -226,12 +230,13 @@ export class AcademyDatabase {
         // Update KV cache if present
         if (this.kv) {
             try {
-                await this.kv.put(`student:${record.id}`, JSON.stringify(record), { expirationTtl: 3600 });
+                await this.kv.put(`student:${this.academyId}:${record.id}`, JSON.stringify(record), { expirationTtl: 3600 });
                 if (record.telegram_chat_id) {
-                    await this.kv.put(`chat:${record.telegram_chat_id}`, record.id, { expirationTtl: 3600 });
+                    await this.kv.put(`chat:${this.academyId}:${record.telegram_chat_id}`, record.id, { expirationTtl: 3600 });
                 }
             } catch (_) {}
         }
+        return true;
     }
 
     async linkTelegramChat(studentId: string, chatId: string, username: string): Promise<boolean> {
@@ -249,8 +254,8 @@ export class AcademyDatabase {
                         is_telegram_connected = 1,
                         linked_at_epoch = CASE WHEN linked_at_epoch > 0 THEN linked_at_epoch ELSE ? END,
                         updated_at_epoch = ?
-                    WHERE id = ?
-                `).bind(chatId, username, now, now, studentId).run();
+                    WHERE id = ? AND academy_id = ?
+                `).bind(chatId, username, now, now, studentId, this.academyId).run();
             } catch (e) {
                 console.warn('[DB] D1 linkTelegramChat failed:', e);
             }
@@ -268,8 +273,8 @@ export class AcademyDatabase {
 
         if (this.kv) {
             try {
-                await this.kv.put(`student:${studentId}`, JSON.stringify(student), { expirationTtl: 3600 });
-                await this.kv.put(`chat:${chatId}`, studentId, { expirationTtl: 3600 });
+                await this.kv.put(`student:${this.academyId}:${studentId}`, JSON.stringify(student), { expirationTtl: 3600 });
+                await this.kv.put(`chat:${this.academyId}:${chatId}`, studentId, { expirationTtl: 3600 });
             } catch (_) {}
         }
         return true;
@@ -322,7 +327,7 @@ export class AcademyDatabase {
     // Installments & Financial Summaries
     // ============================================================
 
-    async getInstallmentsForStudent(studentId: string, academyId: string = 'default'): Promise<InstallmentRecord[]> {
+    async getInstallmentsForStudent(studentId: string, academyId: string = this.academyId): Promise<InstallmentRecord[]> {
         if (this.db) {
             try {
                 const stmt = this.db.prepare('SELECT * FROM installments WHERE student_id = ? AND academy_id = ? ORDER BY due_date_epoch ASC, installment_number ASC').bind(studentId, academyId);
@@ -343,10 +348,10 @@ export class AcademyDatabase {
             try {
                 const stmts = installments.map(inst => this.db!.prepare(`
                     INSERT INTO installments (
-                        id, student_id, installment_number, total_installments, course_title,
+                        id, academy_id, student_id, installment_number, total_installments, course_title,
                         amount, paid_amount, remaining_amount, due_date_shamsi, due_date_epoch,
                         is_paid, paid_date_shamsi, updated_at_epoch
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(id) DO UPDATE SET
                         installment_number = excluded.installment_number,
                         total_installments = excluded.total_installments,
@@ -360,7 +365,7 @@ export class AcademyDatabase {
                         paid_date_shamsi = excluded.paid_date_shamsi,
                         updated_at_epoch = ?
                 `).bind(
-                    inst.id, inst.student_id, inst.installment_number, inst.total_installments, inst.course_title,
+                    inst.id, this.academyId, inst.student_id, inst.installment_number, inst.total_installments, inst.course_title,
                     inst.amount, inst.paid_amount, inst.remaining_amount, inst.due_date_shamsi, inst.due_date_epoch,
                     inst.is_paid, inst.paid_date_shamsi, now, now
                 ));
@@ -375,11 +380,11 @@ export class AcademyDatabase {
         if (!this.strict) memoryInstallments.set(studentId, installments);
     }
 
-    async getFinancialSummary(studentId: string): Promise<FinancialSummaryRecord | null> {
+    async getFinancialSummary(studentId: string, academyId: string = this.academyId): Promise<FinancialSummaryRecord | null> {
         if (this.db) {
             try {
-                const stmt = this.db.prepare('SELECT * FROM financial_summaries WHERE student_id = ?').bind(studentId);
-                return await stmt.first<FinancialSummaryRecord>();
+                const stmt = this.db.prepare('SELECT * FROM financial_summaries WHERE student_id = ? AND academy_id = ?').bind(studentId, academyId);
+                return await stmt.first<FinancialSummaryRecord>() ?? null;
             } catch (e) {
                 console.warn('[DB] D1 getFinancialSummary failed:', e);
             }
@@ -393,9 +398,9 @@ export class AcademyDatabase {
             try {
                 await this.db.prepare(`
                     INSERT INTO financial_summaries (
-                        student_id, total_tuition, total_paid, remaining_debt,
+                        student_id, academy_id, total_tuition, total_paid, remaining_debt,
                         active_courses_count, courses_summary, settlement_status, updated_at_epoch
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(student_id) DO UPDATE SET
                         total_tuition = excluded.total_tuition,
                         total_paid = excluded.total_paid,
@@ -405,7 +410,7 @@ export class AcademyDatabase {
                         settlement_status = excluded.settlement_status,
                         updated_at_epoch = excluded.updated_at_epoch
                 `).bind(
-                    summary.student_id, summary.total_tuition, summary.total_paid, summary.remaining_debt,
+                    summary.student_id, this.academyId, summary.total_tuition, summary.total_paid, summary.remaining_debt,
                     summary.active_courses_count, summary.courses_summary, summary.settlement_status, now
                 ).run();
             } catch (e) {
@@ -424,12 +429,12 @@ export class AcademyDatabase {
             try {
                 await this.db.prepare(`
                     INSERT INTO reminders (
-                        id, student_id, student_name, chat_id, installment_id,
+                        id, academy_id, student_id, student_name, chat_id, installment_id,
                         reminder_type, message_text, scheduled_epoch, scheduled_time_str,
                         status, error_message, retry_count, created_at_epoch, sent_at_epoch
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 `).bind(
-                    reminder.id, reminder.student_id, reminder.student_name, reminder.chat_id, reminder.installment_id,
+                    reminder.id, this.academyId, reminder.student_id, reminder.student_name, reminder.chat_id, reminder.installment_id,
                     reminder.reminder_type, reminder.message_text, reminder.scheduled_epoch, reminder.scheduled_time_str,
                     reminder.status, reminder.error_message, reminder.retry_count, reminder.created_at_epoch, reminder.sent_at_epoch
                 ).run();
@@ -440,15 +445,15 @@ export class AcademyDatabase {
         if (!this.strict) memoryReminders.set(reminder.id, reminder);
     }
 
-    async getDueReminders(maxEpoch: number, limit: number = 50): Promise<ReminderRecord[]> {
+    async getDueReminders(maxEpoch: number, limit: number = 50, academyId: string = this.academyId): Promise<ReminderRecord[]> {
         if (this.db) {
             try {
                 const stmt = this.db.prepare(`
                     SELECT * FROM reminders
-                    WHERE status = 'SCHEDULED' AND scheduled_epoch <= ?
+                    WHERE status = 'SCHEDULED' AND scheduled_epoch <= ? AND academy_id = ?
                     ORDER BY scheduled_epoch ASC
                     LIMIT ?
-                `).bind(maxEpoch, limit);
+                `).bind(maxEpoch, academyId, limit);
                 const { results } = await stmt.all<ReminderRecord>();
                 return results || [];
             } catch (e) {
@@ -476,8 +481,8 @@ export class AcademyDatabase {
                         error_message = ?,
                         sent_at_epoch = CASE WHEN ? = 'SENT' THEN ? ELSE sent_at_epoch END,
                         retry_count = retry_count + 1
-                    WHERE id = ?
-                `).bind(status, errorMessage, status, now, id).run();
+                    WHERE id = ? AND academy_id = ?
+                `).bind(status, errorMessage, status, now, id, this.academyId).run();
             } catch (e) {
                 console.warn('[DB] D1 updateReminderStatus failed:', e);
             }
@@ -495,7 +500,7 @@ export class AcademyDatabase {
     async getReminderById(id: string): Promise<ReminderRecord | null> {
         if (this.db) {
             try {
-                return await this.db.prepare('SELECT * FROM reminders WHERE id = ?').bind(id).first<ReminderRecord>();
+                return await this.db.prepare('SELECT * FROM reminders WHERE id = ? AND academy_id = ?').bind(id, this.academyId).first<ReminderRecord>() ?? null;
             } catch (e) {
                 console.warn('[DB] D1 getReminderById failed:', e);
             }
@@ -512,8 +517,8 @@ export class AcademyDatabase {
                         scheduled_epoch = ?,
                         error_message = ?,
                         retry_count = retry_count + 1
-                    WHERE id = ?
-                `).bind(nextEpoch, errorMessage, id).run();
+                    WHERE id = ? AND academy_id = ?
+                `).bind(nextEpoch, errorMessage, id, this.academyId).run();
             } catch (e) {
                 console.warn('[DB] D1 retryReminder failed:', e);
             }
@@ -533,8 +538,8 @@ export class AcademyDatabase {
             try {
                 await this.db.prepare(`
                     UPDATE reminders SET status = 'CANCELLED', error_message = 'Installment already paid'
-                    WHERE installment_id = ? AND status = 'SCHEDULED'
-                `).bind(installmentId).run();
+                    WHERE installment_id = ? AND status = 'SCHEDULED' AND academy_id = ?
+                `).bind(installmentId, this.academyId).run();
             } catch (e) {
                 console.warn('[DB] D1 cancelPendingReminders failed:', e);
             }
@@ -554,8 +559,8 @@ export class AcademyDatabase {
             try {
                 const res = await this.db.prepare(`
                     UPDATE reminders SET status = 'CANCELLED', error_message = 'Stale: missed schedule window'
-                    WHERE status = 'SCHEDULED' AND scheduled_epoch < ?
-                `).bind(cutoff).run();
+                    WHERE status = 'SCHEDULED' AND scheduled_epoch < ? AND academy_id = ?
+                `).bind(cutoff, this.academyId).run();
                 cancelled = res.meta?.changes || 0;
             } catch (e) {
                 console.warn('[DB] D1 pruneStaleReminders failed:', e);
@@ -570,14 +575,14 @@ export class AcademyDatabase {
         return cancelled;
     }
 
-    async deleteStudent(id: string): Promise<void> {
+    async deleteStudent(id: string, academyId: string = this.academyId): Promise<void> {
         if (this.db) {
             try {
                 await this.db.batch([
-                    this.db.prepare('DELETE FROM reminders WHERE student_id = ?').bind(id),
-                    this.db.prepare('DELETE FROM installments WHERE student_id = ?').bind(id),
-                    this.db.prepare('DELETE FROM financial_summaries WHERE student_id = ?').bind(id),
-                    this.db.prepare('DELETE FROM students WHERE id = ?').bind(id)
+                    this.db.prepare('DELETE FROM reminders WHERE student_id = ? AND academy_id = ?').bind(id, academyId),
+                    this.db.prepare('DELETE FROM installments WHERE student_id = ? AND academy_id = ?').bind(id, academyId),
+                    this.db.prepare('DELETE FROM financial_summaries WHERE student_id = ? AND academy_id = ?').bind(id, academyId),
+                    this.db.prepare('DELETE FROM students WHERE id = ? AND academy_id = ?').bind(id, academyId)
                 ]);
             } catch (e) {
                 console.warn('[DB] D1 deleteStudent failed:', e);
@@ -600,11 +605,11 @@ export class AcademyDatabase {
             try {
                 await this.db.prepare(`
                     INSERT INTO message_logs (
-                        id, student_id, student_name, chat_id, message_type,
+                        id, academy_id, student_id, student_name, chat_id, message_type,
                         content, status, error_message, timestamp_epoch, timestamp_shamsi
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 `).bind(
-                    log.id, log.student_id, log.student_name, log.chat_id, log.message_type,
+                    log.id, this.academyId, log.student_id, log.student_name, log.chat_id, log.message_type,
                     log.content, log.status, log.error_message, log.timestamp_epoch, log.timestamp_shamsi
                 ).run();
             } catch (e) {
@@ -617,10 +622,10 @@ export class AcademyDatabase {
         }
     }
 
-    async getRecentLogs(limit: number = 100): Promise<MessageLogRecord[]> {
+    async getRecentLogs(limit: number = 100, academyId: string = this.academyId): Promise<MessageLogRecord[]> {
         if (this.db) {
             try {
-                const stmt = this.db.prepare('SELECT * FROM message_logs ORDER BY timestamp_epoch DESC LIMIT ?').bind(limit);
+                const stmt = this.db.prepare('SELECT * FROM message_logs WHERE academy_id = ? ORDER BY timestamp_epoch DESC LIMIT ?').bind(academyId, limit);
                 const { results } = await stmt.all<MessageLogRecord>();
                 return results || [];
             } catch (e) {

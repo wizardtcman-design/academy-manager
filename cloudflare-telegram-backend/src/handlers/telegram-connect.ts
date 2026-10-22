@@ -14,6 +14,7 @@
 import { Env } from '../types';
 import { TelegramBotClient } from '../telegram';
 import { ContractStore, AcademyRow } from '../contracts-store';
+import { timingSafeEqual } from '../crypto';
 
 function json(body: unknown, status = 200): Response {
     return new Response(JSON.stringify(body), {
@@ -30,7 +31,8 @@ function authorized(request: Request, env: Env): boolean {
     const header = request.headers.get('Authorization') || '';
     if (!header.startsWith('Bearer ')) return false;
     const token = header.slice(7).trim();
-    return Boolean(env.API_SECRET_KEY && token === env.API_SECRET_KEY.trim());
+    // Constant-time compare — the same guarantee the contracts API gives.
+    return Boolean(env.API_SECRET_KEY) && timingSafeEqual(token, env.API_SECRET_KEY.trim());
 }
 
 function academyFor(request: Request, env: Env): string | null {

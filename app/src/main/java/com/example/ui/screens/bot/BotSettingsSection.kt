@@ -1,6 +1,7 @@
 package com.example.ui.screens.bot
 
 import android.widget.Toast
+import com.example.service.messaging.WorkerBotApi
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -95,6 +96,10 @@ fun BotSettingsSection(
 
     var isTestingConnection by remember { mutableStateOf(false) }
     var testResultDialogText by remember { mutableStateOf<Pair<Boolean, String>?>(null) }
+
+    // Live connection status from the Worker (/api/bot/status)
+    var workerStatus by remember { mutableStateOf<WorkerBotApi.WorkerBotStatus?>(null) }
+    var statusMessage by remember { mutableStateOf<String?>(null) }
 
     Column(
         modifier = Modifier
@@ -358,8 +363,56 @@ fun BotSettingsSection(
                         singleLine = true
                     )
 
+                    // Bot Token (Worker mode): the token is sent ONCE over HTTPS
+                    // and stored in the academy's row on the server; it never
+                    // comes back and never enters SMS, public backups or logs.
+                    OutlinedTextField(
+                        value = botToken,
+                        onValueChange = { botToken = it.trim() },
+                        label = { Text("توکن ربات تلگرام (از @BotFather)") },
+                        placeholder = { Text("مثال: 123456789:ABCdefGHIjklMNOpqrsTUVwxyz") },
+                        leadingIcon = {
+                            Icon(Icons.Default.Lock, contentDescription = null, tint = TealSecondary)
+                        },
+                        trailingIcon = {
+                            IconButton(onClick = { showToken = !showToken }) {
+                                Icon(
+                                    imageVector = if (showToken) Icons.Default.VisibilityOff else Icons.Default.Visibility,
+                                    contentDescription = "نمایش/مخفی توکن"
+                                )
+                            }
+                        },
+                        visualTransformation = if (showToken) VisualTransformation.None else PasswordVisualTransformation(),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("bot_worker_token_input"),
+                        shape = RoundedCornerShape(12.dp),
+                        singleLine = true
+                    )
+                    Text(
+                        text = "🔒 توکن فقط یک‌بار از طریق HTTPS به سرور ارسال و در Cloudflare ذخیره می‌شود؛ در پیامک، پشتیبان عمومی یا گزارش‌ها نوشته نمی‌شود.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontSize = 11.sp
+                    )
+
+                    // Security prerequisites for a REAL connection — entering the
+                    // token alone is not enough.
+                    Text(
+                        text = "پیش‌نیازهای اتصال واقعی:\n" +
+                                "۱) Secret با نام API_SECRET_KEY روی Cloudflare Worker تنظیم شده باشد (همان مقداری که در فیلد «کلید احراز هویت API سرور» می‌گذارید).\n" +
+                                "۲) آدرس Worker کامل و HTTPS باشد (مثل https://academy-manager1.<نام>.workers.dev).\n" +
+                                "۳) متغیر PUBLIC_BASE_URL روی همان آدرس Worker تنظیم شده باشد تا لینک امضا و وبهوک درست ساخته شوند.\n" +
+                                "۴) برای هر آموزشگاه یک ربات جداگانه از @BotFather ساخته شده باشد؛ یک ربات فقط به یک آموزشگاه وصل می‌شود.\n" +
+                                "۵) نیازی به تنظیم دستی WEBHOOK_SECRET نیست؛ هنگام اتصال، رمز اختصاصی همین آموزشگاه خودکار ساخته و ثبت می‌شود.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        fontSize = 11.sp
+                    )
+
                     // Connect the bot: the token goes to the Worker over HTTPS and
-                    // only success confirmed by Telegram is reported.
+                    // only success confirmed by Telegram is reported. The REAL bot
+                    // username returned by the Worker is saved into settings.
                     var isConnectingBot by remember { mutableStateOf(false) }
                     Button(
                         onClick = {
@@ -370,18 +423,37 @@ fun BotSettingsSection(
                                 return@Button
                             }
                             if (token.isBlank()) {
-                                Toast.makeText(context, "لطفاً توکن ربات را وارد نمایید.", Toast.LENGTH_SHORT).show()
+                                Toast.makeText(context, "لطفاً توکن ربات را از @BotFather وارد نمایید.", Toast.LENGTH_SHORT).show()
                                 return@Button
                             }
                             isConnectingBot = true
                             val provider = com.example.service.messaging.TelegramProvider(context, settings)
                             coroutineScope.launch {
-                                val (ok, msg) = provider.connectBotOnWorker(cleanUrl, telegramApiSecret, token)
+                                val result = provider.connectBotOnWorker(cleanUrl, telegramApiSecret, token)
                                 isConnectingBot = false
-                                testResultDialogText = Pair(ok, msg)
+                                if (result.ok && result.username.isNotBlank()) {
+                                    // Persist the REAL bot username from Telegram
+                                    botUsername = result.username
+                                    onSaveSettings(
+                                        (settings ?: AcademySettings()).copy(
+                                            telegramEnabled = telegramEnabled,
+                                            telegramUseWorker = true,
+                                            telegramWorkerUrl = cleanUrl,
+                                            telegramApiSecret = telegramApiSecret.trim(),
+                                            telegramBotUsername = result.username,
+                                            telegramBotToken = token
+                                        )
+                                    )
+                                    Toast.makeText(context, "ربات @${result.username} متصل شد ✅", Toast.LENGTH_LONG).show()
+                                    // Refresh the live status right after connecting
+                                    val (st, summary) = provider.fetchBotStatusFromWorker(cleanUrl, telegramApiSecret)
+                                    workerStatus = st
+                                    statusMessage = summary
+                                }
+                                testResultDialogText = Pair(result.ok, result.message)
                             }
                         },
-                        enabled = !isConnectingBot && telegramWorkerUrl.isNotBlank(),
+                        enabled = !isConnectingBot && telegramWorkerUrl.isNotBlank() && botToken.isNotBlank(),
                         modifier = Modifier
                             .fillMaxWidth()
                             .testTag("bot_connect_server_btn"),
@@ -430,6 +502,124 @@ fun BotSettingsSection(
                             Spacer(modifier = Modifier.width(6.dp))
                             Text("تست اتصال به Cloudflare Worker")
                         }
+                    }
+
+                    // ---- Real connection status (/api/bot/status) ----
+                    var isCheckingStatus by remember { mutableStateOf(false) }
+                    var isRepairing by remember { mutableStateOf(false) }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        OutlinedButton(
+                            onClick = {
+                                val cleanUrl = telegramWorkerUrl.trim().removeSuffix("/")
+                                if (cleanUrl.isBlank()) {
+                                    Toast.makeText(context, "ابتدا آدرس سرور را وارد کنید.", Toast.LENGTH_SHORT).show()
+                                    return@OutlinedButton
+                                }
+                                isCheckingStatus = true
+                                val provider = com.example.service.messaging.TelegramProvider(context, settings)
+                                coroutineScope.launch {
+                                    val (st, summary) = provider.fetchBotStatusFromWorker(cleanUrl, telegramApiSecret)
+                                    isCheckingStatus = false
+                                    workerStatus = st
+                                    statusMessage = summary
+                                }
+                            },
+                            enabled = !isCheckingStatus && telegramWorkerUrl.isNotBlank(),
+                            modifier = Modifier
+                                .weight(1f)
+                                .testTag("bot_status_check_btn"),
+                            shape = RoundedCornerShape(10.dp)
+                        ) {
+                            if (isCheckingStatus) {
+                                CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
+                            } else {
+                                Icon(Icons.Default.Info, contentDescription = null, modifier = Modifier.size(15.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("بررسی وضعیت اتصال", maxLines = 1)
+                            }
+                        }
+
+                        OutlinedButton(
+                            onClick = {
+                                val cleanUrl = telegramWorkerUrl.trim().removeSuffix("/")
+                                if (cleanUrl.isBlank()) {
+                                    Toast.makeText(context, "ابتدا آدرس سرور را وارد کنید.", Toast.LENGTH_SHORT).show()
+                                    return@OutlinedButton
+                                }
+                                isRepairing = true
+                                val provider = com.example.service.messaging.TelegramProvider(context, settings)
+                                coroutineScope.launch {
+                                    val (ok, msg) = provider.refreshWebhookOnWorker(cleanUrl, telegramApiSecret)
+                                    isRepairing = false
+                                    statusMessage = msg
+                                    if (ok) {
+                                        // re-check so the card shows the fresh state
+                                        val (st, summary) = provider.fetchBotStatusFromWorker(cleanUrl, telegramApiSecret)
+                                        workerStatus = st
+                                        statusMessage = summary
+                                    }
+                                }
+                            },
+                            enabled = !isRepairing && telegramWorkerUrl.isNotBlank(),
+                            modifier = Modifier
+                                .weight(1f)
+                                .testTag("bot_webhook_repair_btn"),
+                            shape = RoundedCornerShape(10.dp)
+                        ) {
+                            if (isRepairing) {
+                                CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
+                            } else {
+                                Icon(Icons.Default.Settings, contentDescription = null, modifier = Modifier.size(15.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("بازیابی وبهوک", maxLines = 1)
+                            }
+                        }
+                    }
+
+                    // Status card: only ever shows the bot USERNAME and webhook
+                    // state — never the token itself.
+                    workerStatus?.let { st ->
+                        Surface(
+                            shape = RoundedCornerShape(12.dp),
+                            color = if (st.webhookConfirmed) StatusSuccess.copy(alpha = 0.10f) else StatusError.copy(alpha = 0.08f),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("bot_worker_status_card")
+                        ) {
+                            Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Text(
+                                    text = if (st.configured) "ربات: @${st.username} ${if (st.botName.isNotBlank()) "(${st.botName})" else ""}" else "ربات متصل نیست",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                                Text(
+                                    text = if (st.webhookConfirmed) "✅ وبهوک تأیید شده" else "⚠️ وبهوک ثبت نشده — دکمهٔ «بازیابی وبهوک» را بزنید",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = if (st.webhookConfirmed) StatusSuccess else StatusError
+                                )
+                                if (st.lastError.isNotBlank()) {
+                                    Text(
+                                        text = "آخرین خطای تلگرام: ${st.lastError}",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = StatusError,
+                                        fontSize = 11.sp
+                                    )
+                                }
+                            }
+                        }
+                    }
+                    statusMessage?.let { msg ->
+                        Text(
+                            text = msg,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            fontSize = 11.sp
+                        )
                     }
 
                     // Publish students, installments, financials and reminders to

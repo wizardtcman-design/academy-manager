@@ -74,7 +74,7 @@ class BotCloudBridge(private val context: Context) {
         }
 
         if (!ensureWebhook(settings)) {
-            return@withContext SyncOutcome(false, false, "ثبت وبهوک روی سرور ناموفق بود؛ کلید API یا آدرس سرور را بررسی کنید")
+            return@withContext SyncOutcome(false, false, "به‌روزرسانی وبهوک ربات ناموفق بود؛ ابتدا ربات را متصل کنید و کلید API سرور را بررسی کنید")
         }
 
         val repo = AcademyRepository(db, com.example.data.remote.FirebaseManager())
@@ -286,10 +286,15 @@ class BotCloudBridge(private val context: Context) {
         updated
     }
 
-    /** Installs/refreshes the bot webhook so the server receives student messages. */
+    /**
+     * Installs/refreshes the bot webhook so the server receives student messages.
+     * Uses the per-academy repair endpoint (/api/bot/refresh-webhook): it works
+     * with the academy's OWN bot token and its OWN webhook secret — the legacy
+     * /api/set-webhook depended on a global token the deployment no longer has.
+     */
     suspend fun ensureWebhook(settings: AcademySettings): Boolean = withContext(Dispatchers.IO) {
-        val (ok, body) = postJson(settings, "/api/set-webhook", JSONObject())
-        if (!ok) Log.w(tag, "set-webhook failed: $body")
+        val (ok, body) = postJson(settings, "/api/bot/refresh-webhook", JSONObject())
+        if (!ok) Log.w(tag, "refresh-webhook failed: $body")
         ok
     }
 
@@ -337,6 +342,7 @@ class BotCloudBridge(private val context: Context) {
             val request = Request.Builder()
                 .url(base + path)
                 .addHeader("Authorization", "Bearer ${settings.telegramApiSecret.trim()}")
+                .addHeader("X-Academy-Id", WorkerBotApi.ACADEMY_ID)
                 .post(payload.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
                 .build()
 

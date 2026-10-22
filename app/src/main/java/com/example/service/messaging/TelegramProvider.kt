@@ -181,19 +181,22 @@ class TelegramProvider(
             val req = Request.Builder()
                 .url("$cleanUrl/api/send-document")
                 .addHeader("Authorization", "Bearer ${apiSecret.trim()}")
-                .addHeader("X-Academy-Id", "default")
+                .addHeader("X-Academy-Id", WorkerBotApi.ACADEMY_ID)
                 .post(payload.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
                 .build()
             httpClient.newCall(req).execute().use { response ->
                 val body = response.body?.string() ?: ""
                 val json = runCatching { JSONObject(body) }.getOrNull()
                 val ok = response.isSuccessful && json?.optBoolean("success", false) == true
-                Pair(ok, json?.optString("message", "").orEmpty().ifBlank {
-                    if (ok) "ارسال شد." else "خطای ارسال (${response.code})"
-                })
+                if (ok) {
+                    Pair(true, json?.optString("message", "").orEmpty().ifBlank { "ارسال شد." })
+                } else {
+                    val serverMsg = json?.optString("message", "").orEmpty()
+                    Pair(false, WorkerBotApi.friendlyError(response.code, serverMsg))
+                }
             }
         } catch (e: Exception) {
-            Pair(false, "خطا در ارسال فایل قرارداد: ${e.localizedMessage ?: e.message}")
+            Pair(false, WorkerBotApi.friendlyNetworkError(e.localizedMessage ?: e.message))
         }
     }
 
@@ -351,6 +354,7 @@ class TelegramProvider(
             val endpoint = "$cleanUrl/api/test-connection"
             val reqBuilder = Request.Builder()
                 .url(endpoint)
+                .addHeader("X-Academy-Id", WorkerBotApi.ACADEMY_ID)
                 .post("{}".toRequestBody("application/json; charset=utf-8".toMediaType()))
 
             if (apiSecret.isNotBlank()) {
@@ -369,23 +373,13 @@ class TelegramProvider(
                 val message = json?.optString("message", "") ?: ""
 
                 if (response.isSuccessful && isSuccess) {
-                    val data = json?.optJSONObject("data")
-                    val username = data?.optString("username", "") ?: ""
                     Pair(true, message.ifBlank { "اتصال به Cloudflare Worker و سرور تلگرام با موفقیت تایید شد!" })
                 } else {
-                    val errorCode = json?.optInt("errorCode", response.code) ?: response.code
-                    val errorMsg = if (message.isNotBlank()) {
-                        "خطای سرور ($errorCode): $message"
-                    } else if (body.isNotBlank()) {
-                        "پاسخ سرور ($errorCode): $body"
-                    } else {
-                        "خطای ارتباط با سرور Cloudflare ($errorCode)"
-                    }
-                    Pair(false, errorMsg)
+                    Pair(false, WorkerBotApi.friendlyError(response.code, if (message.isNotBlank()) message else body.take(300)))
                 }
             }
         } catch (e: Exception) {
-            Pair(false, "خطا در برقراری ارتباط با Cloudflare Worker: ${e.localizedMessage ?: e.message}")
+            Pair(false, WorkerBotApi.friendlyNetworkError(e.localizedMessage ?: e.message))
         }
     }
 
@@ -393,33 +387,106 @@ class TelegramProvider(
      * Saves the bot token on the Cloudflare Worker and points Telegram's webhook
      * at it. Success is only reported when the Worker confirms that Telegram
      * itself shows the new webhook — never just "saved".
+     *
+     * The token is sent ONCE over HTTPS and is NEVER returned by the Worker;
+     * the result carries the real bot username so the app can persist it.
      */
     suspend fun connectBotOnWorker(
         workerUrl: String,
         apiSecret: String,
         botToken: String
+    ): WorkerBotApi.ConnectResult = withContext(Dispatchers.IO) {
+        val cleanUrl = workerUrl.trim().removeSuffix("/")
+        if (cleanUrl.isBlank()) {
+            return@withContext WorkerBotApi.ConnectResult(false, "", "", "", false,
+                "آدرس Cloudflare Worker وارد نشده است.")
+        }
+        val cleanToken = botToken.trim()
+        if (!WorkerBotApi.isTokenShapeValid(cleanToken)) {
+            return@withContext WorkerBotApi.ConnectResult(false, "", "", "", false,
+                "توکن ربات معتبر به نظر نمی‌رسد. توکن را کامل و بدون فاصله از @BotFather کپی کنید (شکل صحیح: 123456789:ABC...).")
+        }
+        try {
+            val req = Request.Builder()
+                .url("$cleanUrl/api/bot/connect")
+                .addHeader("Authorization", "Bearer ${apiSecret.trim()}")
+                .addHeader("X-Academy-Id", WorkerBotApi.ACADEMY_ID)
+                .post(JSONObject().put("token", cleanToken).toString()
+                    .toRequestBody("application/json; charset=utf-8".toMediaType()))
+                .build()
+            httpClient.newCall(req).execute().use { response ->
+                val body = response.body?.string() ?: ""
+                val parsed = WorkerBotApi.parseConnectResponse(body)
+                if (response.isSuccessful && parsed.ok) {
+                    parsed.copy(message = parsed.message.ifBlank { "ربات @${parsed.username} متصل شد." })
+                } else {
+                    parsed.copy(ok = false, message = WorkerBotApi.friendlyError(response.code, parsed.message.ifBlank { body.take(300) }))
+                }
+            }
+        } catch (e: Exception) {
+            WorkerBotApi.ConnectResult(false, "", "", "", false,
+                WorkerBotApi.friendlyNetworkError(e.localizedMessage ?: e.message))
+        }
+    }
+
+    /**
+     * Real connection status from the Worker + Telegram itself:
+     * bot identity, live webhook URL vs expected URL, pending updates.
+     * Returns null when the answer cannot be parsed at all.
+     */
+    suspend fun fetchBotStatusFromWorker(
+        workerUrl: String,
+        apiSecret: String
+    ): Pair<WorkerBotApi.WorkerBotStatus?, String> = withContext(Dispatchers.IO) {
+        val cleanUrl = workerUrl.trim().removeSuffix("/")
+        if (cleanUrl.isBlank()) return@withContext Pair(null, "آدرس Cloudflare Worker وارد نشده است.")
+        try {
+            val req = Request.Builder()
+                .url("$cleanUrl/api/bot/status")
+                .addHeader("Authorization", "Bearer ${apiSecret.trim()}")
+                .addHeader("X-Academy-Id", WorkerBotApi.ACADEMY_ID)
+                .get()
+                .build()
+            httpClient.newCall(req).execute().use { response ->
+                val body = response.body?.string() ?: ""
+                if (!response.isSuccessful) {
+                    return@withContext Pair(null, WorkerBotApi.friendlyError(response.code, body.take(300)))
+                }
+                val status = WorkerBotApi.parseStatusResponse(body)
+                if (status == null) Pair(null, "پاسخ وضعیت سرور قابل خواندن نبود.")
+                else Pair(status, WorkerBotApi.statusSummary(status))
+            }
+        } catch (e: Exception) {
+            Pair(null, WorkerBotApi.friendlyNetworkError(e.localizedMessage ?: e.message))
+        }
+    }
+
+    /**
+     * Re-registers the webhook of the CONNECTED bot on the Worker
+     * (/api/bot/refresh-webhook) — the repair action for a broken webhook.
+     */
+    suspend fun refreshWebhookOnWorker(
+        workerUrl: String,
+        apiSecret: String
     ): Pair<Boolean, String> = withContext(Dispatchers.IO) {
         val cleanUrl = workerUrl.trim().removeSuffix("/")
         if (cleanUrl.isBlank()) return@withContext Pair(false, "آدرس Cloudflare Worker وارد نشده است.")
         try {
             val req = Request.Builder()
-                .url("$cleanUrl/api/bot/connect")
+                .url("$cleanUrl/api/bot/refresh-webhook")
                 .addHeader("Authorization", "Bearer ${apiSecret.trim()}")
-                .addHeader("X-Academy-Id", "default")
-                .post(JSONObject().put("token", botToken.trim()).toString()
-                    .toRequestBody("application/json; charset=utf-8".toMediaType()))
+                .addHeader("X-Academy-Id", WorkerBotApi.ACADEMY_ID)
+                .post("{}".toRequestBody("application/json; charset=utf-8".toMediaType()))
                 .build()
             httpClient.newCall(req).execute().use { response ->
                 val body = response.body?.string() ?: ""
                 val json = runCatching { JSONObject(body) }.getOrNull()
                 val ok = response.isSuccessful && json?.optBoolean("success", false) == true
-                val msg = json?.optString("message", "").orEmpty().ifBlank {
-                    if (ok) "ربات متصل شد." else "خطای سرور (${response.code})"
-                }
-                Pair(ok, msg)
+                if (ok) Pair(true, json?.optString("message", "وبهوک به‌روز شد.") ?: "وبهوک به‌روز شد.")
+                else Pair(false, WorkerBotApi.friendlyError(response.code, json?.optString("message", "")?.ifBlank { body.take(300) }))
             }
         } catch (e: Exception) {
-            Pair(false, "ارتباط با سرور برقرار نشد: ${e.localizedMessage ?: e.message}")
+            Pair(false, WorkerBotApi.friendlyNetworkError(e.localizedMessage ?: e.message))
         }
     }
 
@@ -512,6 +579,7 @@ class TelegramProvider(
 
             val reqBuilder = Request.Builder()
                 .url(endpoint)
+                .addHeader("X-Academy-Id", WorkerBotApi.ACADEMY_ID)
                 .post(payload.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
 
             if (apiSecret.isNotBlank()) {

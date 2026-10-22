@@ -170,6 +170,45 @@ export async function academyBotUsername(env: Env, academyId: string, fallback =
     return username;
 }
 
+/**
+ * The webhook secret that Telegram echoes in X-Telegram-Bot-Api-Secret-Token
+ * for THIS academy: its own stored secret (set at /api/bot/connect), or the
+ * deployment-wide fallback. Callers must keep the legacy global behavior
+ * intact — a connected academy never shares a secret with another tenant.
+ */
+export async function academyWebhookSecret(env: Env, academyId: string): Promise<string> {
+    if (env.DB) {
+        try {
+            const row = await env.DB
+                .prepare('SELECT webhook_secret FROM academies WHERE id = ?')
+                .bind(academyId)
+                .first<{ webhook_secret: string }>();
+            if (row?.webhook_secret) return row.webhook_secret;
+        } catch (_) {}
+    }
+    return (env.WEBHOOK_SECRET || '').trim();
+}
+
+/** Tenants allowed by the deployment (ACADEMY_IDS, default: 'default'). */
+export function allowedAcademies(env: Env): string[] {
+    return (env.ACADEMY_IDS || 'default')
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean);
+}
+
+/**
+ * The academy from the request, validated against ACADEMY_IDS. Returns null
+ * when the header names a tenant this deployment does not serve.
+ */
+export function academyFromRequest(request: Request, env: Env): string | null {
+    const header = (request.headers.get('X-Academy-Id') || '').trim();
+    const allowed = allowedAcademies(env);
+    if (!allowed.length) allowed.push('default');
+    const academy = header || allowed[0];
+    return allowed.includes(academy) ? academy : null;
+}
+
 export function telegramDeepLink(botUsername: string, startParam: string): string {
     const user = (botUsername || '').replace('@', '').trim();
     if (!user || !startParam) return '';

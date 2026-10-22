@@ -62,4 +62,4 @@ jobs:
       - name: Compile (no publish)
         run: gradle compileDebugKotlin --stacktrace
       - name: Unit tests (pure JVM — contract download verification, validation, credential hashing, secure student linking)
-        run: gradle testDebugUnitTest --tests "com.example.ValidationUtilTest" --tests "com.example.CredentialHasherTest" --tests "com.example.ContractDownloadVerifyTest" --tests "com.example.TelegramStudentLinkTest" --stacktrace
+        run: gradle testDebugUnitTest --tests "com.example.ValidationUtilTest" --tests "com.example.CredentialHasherTest" --tests "com.example.ContractDownloadVerifyTest" --tests "com.example.TelegramStudentLinkTest" --tests "com.example.WorkerBotApiTest" --stacktrace

@@ -11,7 +11,7 @@ import {
     InstallmentRecord,
     FinancialSummaryRecord
 } from '../types';
-import { TelegramBotClient, academyBotToken, academyBotUsername } from '../telegram';
+import { TelegramBotClient, academyBotToken, academyBotUsername, academyWebhookSecret, allowedAcademies } from '../telegram';
 import { AcademyDatabase } from '../db';
 import { ContractStore } from '../contracts-store';
 import { readContractFileForStudent } from './contracts-api';
@@ -39,6 +39,19 @@ async function botTokenFor(env: Env, academyId: string): Promise<string> {
     return academyBotToken(env, academyId);
 }
 
+/**
+ * Tenant for the legacy app API. Historical clients never sent X-Academy-Id
+ * and every row they wrote carries the schema default 'default' (the D1
+ * column default), so an ABSENT header must resolve to 'default' — the same
+ * value AcademyDatabase always used. An explicit header is validated against
+ * ACADEMY_IDS and refused when the tenant is not served here.
+ */
+function legacyAcademyFor(request: Request, env: Env): string | null {
+    const header = (request.headers.get('X-Academy-Id') || '').trim();
+    if (!header) return 'default';
+    return allowedAcademies(env).includes(header) ? header : null;
+}
+
 // Authentication middleware
 function authenticate(request: Request, env: Env): boolean {
     const authHeader = request.headers.get('Authorization') || '';
@@ -55,13 +68,26 @@ export async function handleApiRequest(
 ): Promise<Response> {
     const path = url.pathname;
 
-    // Health check endpoint (Public or Auth)
+    // Health check endpoint (Public or Auth). Anonymous callers only ever see
+    // the bot USERNAME (public by design in t.me links) — never a token.
     if (path === '/api/status' || path === '/health') {
-        const bot = new TelegramBotClient(env.TELEGRAM_BOT_TOKEN || '');
-        let botInfo = null;
-        if (env.TELEGRAM_BOT_TOKEN) {
+        let academyId = 'default';
+        try { academyId = legacyAcademyFor(request, env) || 'default'; } catch (_) {}
+        let academyBotUsernameValue = '';
+        let academyBotConnected = false;
+        if (env.DB) {
             try {
-                const me = await bot.getMe();
+                const row = await env.DB.prepare('SELECT bot_username, bot_token FROM academies WHERE id = ?')
+                    .bind(academyId).first<{ bot_username: string; bot_token: string }>();
+                academyBotUsernameValue = (row?.bot_username || '').replace('@', '').trim();
+                academyBotConnected = Boolean(row?.bot_token);
+            } catch (_) {}
+        }
+        const token = await botTokenFor(env, academyId);
+        let botInfo = null;
+        if (token) {
+            try {
+                const me = await new TelegramBotClient(token).getMe();
                 if (me.ok) botInfo = me.result;
             } catch (_) {}
         }
@@ -71,8 +97,10 @@ export async function handleApiRequest(
             data: {
                 status: 'ONLINE',
                 environment: env.ENVIRONMENT || 'production',
-                isBotConfigured: Boolean(env.TELEGRAM_BOT_TOKEN),
-                botUsername: botInfo?.username || env.BOT_USERNAME || '',
+                isBotConfigured: Boolean(token),
+                academyBotConnected,
+                academyBotUsername: academyBotUsernameValue || botInfo?.username || '',
+                botUsername: botInfo?.username || academyBotUsernameValue || env.BOT_USERNAME || '',
                 botName: botInfo?.first_name || ''
             }
         });
@@ -87,31 +115,42 @@ export async function handleApiRequest(
         }, 401);
     }
 
+    // Tenant of every D1 row written below: the header the app sends, or the
+    // historical 'default' when absent (see legacyAcademyFor).
+    const academyId = legacyAcademyFor(request, env);
+    if (!academyId) {
+        return jsonResponse({
+            success: false,
+            message: 'شناسه آموزشگاه معتبر نیست.',
+            errorCode: 403
+        }, 403);
+    }
+
     // Contract files are delivered by the academy's own bot (D1) or by the
     // deployment secret; only the routes that send text need a token up front.
     if (path === '/api/send-document') {
-        return handleSendDocument(request, env, new AcademyDatabase(env));
+        return handleSendDocument(request, env, new AcademyDatabase(env, academyId));
     }
 
-    const botToken = env.TELEGRAM_BOT_TOKEN;
-    if (!botToken) {
-        return jsonResponse({
-            success: false,
-            message: 'Server Error: TELEGRAM_BOT_TOKEN secret is not configured on Cloudflare Worker',
-            errorCode: 500
-        }, 500);
-    }
+    // Per-academy bot token (D1 of THIS academy, deployment secret as legacy
+    // fallback). Data-sync routes below never require it: students,
+    // installments and reminders are stored regardless of the bot connection,
+    // and the cron sends them later through the academy's own bot.
+    const botToken = await botTokenFor(env, academyId);
+    const bot = new TelegramBotClient(botToken || '');
+    const db = new AcademyDatabase(env, academyId);
 
-    const bot = new TelegramBotClient(botToken);
-    const db = new AcademyDatabase(env);
-
-    // ============================================================
-    // 0. Contract PDF delivery (no public URL, no token ever in a message)
-    // ============================================================
     // ============================================================
     // 1. Bot Connection & Webhook Management
     // ============================================================
     if (path === '/api/test-connection' && request.method === 'POST') {
+        if (!botToken) {
+            return jsonResponse({
+                success: false,
+                message: 'ربات تلگرام این آموزشگاه متصل نیست؛ ابتدا از بخش تنظیمات، توکن ربات را متصل کنید.',
+                errorCode: 409
+            }, 409);
+        }
         try {
             const meRes = await bot.getMe();
             if (meRes.ok && meRes.result) {
@@ -137,10 +176,20 @@ export async function handleApiRequest(
     }
 
     if (path === '/api/set-webhook' && request.method === 'POST') {
+        if (!botToken) {
+            return jsonResponse({
+                success: false,
+                message: 'ربات تلگرام این آموزشگاه متصل نیست؛ ابتدا توکن ربات را متصل کنید.',
+                errorCode: 409
+            }, 409);
+        }
         try {
             const body = await request.json() as { webhookUrl?: string };
-            const webhookUrl = body.webhookUrl || `${url.origin}/webhook`;
-            const hookRes = await bot.setWebhook(webhookUrl, env.WEBHOOK_SECRET);
+            // One webhook URL per academy; the secret Telegram echoes back is
+            // the academy's own (D1), not another tenant's.
+            const webhookUrl = body.webhookUrl || `${url.origin}/webhook/${encodeURIComponent(academyId)}`;
+            const secret = await academyWebhookSecret(env, academyId);
+            const hookRes = await bot.setWebhook(webhookUrl, secret || undefined);
             if (hookRes.ok) {
                 return jsonResponse({
                     success: true,
@@ -167,6 +216,13 @@ export async function handleApiRequest(
     // 2. Messaging Endpoints
     // ============================================================
     if (path === '/api/send-message' && request.method === 'POST') {
+        if (!botToken) {
+            return jsonResponse({
+                success: false,
+                message: 'ربات تلگرام این آموزشگاه متصل نیست؛ ابتدا توکن ربات را متصل کنید.',
+                errorCode: 409
+            }, 409);
+        }
         try {
             const payload = await request.json() as SendMessageRequest;
             if (!payload.chatId || !payload.message) {
@@ -337,7 +393,7 @@ export async function handleApiRequest(
             const body = await request.json() as SyncStudentRequest;
             // The server is the source of truth for the Telegram link. An empty
             // chat id must NOT wipe a connection made by the student in the bot.
-            await db.upsertStudent({
+            const stored = await db.upsertStudent({
                 id: body.id,
                 student_code: body.studentCode || '',
                 full_name: body.fullName,
@@ -349,6 +405,13 @@ export async function handleApiRequest(
                 telegramLinkHash: body.telegramLinkHash || '',
                 telegramLinkExpires: body.telegramLinkExpires || 0
             });
+            if (!stored) {
+                return jsonResponse({
+                    success: false,
+                    message: `ذخیرهٔ هنرجو ${body.fullName} در پایگاه‌داده ناموفق بود (Migration 0008 را بررسی کنید).`,
+                    errorCode: 500
+                }, 500);
+            }
 
             const synced = await db.getStudentById(body.id, db.academyId);
 
@@ -373,25 +436,42 @@ export async function handleApiRequest(
     if (path === '/api/sync/students-batch' && request.method === 'POST') {
         try {
             const body = await request.json() as { students: SyncStudentRequest[] };
-            if (Array.isArray(body.students)) {
-                for (const s of body.students) {
-                    await db.upsertStudent({
-                        id: s.id,
-                        student_code: s.studentCode || '',
-                        full_name: s.fullName,
-                        phone: s.phone || '',
-                        national_code: s.nationalCode || '',
-                        telegram_chat_id: s.telegramChatId || '',
-                        telegram_username: s.telegramUsername || '',
-                        is_telegram_connected: s.isTelegramConnected ? 1 : 0,
-                        telegramLinkHash: s.telegramLinkHash || '',
-                        telegramLinkExpires: s.telegramLinkExpires || 0
-                    });
+            const list = Array.isArray(body.students) ? body.students : [];
+            let failed = 0;
+            let firstError = '';
+            for (const s of list) {
+                const ok = await db.upsertStudent({
+                    id: s.id,
+                    student_code: s.studentCode || '',
+                    full_name: s.fullName,
+                    phone: s.phone || '',
+                    national_code: s.nationalCode || '',
+                    telegram_chat_id: s.telegramChatId || '',
+                    telegram_username: s.telegramUsername || '',
+                    is_telegram_connected: s.isTelegramConnected ? 1 : 0,
+                    telegramLinkHash: s.telegramLinkHash || '',
+                    telegramLinkExpires: s.telegramLinkExpires || 0
+                });
+                if (!ok) {
+                    failed++;
+                    if (!firstError) firstError = s.id;
                 }
+            }
+            if (failed > 0) {
+                // The most common historical cause: migration 0008 not applied,
+                // so the UNIQUE index on empty link hashes rejects the 2nd student.
+                return jsonResponse({
+                    success: false,
+                    message: `${list.length - failed} از ${list.length} هنرجو ذخیره شد؛ ${failed} مورد ناموفق بود. ` +
+                        `اگر بیش از یک هنرجو ذخیره نشد، اجرای Migration 0008 روی پایگاه‌داده لازم است (اولین شناسه ناموفق: ${firstError}).`,
+                    errorCode: 500,
+                    data: { stored: list.length - failed, failed }
+                }, 500);
             }
             return jsonResponse({
                 success: true,
-                message: `${body.students?.length || 0} هنرجو با موفقیت همگام‌سازی شدند.`
+                message: `${list.length} هنرجو با موفقیت همگام‌سازی شدند.`,
+                data: { stored: list.length, failed: 0 }
             });
         } catch (err: any) {
             return jsonResponse({

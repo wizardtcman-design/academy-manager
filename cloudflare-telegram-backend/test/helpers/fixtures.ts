@@ -30,7 +30,10 @@ export function loadMigrations(): string[] {
     return [readFileSync(base, 'utf8'), ...names.map((n) => readFileSync(dir + n, 'utf8'))];
 }
 
-export function makeEnv(db?: D1Shim): { env: Env; db: D1Shim } {
+export function makeEnv(
+    db?: D1Shim,
+    overrides: Partial<Env> = {}
+): { env: Env; db: D1Shim } {
     const shim = db ?? new D1Shim();
     shim.applyMigrations(loadMigrations());
     const env: Env = {
@@ -39,7 +42,8 @@ export function makeEnv(db?: D1Shim): { env: Env; db: D1Shim } {
         API_SECRET_KEY: API_KEY,
         TELEGRAM_BOT_TOKEN: '12345:fake-test-token',
         PUBLIC_BASE_URL: 'https://worker.test',
-        ENVIRONMENT: 'test'
+        ENVIRONMENT: 'test',
+        ...overrides
     };
     return { env, db: shim };
 }
