@@ -73,25 +73,28 @@ object PaymentSyncPayloads {
         amount: Long,
         ref: String,
         verifiedAtEpoch: Long,
-        existingPaymentIds: Set<String>
+        existingPaymentIds: Set<String>,
+        paymentMethod: String = "ONLINE",
+        source: String = "online"
     ): Payment? {
         if (orderId.isBlank() || amount <= 0) return null
         if (orderId in existingPaymentIds) return null
+        val fromClaim = source == "claim"
         return Payment(
-            id = orderId, // the order id IS the payment id: one receipt per payment everywhere
-            transactionId = "ONLINE-" + orderId.take(8).uppercase(),
-            paymentCode = "ONLINE-" + orderId.take(8).uppercase(),
+            id = orderId, // the payment id IS the receipt id: one receipt per payment everywhere
+            transactionId = if (fromClaim) "CLM-" + orderId.take(12).uppercase() else "ONLINE-" + orderId.take(8).uppercase(),
+            paymentCode = if (fromClaim) "CLM-" + orderId.take(12).uppercase() else "ONLINE-" + orderId.take(8).uppercase(),
             studentId = studentId,
             enrollmentId = "",
             installmentId = installmentId,
             amount = amount,
             paymentDateEpoch = verifiedAtEpoch,
             paymentTime = "",
-            paymentMethod = "ONLINE",
-            destinationAccountTitle = "پرداخت آنلاین",
+            paymentMethod = paymentMethod,
+            destinationAccountTitle = if (fromClaim) "کارت به کارت (تأیید مدیریت)" else "پرداخت آنلاین",
             trackingNumber = ref,
-            notes = "پرداخت آنلاین تأییدشده توسط درگاه",
-            recordedBy = "درگاه پرداخت"
+            notes = if (fromClaim) "رسید ارسالی هنرجو — تأییدشده توسط مدیریت" else "پرداخت آنلاین تأییدشده توسط درگاه",
+            recordedBy = if (fromClaim) "مدیر آموزشگاه (تلگرام)" else "درگاه پرداخت"
         )
     }
 

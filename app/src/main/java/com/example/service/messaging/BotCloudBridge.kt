@@ -211,6 +211,10 @@ class BotCloudBridge(private val context: Context) {
                 put("message", reminderMessage(r, student, installments))
                 put("scheduledEpoch", r.scheduledTimeEpoch)
                 put("scheduledTimeStr", r.sendTimeShamsi)
+                // Stage 5: the offset lets the worker dedupe app rows against
+                // its own deterministic five-nob schedule (no double sends).
+                put("triggerDaysOffset", r.triggerDaysOffset)
+                put("studentPhone", student.phone)
             })
         }
         val remindersOk = postJson(
@@ -359,7 +363,9 @@ class BotCloudBridge(private val context: Context) {
                     amount = t.optLong("amount", 0L),
                     ref = t.optString("ref"),
                     verifiedAtEpoch = verifiedAt,
-                    existingPaymentIds = db.paymentDao().getPaymentById(orderId)?.let { setOf(it.id) } ?: emptySet()
+                    existingPaymentIds = db.paymentDao().getPaymentById(orderId)?.let { setOf(it.id) } ?: emptySet(),
+                    paymentMethod = t.optString("method", "ONLINE").ifBlank { "ONLINE" },
+                    source = t.optString("source", "online").ifBlank { "online" }
                 ) ?: continue
 
                 db.paymentDao().insertPayment(payment)

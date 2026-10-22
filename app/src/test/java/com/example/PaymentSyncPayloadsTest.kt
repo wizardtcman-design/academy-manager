@@ -159,4 +159,37 @@ class PaymentSyncPayloadsTest {
         val back = JSONObject(json.toString())
         assertEquals("دوره «طراحی» وب", back.getString("course_title"))
     }
+
+    // ---------- Stage 5: claim-sourced confirmed payments ----------
+
+    @Test
+    fun `claim-sourced payment maps to TRANSFER with manager provenance`() {
+        val p = PaymentSyncPayloads.onlinePaymentFromTxn(
+            orderId = "clm-abc12345-def",
+            studentId = "stu-1",
+            installmentId = "ins-2",
+            amount = 750_000L,
+            ref = "claim-abc",
+            verifiedAtEpoch = 1_700_000_000_000L,
+            existingPaymentIds = emptySet(),
+            paymentMethod = "TRANSFER",
+            source = "claim"
+        )!!
+        assertEquals("clm-abc12345-def", p.id) // the payment id IS the claim payment id (dedupe everywhere)
+        assertEquals("TRANSFER", p.paymentMethod)
+        assertTrue(p.notes.contains("مدیریت"))
+        assertEquals("مدیر آموزشگاه (تلگرام)", p.recordedBy)
+    }
+
+    @Test
+    fun `default pull stays ONLINE and dedupe by existing ids still applies`() {
+        val online = PaymentSyncPayloads.onlinePaymentFromTxn(
+            "order-9", "stu-1", "ins-2", 100L, "ref", 1L, emptySet()
+        )!!
+        assertEquals("ONLINE", online.paymentMethod)
+        // existing id -> null (no duplicate transaction/receipt)
+        assertNull(PaymentSyncPayloads.onlinePaymentFromTxn(
+            "order-9", "stu-1", "ins-2", 100L, "ref", 1L, setOf("order-9"), "TRANSFER", "claim"
+        ))
+    }
 }

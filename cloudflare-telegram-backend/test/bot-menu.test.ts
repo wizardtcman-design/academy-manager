@@ -245,7 +245,7 @@ describe('six menu buttons answer with real pushed data (academy A)', () => {
         expect(text).toContain('1 پرداخت‌شده | 2 مانده');
         expect(text).toContain('✅ پرداخت شده');          // ins-1
         expect(text).toContain('در انتظار پرداخت');       // ins-2
-        expect(text).toContain('سررسید گذشته');           // ins-3
+        expect(text).toContain('معوق');                     // ins-3 (Stage 5 wording: overdue with days)
         expect(text).toContain('۱۴۰۴/۰۶/۱۰');             // overdue due date
         expect(text).toContain('قسط شماره 2 از 3');
     });

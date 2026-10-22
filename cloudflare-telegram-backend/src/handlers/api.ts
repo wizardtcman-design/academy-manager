@@ -19,6 +19,7 @@ import { readContractFileForStudent } from './contracts-api';
 import { timingSafeEqual, sha256Hex, randomToken } from '../crypto';
 import { ingestPayments, PaymentInput } from '../receipts';
 import { createInstallmentPaymentLink, verifyTransaction } from '../gateway';
+import { syncInstallmentReminders } from '../reminders';
 
 // JSON response helper
 function jsonResponse<T>(data: ApiResponse<T>, status: number = 200): Response {
@@ -332,19 +333,32 @@ export async function handleApiRequest(
     }
 
     // Bulk upsert of reminders (used by the app to publish ALL upcoming
-    // reminders to the server, so they are still sent while the app is closed)
+    // reminders to the server, so they are still sent while the app is closed).
+    // Stage 5: the worker ALSO self-schedules the five nobs from the synced
+    // installments (deterministic ids). To keep the two paths from ever
+    // double-sending, an app row whose (installment, offset) nob is already
+    // owned by a SCHEDULED server row is skipped, not duplicated.
     if (path === '/api/schedule-reminders' && request.method === 'POST') {
         try {
             const body = await request.json() as { reminders?: ScheduleReminderRequest[] };
             const list = Array.isArray(body.reminders) ? body.reminders : [];
             let upserted = 0;
             let skippedPast = 0;
+            let supersededByServer = 0;
             const now = Date.now();
 
             for (const item of list) {
                 if (!item.scheduledEpoch || item.scheduledEpoch <= now - 60 * 60 * 1000) {
                     skippedPast++;
                     continue;
+                }
+                if (item.installmentId) {
+                    const offset = Number((item as any).triggerDaysOffset ?? 0) || 0;
+                    const serverRow = await db.findScheduledReminderForOffset(item.installmentId, offset, db.academyId);
+                    if (serverRow && serverRow.id.startsWith('auto:')) {
+                        supersededByServer++;
+                        continue;
+                    }
                 }
                 await db.addReminder({
                     id: item.id || crypto.randomUUID(),
@@ -361,15 +375,17 @@ export async function handleApiRequest(
                     retry_count: 0,
                     created_at_epoch: now,
                     sent_at_epoch: 0,
-                    student_phone: (item as any).studentPhone || ''
-                });
+                    student_phone: (item as any).studentPhone || '',
+                    trigger_offset: Number((item as any).triggerDaysOffset ?? 0) || 0,
+                    schedule_source: 'app'
+                } as any);
                 upserted++;
             }
 
             return jsonResponse({
                 success: true,
-                message: `${upserted} یادآوری روی سرور ثبت شد${skippedPast ? ` (${skippedPast} مورد گذشته نادیده گرفته شد)` : ''}.`,
-                data: { upserted, skippedPast }
+                message: `${upserted} یادآوری روی سرور ثبت شد${skippedPast ? ` (${skippedPast} مورد گذشته نادیده گرفته شد)` : ''}${supersededByServer ? ` (${supersededByServer} مورد توسط زمان‌بند سرور پوشش داده شد)` : ''}.`,
+                data: { upserted, skippedPast, supersededByServer }
             });
         } catch (err: any) {
             return jsonResponse({ success: false, message: `خطا: ${err.message}`, errorCode: 500 }, 500);
@@ -489,10 +505,24 @@ export async function handleApiRequest(
     if (path === '/api/sync/installments' && request.method === 'POST') {
         try {
             const body = await request.json() as { installments: InstallmentRecord[] };
-            await db.upsertInstallments(body.installments || []);
+            const list = body.installments || [];
+            await db.upsertInstallments(list);
+            // Stage 5: the installments ARE the schedule source — every sync
+            // (re)aligns the five reminder nobs per installment (idempotent,
+            // due-date changes included, paid installments cancelled).
+            let scheduled = 0;
+            try {
+                for (const inst of list) {
+                    const out = await syncInstallmentReminders(db, academyId, inst as InstallmentRecord);
+                    scheduled += out.created;
+                }
+            } catch (e) {
+                console.warn('[API] reminder scheduling failed (non-blocking):', e);
+            }
             return jsonResponse({
                 success: true,
-                message: `${body.installments?.length || 0} قسط با موفقیت همگام‌سازی شدند.`
+                message: `${list.length} قسط با موفقیت همگام‌سازی شدند${scheduled ? ` (${scheduled} یادآوری زمان‌بندی شد)` : ''}.`,
+                data: { scheduled }
             });
         } catch (err: any) {
             return jsonResponse({
@@ -619,24 +649,64 @@ export async function handleApiRequest(
         }
     }
 
-    // The app pulls confirmed ONLINE payments and applies them into Room
-    // automatically (insert Payment + update installment) — no manual re-entry.
+    // The app pulls confirmed payments (verified ONLINE transactions AND
+    // bot-approved receipt claims) into Room automatically — insert Payment +
+    // update installment, idempotent by payment id. This is how bot-side
+    // decisions become visible in the app without any manual re-entry.
     if (path === '/api/payments/confirmed' && request.method === 'GET') {
         try {
             const since = Number(new URL(request.url).searchParams.get('since') || '0');
-            const txns = await db.listConfirmedTxnsSince(academyId, Number.isFinite(since) ? since : 0);
+            const sinceVal = Number.isFinite(since) ? since : 0;
+            const txns = await db.listConfirmedTxnsSince(academyId, sinceVal);
             const data = txns.map((t: PaymentTxnRecord) => ({
                 orderId: t.id,
                 installmentId: t.installment_id,
                 studentId: t.student_id,
                 amount: t.paid_amount,
                 ref: t.provider_ref,
-                verifiedAtEpoch: t.verified_at_epoch
+                verifiedAtEpoch: t.verified_at_epoch,
+                method: 'ONLINE',
+                source: 'online'
             }));
+            // Bot-approved claims ride the same pull (payment id = clm-<claim>).
+            const claims = await db.listApprovedClaimsSince(academyId, sinceVal);
+            for (const c of claims) {
+                data.push({
+                    orderId: c.payment_id || `clm-${c.id}`,
+                    installmentId: c.installment_id,
+                    studentId: c.student_id,
+                    amount: c.claimed_amount,
+                    ref: c.id,
+                    verifiedAtEpoch: c.decided_at_epoch,
+                    method: 'TRANSFER',
+                    source: 'claim'
+                });
+            }
+            data.sort((a: any, b: any) => (a.verifiedAtEpoch || 0) - (b.verifiedAtEpoch || 0));
             return jsonResponse({
                 success: true,
-                message: `${data.length} پرداخت تأییدشده آنلاین`,
+                message: `${data.length} پرداخت تأییدشده`,
                 data: { payments: data }
+            });
+        } catch (err: any) {
+            return jsonResponse({ success: false, message: `خطا: ${err.message}`, errorCode: 500 }, 500);
+        }
+    }
+
+    // Stage 5: payment lifecycle report (register / approve / reject / reverse
+    // / online-verify) for the management report — facts only, never secrets.
+    if (path === '/api/payments/events' && request.method === 'GET') {
+        try {
+            const u = new URL(request.url);
+            const events = await db.listPaymentEvents({
+                studentId: u.searchParams.get('studentId') || undefined,
+                installmentId: u.searchParams.get('installmentId') || undefined,
+                limit: Number(u.searchParams.get('limit') || '100')
+            }, academyId);
+            return jsonResponse({
+                success: true,
+                message: `${events.length} رویداد پرداخت`,
+                data: { events }
             });
         } catch (err: any) {
             return jsonResponse({ success: false, message: `خطا: ${err.message}`, errorCode: 500 }, 500);

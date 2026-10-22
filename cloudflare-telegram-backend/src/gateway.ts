@@ -310,6 +310,27 @@ export async function applyOnlinePaymentToInstallment(
         paid_date_shamsi: fullyPaid ? epochToShamsi(now) : inst.paid_date_shamsi || ''
     });
 
+    // Stage 5: a VERIFIED online payment stops the installment's reminders
+    // immediately (they re-arm on the next sync only if it was partial) and
+    // is audited in the payment lifecycle history.
+    await db.cancelPendingRemindersForInstallment(inst.id);
+    try {
+        await db.insertPaymentEvent({
+            id: crypto.randomUUID(),
+            academy_id: academyId,
+            student_id: txn.student_id,
+            installment_id: txn.installment_id,
+            payment_id: `online-${txn.id}`,
+            claim_id: '',
+            event_type: 'ONLINE_VERIFIED',
+            channel: 'gateway',
+            actor: txn.provider,
+            amount: txn.amount,
+            detail: `provider ref ${providerRef || txn.id}`,
+            created_at_epoch: now
+        });
+    } catch (_) { /* auditing must never block the payment */ }
+
     // The receipt IS the verified transaction, marked source 'online'.
     const receiptId = `online-${txn.id}`;
     await db.insertPaymentReceipt({

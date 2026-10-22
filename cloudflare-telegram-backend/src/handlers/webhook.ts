@@ -8,6 +8,12 @@ import { AcademyDatabase } from '../db';
 import { ContractStore, ContractRow } from '../contracts-store';
 import { readContractFile } from './contracts-api';
 import { timingSafeEqual, sha256Hex } from '../crypto';
+import {
+    submitReceiptClaim, notifyManagersOfClaim, approveClaim, rejectClaim,
+    isManager, CLAIM_PHOTO_MAX_BYTES
+} from '../claims';
+import { dueStatusFa } from '../reminders';
+import { createInstallmentPaymentLink } from '../gateway';
 
 /** Telegram stops retrying an update after ~1 minute; finish sending before then. */
 const SEND_TIMEOUT_MS = 25_000;
@@ -98,6 +104,16 @@ async function processUpdate(
     env: Env,
     academyOfBot = dbAcademy(env)
 ): Promise<void> {
+    // ============================================================
+    // 0. Stage 5: inline-button callbacks (manager approve/reject)
+    //    Authorization is verified SERVER-SIDE from the clicker's chat id —
+    //    the button being visible is never the permission check.
+    // ============================================================
+    if (update.callback_query) {
+        await handleClaimCallback(update.callback_query, bot, db, env, academyOfBot);
+        return;
+    }
+
     const message = update.message || update.edited_message;
     if (!message || !message.chat) return;
 
@@ -105,6 +121,29 @@ async function processUpdate(
     const username = message.from?.username || message.chat.username || '';
     const firstName = message.from?.first_name || message.chat.first_name || 'هنرجو';
     const text = (message.text || message.caption || '').trim();
+
+    // ============================================================
+    // 0.b Stage 5: manager reply to a claim notification = rejection reason
+    //    («رد: علت») — recorded on the claim, no payment state changes.
+    // ============================================================
+    if (message.reply_to_message && text) {
+        const claim = await db.findPendingClaimByManagerMessage(chatId, message.reply_to_message.message_id, db.academyId);
+        if (claim) {
+            const reason = text.replace(/^رد\s*[:：]?\s*/u, '').trim();
+            const out = await rejectClaim(env, db, db.academyId, claim.id, chatId, reason);
+            if (out.state === 'REJECTED') {
+                await bot.editMessageText(chatId, message.reply_to_message.message_id,
+                    renderClaimSettled('REJECTED', claim.claimed_amount, reason));
+                await bot.sendMessage({ chatId, text: `❌ رسید هنرجو ${claim.student_name} رد شد.${reason ? `\nعلت: ${reason}` : ''}\nپرداختی ثبت نشد و وضعیت قسط بدون تغییر ماند.`, parseMode: 'HTML' });
+                await notifyStudentOfRejection(db, bot, claim.student_id, db.academyId, claim.installment_number, reason);
+            } else if (out.state === 'FORBIDDEN') {
+                await bot.sendMessage({ chatId, text: '⛔️ شما مجاز به بررسی رسیدهای این آموزشگاه نیستید.', parseMode: 'HTML' });
+            } else if (out.state === 'ALREADY_DECIDED') {
+                await bot.sendMessage({ chatId, text: 'ℹ️ این رسید قبلاً بررسی شده است (بدون تغییر دوباره).', parseMode: 'HTML' });
+            }
+            return;
+        }
+    }
 
     // ============================================================
     // 1. Handle /start and Deep Links
@@ -244,21 +283,32 @@ async function processUpdate(
 
     const normalized = text.trim();
 
+    // ============================================================
+    // 1.b Stage 5: a submitted RECEIPT PHOTO (evidence only — the manager
+    //     decides; nothing becomes "paid" here).
+    // ============================================================
+    if (message.photo && message.photo.length > 0) {
+        await handleReceiptPhoto(bot, db, env, academyOfBot, student, chatId, message.photo, text);
+        return;
+    }
+
     if (normalized === '💰 وضعیت مالی' || normalized.includes('وضعیت مالی') || normalized === '/finance') {
         await handleFinancialStatus(bot, db, student, chatId);
     } else if (normalized === '📅 اقساط من' || normalized.includes('اقساط من') || normalized.includes('اقساط') || normalized === '/installments') {
-        await handleInstallments(bot, db, student, chatId);
+        await handleInstallments(bot, db, student, chatId, env);
     } else if (normalized === '🧾 رسیدهای من' || normalized.includes('رسیدهای من') || normalized === '/receipts') {
         await handleReceipts(bot, db, student, chatId);
     } else if (normalized === '📄 قرارداد من' || normalized.includes('قرارداد من') || normalized === '/contract') {
         await handleContract(bot, env, student, chatId, academyOfBot);
+    } else if (normalized === '📤 ارسال رسید پرداخت' || normalized.includes('ارسال رسید پرداخت') || normalized === '/send-receipt') {
+        await handleSendReceiptGuide(bot, db, student, chatId);
     } else if (normalized === '📞 تماس با آموزشگاه' || normalized.includes('تماس با آموزشگاه') || normalized === '/contact') {
         await handleContactInfo(bot, db, chatId);
     } else if (normalized === '🔄 بروزرسانی اطلاعات' || normalized.includes('بروزرسانی') || normalized === '/refresh') {
         await handleRefresh(bot, db, student, chatId);
-    } else if (isAdmin(chatId, env)) {
-        // Admin commands (only from the chat id configured in ADMIN_CHAT_ID)
-        await handleAdminCommand(normalized, bot, db, chatId, env);
+    } else if (normalized.startsWith('/') && (isAdmin(chatId, env) || (await isManager(db, env, academyOfBot, chatId)))) {
+        // Admin commands (deployment ADMIN_CHAT_ID and this academy's manager list)
+        await handleAdminCommand(normalized, bot, db, chatId, env, academyOfBot);
     } else {
         const menuMsg = `سلام <b>${student.full_name}</b> عزیز 🌸\n\nلطفاً یکی از گزینه‌های زیر را انتخاب فرمایید:`;
         await bot.sendMessage({
@@ -275,13 +325,196 @@ function isAdmin(chatId: string, env: Env): boolean {
     return admin !== '' && admin === chatId;
 }
 
-// 🛠 Admin commands: /admin, /stats, /status, /broadcast <متن>
+// ============================================================
+// Stage 5: claim decision callbacks («ثبت و تأیید پرداخت» / «رد رسید»)
+// ============================================================
+async function handleClaimCallback(
+    cq: NonNullable<TelegramUpdate['callback_query']>,
+    bot: TelegramBotClient,
+    db: AcademyDatabase,
+    env: Env,
+    academyId: string
+): Promise<void> {
+    const data = cq.data || '';
+    const m = /^clm:(ok|no):([A-Za-z0-9-]+)$/.exec(data);
+    if (!m) {
+        await bot.answerCallbackQuery(cq.id);
+        return;
+    }
+    const decision = m[1];
+    const claimId = m[2];
+    const managerChatId = String(cq.from?.id || '');
+
+    if (decision === 'ok') {
+        const out = await approveClaim(env, db, academyId, claimId, managerChatId, bot);
+        switch (out.state) {
+            case 'APPROVED': {
+                await bot.answerCallbackQuery(cq.id, `✅ پرداخت ${out.amount.toLocaleString()} ثبت شد`);
+                const claim = await db.getPaymentClaim(claimId, academyId);
+                if (cq.message && claim) {
+                    await bot.editMessageText(cq.message.chat.id.toString(), cq.message.message_id,
+                        renderClaimSettled('APPROVED', claim.claimed_amount, ''));
+                }
+                await bot.sendMessage({
+                    chatId: managerChatId,
+                    text: `✅ پرداخت قسط هنرجو <b>${claim?.student_name || ''}</b> به مبلغ <b>${out.amount.toLocaleString()}</b> ثبت شد.\n` +
+                        `🧾 رسید رسمی ${out.receiptSent ? 'برای هنرجو ارسال شد' : 'در صف ارسال قرار گرفت'} و یادآوری‌های این قسط متوقف شدند.\n` +
+                        `📱 اپ آموزشگاه با همگام‌سازی بعدی این تغییر را نمایش می‌دهد.`,
+                    parseMode: 'HTML'
+                });
+                break;
+            }
+            case 'FORBIDDEN':
+                await bot.answerCallbackQuery(cq.id, '⛔️ شما مجاز به این عملیات نیستید.', true);
+                break;
+            case 'ALREADY_DECIDED':
+                await bot.answerCallbackQuery(cq.id, 'ℹ️ این رسید قبلاً بررسی شده است (بدون ثبت تکراری).', true);
+                break;
+            case 'ALREADY_PAID':
+                await bot.answerCallbackQuery(cq.id, `ℹ️ ${out.reason}`, true);
+                break;
+            default:
+                await bot.answerCallbackQuery(cq.id, '❌ رسید پیدا نشد.', true);
+        }
+        return;
+    }
+
+    // reject — reason arrives later as a REPLY (optional); reject now with empty note
+    const out = await rejectClaim(env, db, academyId, claimId, managerChatId, '');
+    switch (out.state) {
+        case 'REJECTED': {
+            await bot.answerCallbackQuery(cq.id, '❌ رسید رد شد (پرداختی ثبت نشد).');
+            const claim = await db.getPaymentClaim(claimId, academyId);
+            if (cq.message && claim) {
+                await bot.editMessageText(cq.message.chat.id.toString(), cq.message.message_id,
+                    renderClaimSettled('REJECTED', claim.claimed_amount, ''));
+            }
+            await bot.sendMessage({
+                chatId: managerChatId,
+                text: `❌ رسید هنرجو <b>${claim?.student_name || ''}</b> رد شد.\nپرداختی ثبت نشد و وضعیت قسط بدون تغییر ماند.\nسابقهٔ رسید در گزارش‌ها حفظ می‌شود.`,
+                parseMode: 'HTML'
+            });
+            break;
+        }
+        case 'FORBIDDEN':
+            await bot.answerCallbackQuery(cq.id, '⛔️ شما مجاز به این عملیات نیستید.', true);
+            break;
+        case 'ALREADY_DECIDED':
+            await bot.answerCallbackQuery(cq.id, 'ℹ️ این رسید قبلاً بررسی شده است.', true);
+            break;
+        default:
+            await bot.answerCallbackQuery(cq.id, '❌ رسید پیدا نشد.', true);
+    }
+}
+
+function renderClaimSettled(state: 'APPROVED' | 'REJECTED', amount: number, reason: string): string {
+    if (state === 'APPROVED') {
+        return `📥 رسید پرداخت (${amount.toLocaleString()})\n\n✅ <b>ثبت و تأیید شد</b> — پرداخت واقعی ثبت و رسید رسمی صادر گردید.`;
+    }
+    return `📥 رسید پرداخت (${amount.toLocaleString()})\n\n❌ <b>رد شد</b>${reason ? `\nعلت: ${reason}` : ''}\nپرداختی ثبت نشد.`;
+}
+
+async function notifyStudentOfRejection(
+    db: AcademyDatabase, bot: TelegramBotClient,
+    studentId: string, academyId: string, installmentNumber: number, reason: string
+): Promise<void> {
+    try {
+        const student = await db.getStudentById(studentId, academyId);
+        if (!student?.telegram_chat_id) return; // not connected: nothing to notify
+        await bot.sendMessage({
+            chatId: student.telegram_chat_id,
+            text: `❌ رسید ارسالی شما برای قسط ${installmentNumber} تأیید نشد.${reason ? `\nعلت: ${reason}` : ''}\nدر صورت نیاز با آموزشگاه تماس بگیرید یا رسید جدید ارسال کنید.`,
+            parseMode: 'HTML',
+            replyMarkup: TelegramBotClient.getStudentReplyKeyboard()
+        });
+    } catch (_) { /* notification must never break the decision */ }
+}
+
+// ============================================================
+// Stage 5: student receipt photo → claim (evidence only)
+// ============================================================
+async function handleReceiptPhoto(
+    bot: TelegramBotClient,
+    db: AcademyDatabase,
+    env: Env,
+    academyId: string,
+    student: StudentRecord,
+    chatId: string,
+    photo: Array<{ file_id: string; file_size?: number }>,
+    caption: string
+): Promise<void> {
+    const installments = (await db.getInstallmentsForStudent(student.id)) || [];
+    const unpaid = installments.filter((i) => i.is_paid !== 1 && (i.remaining_amount || 0) > 0);
+    if (unpaid.length === 0) {
+        await bot.sendMessage({
+            chatId,
+            text: 'در حال حاضر قسط پرداخت‌نشده‌ای برای شما ثبت نشده است؛ نیازی به ارسال رسید نیست.',
+            parseMode: 'HTML',
+            replyMarkup: TelegramBotClient.getStudentReplyKeyboard()
+        });
+        return;
+    }
+
+    // Which installment? The caption addresses it: «قسط ۲» / «قسط 2».
+    const m = /قسط\s*([۰-۹0-9]+)/u.exec(caption || '');
+    const target = m
+        ? unpaid.find((i) => String(i.installment_number) === normalizeNum(m[1]))
+        : (unpaid.length === 1 ? unpaid[0] : null);
+    if (!target) {
+        const list = unpaid.map((i) => `• قسط ${i.installment_number} — ${(i.remaining_amount || 0).toLocaleString()}`).join('\n');
+        await bot.sendMessage({
+            chatId,
+            text: `📥 برای ارسال رسید، لطفاً تصویر رسید بانکی را همراه با شمارهٔ قسط بفرستید.\nمثال: «قسط ۲»\n\nاقساط پرداخت‌نشدهٔ شما:\n${list}`,
+            parseMode: 'HTML',
+            replyMarkup: TelegramBotClient.getStudentReplyKeyboard()
+        });
+        return;
+    }
+
+    // Largest photo variant within the evidence budget (D1-storable).
+    const pick = [...photo].reverse().find((p) => (p.file_size || 0) <= CLAIM_PHOTO_MAX_BYTES)
+        || photo.find((p) => (p.file_size || 0) <= CLAIM_PHOTO_MAX_BYTES);
+    if (!pick) {
+        await bot.sendMessage({ chatId, text: '⚠️ حجم تصویر بیش از حد مجاز است. لطفاً تصویر کوچک‌تری بفرستید.', parseMode: 'HTML' });
+        return;
+    }
+    const bytes = await bot.downloadFile(pick.file_id);
+
+    const res = await submitReceiptClaim(db, academyId, student, target, bytes, pick.file_id, caption.replace(/قسط\s*[۰-۹0-9]+/u, '').trim());
+    if (!res.ok) {
+        await bot.sendMessage({ chatId, text: `ℹ️ ${res.reason}`, parseMode: 'HTML', replyMarkup: TelegramBotClient.getStudentReplyKeyboard() });
+        return;
+    }
+
+    const claim = await db.getPaymentClaim(res.claimId, academyId);
+    if (claim) await notifyManagersOfClaim(env, db, bot, academyId, claim, bytes);
+
+    await bot.sendMessage({
+        chatId,
+        text: `✅ رسید شما برای <b>قسط ${target.installment_number}</b> دریافت شد و برای بررسی مدیریت ارسال گردید.\n\n⚠️ توجه: تا تأیید مدیریت، این قسط پرداخت‌شده محسوب نمی‌شود و رسید رسمی صادر نمی‌گردد. نتیجهٔ بررسی از همین ربات اطلاع‌رسانی می‌شود.`,
+        parseMode: 'HTML',
+        replyMarkup: TelegramBotClient.getStudentReplyKeyboard()
+    });
+}
+
+function normalizeNum(s: string): string {
+    let out = '';
+    for (const ch of s) {
+        const c = ch.codePointAt(0) || 0;
+        if (c >= 0x06f0 && c <= 0x06f9) out += String.fromCharCode(c - 0x06f0 + 0x30);
+        else out += ch;
+    }
+    return out;
+}
+
+// 🛠 Admin commands: /admin, /stats, /status, /broadcast, /claims, /paylog
 async function handleAdminCommand(
     text: string,
     bot: TelegramBotClient,
     db: AcademyDatabase,
     chatId: string,
-    env: Env
+    env: Env,
+    academyIdIn = dbAcademy(env)
 ): Promise<void> {
     const [command, ...rest] = text.split(/\s+/);
     const cmd = command.toLowerCase();
@@ -294,7 +527,9 @@ async function handleAdminCommand(
                 `/stats — آمار کلی ربات\n` +
                 `/status — وضعیت سرور و اتصال تلگرام\n` +
                 `/broadcast متن — ارسال پیام به همهٔ هنرجویان متصل\n` +
-                `/link کد ، شماره — وضعیت اتصال یک هنرجو`,
+                `/link کد ، شماره — وضعیت اتصال یک هنرجو\n` +
+                `/claims — رسیدهای در انتظار بررسی\n` +
+                `/paylog کد هنرجو — تاریخچهٔ ثبت/تأیید/رد/برگشت پرداخت`,
             parseMode: 'HTML'
         });
         return;
@@ -377,6 +612,59 @@ async function handleAdminCommand(
         return;
     }
 
+    if (cmd === '/claims') {
+        // Stage 5: the manager's review queue — every pending receipt claim.
+        const claims = await db.listPendingClaims(academyIdIn, 20);
+        if (claims.length === 0) {
+            await bot.sendMessage({ chatId, text: '✅ رسید در انتظار بررسی وجود ندارد.', parseMode: 'HTML' });
+            return;
+        }
+        let body = `📥 <b>رسیدهای در انتظار بررسی (${claims.length})</b>\n\n`;
+        claims.forEach((c, i) => {
+            body += `${i + 1}. <b>${c.student_name}</b> — قسط ${c.installment_number} — ${c.claimed_amount.toLocaleString()}\n`;
+            body += `   کد بررسی: <code>${c.id.slice(0, 8)}</code>\n`;
+        });
+        body += `\nتصویر رسید + دکمه‌های تأیید/رد برای هر مورد به‌صورت خودکار برای مدیران ارسال شده است.`;
+        await bot.sendMessage({ chatId, text: body, parseMode: 'HTML' });
+        return;
+    }
+
+    if (cmd === '/paylog') {
+        // Stage 5: payment lifecycle history (register/approve/reject/reverse) —
+        // financial facts only; tokens/keys are never logged anywhere.
+        const code = rest.join(' ').trim();
+        if (!code) {
+            await bot.sendMessage({ chatId, text: '⚠️ کد هنرجو یا شناسه را وارد کنید: /paylog کد', parseMode: 'HTML' });
+            return;
+        }
+        const student = await db.getStudentById(code, academyIdIn) || await db.getStudentByCode(code, academyIdIn);
+        if (!student) {
+            await bot.sendMessage({ chatId, text: '❌ هنرجو پیدا نشد.', parseMode: 'HTML' });
+            return;
+        }
+        const events = await db.listPaymentEvents({ studentId: student.id, limit: 15 }, academyIdIn);
+        if (events.length === 0) {
+            await bot.sendMessage({ chatId, text: `📜 رویداد پرداختی برای ${student.full_name} ثبت نشده است.`, parseMode: 'HTML' });
+            return;
+        }
+        const typeLabel: Record<string, string> = {
+            RECEIPT_SUBMITTED: '📥 ارسال رسید',
+            RECEIPT_APPROVED: '✅ تأیید رسید',
+            RECEIPT_REJECTED: '❌ رد رسید',
+            PAYMENT_REGISTERED: '💰 ثبت پرداخت',
+            PAYMENT_REVERSED: '↩️ برگشت پرداخت',
+            ONLINE_VERIFIED: '🌐 تأیید آنلاین',
+            REMINDER_CANCELLED_PAID: '🔔 توقف یادآوری'
+        };
+        let body = `📜 <b>تاریخچهٔ پرداخت — ${student.full_name}</b>\n\n`;
+        for (const e of events) {
+            body += `${typeLabel[e.event_type] || e.event_type}${e.amount > 0 ? ` — ${e.amount.toLocaleString()}` : ''}\n`;
+            if (e.detail) body += `   ${e.detail}\n`;
+        }
+        await bot.sendMessage({ chatId, text: body, parseMode: 'HTML' });
+        return;
+    }
+
     await bot.sendMessage({ chatId, text: 'دستور ناشناخته. /help را بزنید.', parseMode: 'HTML' });
 }
 
@@ -417,8 +705,11 @@ async function handleFinancialStatus(bot: TelegramBotClient, db: AcademyDatabase
     });
 }
 
-// 📅 Installments Handler
-async function handleInstallments(bot: TelegramBotClient, db: AcademyDatabase, student: StudentRecord, chatId: string) {
+// 📅 Installments Handler — Stage 5 statuses (uniform with the app):
+// paid / near-due / due-today / overdue / receipt-awaiting-review /
+// receipt-rejected / failed-reminder / online-awaiting-confirmation,
+// plus method-specific guidance (card-to-card card info, online link).
+async function handleInstallments(bot: TelegramBotClient, db: AcademyDatabase, student: StudentRecord, chatId: string, env?: Env) {
     const installments = await db.getInstallmentsForStudent(student.id);
     const currency = await db.getSetting('currency_unit', 'تومان');
 
@@ -431,30 +722,76 @@ async function handleInstallments(bot: TelegramBotClient, db: AcademyDatabase, s
     const paidCount = installments.filter(i => i.is_paid === 1).length;
     const pendingCount = installments.length - paidCount;
 
+    // Card/account details come from the academy's REAL settings only.
+    const [cardNumber, sheba, accountOwner] = await Promise.all([
+        db.getSetting('bank_card_number', ''),
+        db.getSetting('bank_sheba', ''),
+        db.getSetting('bank_account_owner', '')
+    ]);
+
     let res = `📅 <b>جدول و وضعیت اقساط</b>\n` +
         `━━━━━━━━━━━━━━━━━━━\n` +
         `👤 <b>هنرجو:</b> ${student.full_name}\n` +
         `📊 کل اقساط: ${installments.length} (${paidCount} پرداخت‌شده | ${pendingCount} مانده)\n\n`;
 
-    installments.forEach((inst, idx) => {
+    for (const [idx, inst] of installments.entries()) {
         const numStr = inst.total_installments > 0 ? `${inst.installment_number} از ${inst.total_installments}` : `${idx + 1}`;
         const title = inst.course_title ? ` (${inst.course_title})` : '';
         res += `🔹 <b>قسط شماره ${numStr}</b>${title}\n`;
-        res += `   💵 مبلغ: <b>${inst.amount.toLocaleString()} ${currency}</b>\n`;
+        const shownAmount = (inst.remaining_amount || 0) > 0 ? inst.remaining_amount : inst.amount;
+        res += `   💵 مبلغ: <b>${shownAmount.toLocaleString()} ${currency}</b>\n`;
         res += `   📆 سررسید: <b>${inst.due_date_shamsi}</b>\n`;
 
         if (inst.is_paid === 1) {
             res += `   وضعیت: <b>✅ پرداخت شده</b>\n`;
-        } else if (inst.due_date_epoch > 0 && inst.due_date_epoch < Date.now()) {
-            const daysOverdue = Math.max(1, Math.floor((Date.now() - inst.due_date_epoch) / (1000 * 60 * 60 * 24)));
-            res += `   وضعیت: <b>🚨 سررسید گذشته (${daysOverdue} روز تاخیر)</b>\n`;
         } else {
-            res += `   وضعیت: <b>⏳ در انتظار پرداخت</b>\n`;
+            // Claim state first: a submitted receipt is NOT a payment.
+            const [pendingClaims, rejectedClaims] = await Promise.all([
+                db.listClaimsForInstallment(inst.id, ['PENDING'], db.academyId),
+                db.listClaimsForInstallment(inst.id, ['REJECTED'], db.academyId)
+            ]);
+            const txn = await db.findActiveTxnForInstallment(db.academyId, inst.id, Date.now());
+            const rows = await db.listRemindersForInstallment(inst.id, db.academyId);
+            const latestFailed = rows.filter((r) => r.status === 'FAILED').sort((a, b) => b.created_at_epoch - a.created_at_epoch)[0];
+
+            if (pendingClaims.length > 0) {
+                res += `   وضعیت: <b>📨 رسید ارسالی — در انتظار بررسی مدیر</b>\n`;
+                res += `   ⚠️ تا تأیید مدیر، این قسط پرداخت‌شده محسوب نمی‌شود.\n`;
+            } else if (txn && txn.status === 'PENDING') {
+                res += `   وضعیت: <b>🌐 پرداخت آنلاین در انتظار تأیید</b>\n`;
+            } else if (rejectedClaims.length > 0) {
+                const last = rejectedClaims[0];
+                res += `   وضعیت: <b>❌ رسید ردشده</b>${last?.decision_note ? ` (علت: ${last.decision_note})` : ''}\n`;
+                res += `   💡 می‌توانید رسید جدید ارسال کنید.\n`;
+            } else {
+                res += `   وضعیت: <b>${dueStatusFa(inst, Date.now())}</b>\n`;
+            }
+            if (latestFailed) {
+                res += `   ⚠️ ارسال پیام یادآوری این قسط ناموفق بوده است؛ پس از اتصال مجدد تلاش می‌شود.\n`;
+            }
+
+            // Method guidance — the REAL academy account, never fabricated.
+            const method = ((inst as any).payment_method || '').toUpperCase();
+            if (method === 'TRANSFER' || method === 'BANK_DEPOSIT') {
+                res += `   💳 روش: کارت‌به‌کارت\n`;
+                if (cardNumber) res += `   🔢 شماره کارت: <code>${cardNumber}</code>\n`;
+                if (sheba) res += `   🏦 شبا: <code>${sheba}</code>\n`;
+                if (accountOwner) res += `   👤 به نام: ${accountOwner}\n`;
+                res += `   📤 پس از واریز، تصویر رسید را با کپشن «قسط ${inst.installment_number}» از دکمهٔ «ارسال رسید پرداخت» بفرستید.\n`;
+            } else if (method === 'POS') {
+                res += `   🖥 روش: کارتخوان — در محل آموزشگاه پرداخت کنید.\n`;
+            } else if (method === 'ONLINE' && !txn && env) {
+                const link = await createInstallmentPaymentLink(env, db, db.academyId, student.id, inst.id, '');
+                if (link.ok) {
+                    res += `   💳 روش: آنلاین — لینک اختصاصی همین قسط:\n${link.url}\n`;
+                }
+                // no gateway configured → no link, no "active" claim (honest default)
+            }
         }
         res += `\n`;
-    });
+    }
 
-    res += `━━━━━━━━━━━━━━━━━━━\n💡 جهت پرداخت اقساط یا دریافت شماره شبا/کارت با آموزشگاه در تماس باشید.`;
+    res += `━━━━━━━━━━━━━━━━━━━\n💡 برای پرداخت کارت‌به‌کارت، مشخصات کارت آموزشگاه در همین بخش نمایش داده می‌شود و رسید را می‌توانید از دکمهٔ «ارسال رسید پرداخت» بفرستید.`;
 
     await bot.sendMessage({
         chatId,
@@ -462,6 +799,40 @@ async function handleInstallments(bot: TelegramBotClient, db: AcademyDatabase, s
         parseMode: 'HTML',
         replyMarkup: TelegramBotClient.getStudentReplyKeyboard()
     });
+}
+
+// 📤 «ارسال رسید پرداخت» — card-to-card path: real account info + how to submit
+async function handleSendReceiptGuide(bot: TelegramBotClient, db: AcademyDatabase, student: StudentRecord, chatId: string) {
+    const installments = (await db.getInstallmentsForStudent(student.id)) || [];
+    const unpaid = installments.filter((i) => i.is_paid !== 1 && (i.remaining_amount || 0) > 0);
+    const currency = await db.getSetting('currency_unit', 'تومان');
+    const [cardNumber, sheba, accountOwner] = await Promise.all([
+        db.getSetting('bank_card_number', ''),
+        db.getSetting('bank_sheba', ''),
+        db.getSetting('bank_account_owner', '')
+    ]);
+
+    let res = `📤 <b>ارسال رسید پرداخت (کارت‌به‌کارت)</b>\n━━━━━━━━━━━━━━━━━━━\n`;
+    if (cardNumber || sheba) {
+        res += `💳 مشخصات پرداخت آموزشگاه:\n`;
+        if (accountOwner) res += `👤 به نام: <b>${accountOwner}</b>\n`;
+        if (cardNumber) res += `🔢 شماره کارت: <code>${cardNumber}</code>\n`;
+        if (sheba) res += `🏦 شبا: <code>${sheba}</code>\n`;
+    } else {
+        res += `💳 شماره کارت آموزشگاه هنوز در تنظیمات ثبت نشده است؛ لطفاً با آموزشگاه هماهنگ کنید.\n`;
+    }
+    if (unpaid.length > 0) {
+        res += `\nاقساط پرداخت‌نشدهٔ شما:\n`;
+        for (const i of unpaid) {
+            res += `• قسط ${i.installment_number} — <b>${(i.remaining_amount || 0).toLocaleString()} ${currency}</b> (سررسید ${i.due_date_shamsi})\n`;
+        }
+        res += `\n📥 پس از واریز، <b>تصویر رسید بانکی</b> را بفرستید و در توضیحات بنویسید «قسط <شماره>».\n`;
+        res += `مثال: تصویر رسید + کپشن «قسط ۲»\n\n`;
+        res += `⚠️ رسید شما مدرک بررسی است؛ پس از تأیید مدیریت، پرداخت ثبت و رسید رسمی برایتان ارسال می‌شود.`;
+    } else {
+        res += `\n✅ همهٔ اقساط شما پرداخت شده است. نیازی به ارسال رسید نیست.`;
+    }
+    await bot.sendMessage({ chatId, text: res, parseMode: 'HTML', replyMarkup: TelegramBotClient.getStudentReplyKeyboard() });
 }
 
 // 🧾 Receipts Handler — itemized from the academy's own pushed installment data.

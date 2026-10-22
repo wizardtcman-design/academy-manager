@@ -61,6 +61,8 @@ export interface TelegramMessage {
     caption?: string;
     photo?: Array<{ file_id: string; file_unique_id: string; width: number; height: number; file_size?: number }>;
     document?: { file_id: string; file_unique_id: string; file_name?: string; mime_type?: string; file_size?: number };
+    /** Stage 5: set when the user replies to another message (claim rejection reason). */
+    reply_to_message?: TelegramMessage;
 }
 
 export interface TelegramCallbackQuery {
@@ -143,6 +145,10 @@ export interface ReminderRecord {
     sent_at_epoch: number;
     /** Set by migration 0001; carried for SMS queuing. */
     student_phone?: string;
+    /** Stage 5 (migration 0010): which nob (-7/-4/-1/0/+1) this row serves. */
+    trigger_offset?: number;
+    /** Stage 5: who created the row — the worker scheduler or the app push. */
+    schedule_source?: string;
 }
 
 export interface MessageLogRecord {
@@ -273,5 +279,50 @@ export interface PaymentLinkTokenRecord {
     academy_id: string;
     order_id: string;
     expires_at_epoch: number;
+    created_at_epoch: number;
+}
+
+// ============================================================
+// Stage 5 (migration 0010): student receipt claims, payment events
+// ============================================================
+
+/** A bank-transfer screenshot submitted by the student through the bot. */
+export interface PaymentClaimRecord {
+    id: string;
+    academy_id: string;
+    student_id: string;
+    student_name: string;
+    installment_id: string;
+    installment_number: number;
+    course_title: string;
+    claimed_amount: number;      // server-side remaining at submission (never user-editable)
+    note: string;
+    photo_bytes: Uint8Array | null;
+    photo_file_id: string;
+    status: string;              // PENDING | APPROVED | REJECTED
+    decided_by: string;          // manager chat id (server-verified)
+    decision_note: string;
+    decided_at_epoch: number;
+    payment_id: string;          // set on APPROVAL (clm-<id>)
+    telegram_chat_id: string;
+    manager_message_id: string;
+    manager_chat_id: string;
+    created_at_epoch: number;
+    updated_at_epoch: number;
+}
+
+/** Payment lifecycle audit row — financial facts only, never secrets. */
+export interface PaymentEventRecord {
+    id: string;
+    academy_id: string;
+    student_id: string;
+    installment_id: string;
+    payment_id: string;
+    claim_id: string;
+    event_type: string;          // RECEIPT_SUBMITTED | RECEIPT_APPROVED | RECEIPT_REJECTED | PAYMENT_REGISTERED | PAYMENT_REVERSED | ONLINE_VERIFIED
+    channel: string;             // telegram | app | worker | gateway
+    actor: string;               // manager chat id / 'student' / 'system' / 'gateway'
+    amount: number;
+    detail: string;
     created_at_epoch: number;
 }

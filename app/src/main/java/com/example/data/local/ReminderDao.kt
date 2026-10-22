@@ -42,4 +42,13 @@ interface ReminderDao {
 
     @Query("DELETE FROM reminders WHERE installmentId = :installmentId")
     suspend fun deleteRemindersForInstallment(installmentId: String)
+
+    /**
+     * Stage 5: after a REAL payment, every still-SCHEDULED reminder of the
+     * installment is cancelled (kept for history, never fired again). Status
+     * is preserved instead of hard-deleting so the manager keeps an audit
+     * trail and pushAll stops re-publishing them to the worker.
+     */
+    @Query("UPDATE reminders SET status = 'CANCELLED', errorMessage = :error, isCompleted = 1 WHERE installmentId = :installmentId AND status = 'SCHEDULED'")
+    suspend fun cancelScheduledForInstallment(installmentId: String, error: String): Int
 }

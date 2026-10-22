@@ -10,7 +10,9 @@ import {
     ReminderRecord,
     MessageLogRecord,
     PaymentReceiptRecord,
-    PaymentTxnRecord
+    PaymentTxnRecord,
+    PaymentClaimRecord,
+    PaymentEventRecord
 } from './types';
 
 // In-Memory Fallback Map, used ONLY by the local test server (`npm run dev`).
@@ -434,13 +436,16 @@ export class AcademyDatabase {
                     INSERT INTO reminders (
                         id, academy_id, student_id, student_name, chat_id, installment_id,
                         reminder_type, message_text, scheduled_epoch, scheduled_time_str,
-                        status, error_message, retry_count, created_at_epoch, sent_at_epoch, student_phone
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        status, error_message, retry_count, created_at_epoch, sent_at_epoch, student_phone,
+                        trigger_offset, schedule_source
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 `).bind(
                     reminder.id, this.academyId, reminder.student_id, reminder.student_name, reminder.chat_id, reminder.installment_id,
                     reminder.reminder_type, reminder.message_text, reminder.scheduled_epoch, reminder.scheduled_time_str,
                     reminder.status, reminder.error_message, reminder.retry_count, reminder.created_at_epoch, reminder.sent_at_epoch,
-                    (reminder as any).student_phone || ''
+                    (reminder as any).student_phone || '',
+                    Number((reminder as any).trigger_offset ?? 0) || 0,
+                    (reminder as any).schedule_source || 'app'
                 ).run();
             } catch (e) {
                 console.warn('[DB] D1 addReminder failed:', e);
@@ -536,14 +541,16 @@ export class AcademyDatabase {
         }
     }
 
-    async cancelPendingRemindersForInstallment(installmentId: string): Promise<void> {
-        if (!installmentId) return;
+    async cancelPendingRemindersForInstallment(installmentId: string): Promise<number> {
+        if (!installmentId) return 0;
+        let cancelled = 0;
         if (this.db) {
             try {
-                await this.db.prepare(`
+                const res = await this.db.prepare(`
                     UPDATE reminders SET status = 'CANCELLED', error_message = 'Installment already paid'
                     WHERE installment_id = ? AND status = 'SCHEDULED' AND academy_id = ?
                 `).bind(installmentId, this.academyId).run();
+                cancelled = res.meta?.changes || 0;
             } catch (e) {
                 console.warn('[DB] D1 cancelPendingReminders failed:', e);
             }
@@ -551,8 +558,10 @@ export class AcademyDatabase {
         for (const r of memoryReminders.values()) {
             if (r.installment_id === installmentId && r.status === 'SCHEDULED') {
                 r.status = 'CANCELLED';
+                cancelled++;
             }
         }
+        return cancelled;
     }
 
     /** Cancels reminders that are stale (installment paid / past due by more than graceDays). */
@@ -980,6 +989,379 @@ export class AcademyDatabase {
         } catch (e) {
             console.warn('[DB] D1 getLinkTokenByHash failed:', e);
             return '';
+        }
+    }
+
+    // ============================================================
+    // Stage 5 (migration 0010): server-scheduled reminders, claims, events
+    // ============================================================
+
+    /** Every reminder row of ONE installment (both sources, any status). */
+    async listRemindersForInstallment(installmentId: string, academyId: string = this.academyId): Promise<ReminderRecord[]> {
+        if (!installmentId) return [];
+        if (this.db) {
+            try {
+                const { results } = await this.db.prepare(
+                    'SELECT * FROM reminders WHERE installment_id = ? AND academy_id = ? ORDER BY scheduled_epoch ASC'
+                ).bind(installmentId, academyId).all<ReminderRecord>();
+                return results || [];
+            } catch (e) {
+                console.warn('[DB] D1 listRemindersForInstallment failed:', e);
+            }
+        }
+        const rows: ReminderRecord[] = [];
+        for (const r of memoryReminders.values()) {
+            if (r.installment_id === installmentId) rows.push(r);
+        }
+        return rows;
+    }
+
+    /** The SCHEDULED row of one (installment, offset) nob, any source. */
+    async findScheduledReminderForOffset(
+        installmentId: string,
+        triggerOffset: number,
+        academyId: string = this.academyId
+    ): Promise<ReminderRecord | null> {
+        if (!installmentId) return null;
+        if (this.db) {
+            try {
+                const row = await this.db.prepare(`
+                    SELECT * FROM reminders
+                    WHERE installment_id = ? AND academy_id = ? AND trigger_offset = ? AND status = 'SCHEDULED'
+                    ORDER BY CASE WHEN schedule_source = 'server' THEN 0 ELSE 1 END, created_at_epoch ASC
+                    LIMIT 1
+                `).bind(installmentId, academyId, triggerOffset).first<ReminderRecord>();
+                return row ?? null;
+            } catch (e) {
+                console.warn('[DB] D1 findScheduledReminderForOffset failed:', e);
+            }
+        }
+        for (const r of memoryReminders.values()) {
+            if (r.installment_id === installmentId
+                && (r as any).trigger_offset === triggerOffset
+                && r.status === 'SCHEDULED') return r;
+        }
+        return null;
+    }
+
+    /** Rewrites schedule + message of a SCHEDULED row (due-date reconciliation). */
+    async rescheduleReminder(id: string, scheduledEpoch: number, timeStr: string, messageText: string): Promise<void> {
+        if (this.db) {
+            try {
+                await this.db.prepare(`
+                    UPDATE reminders SET scheduled_epoch = ?, scheduled_time_str = ?, message_text = ?
+                    WHERE id = ? AND academy_id = ? AND status = 'SCHEDULED'
+                `).bind(scheduledEpoch, timeStr, messageText, id, this.academyId).run();
+            } catch (e) {
+                console.warn('[DB] D1 rescheduleReminder failed:', e);
+            }
+        }
+        const r = memoryReminders.get(id);
+        if (r && r.status === 'SCHEDULED') {
+            r.scheduled_epoch = scheduledEpoch;
+            r.scheduled_time_str = timeStr;
+            r.message_text = messageText;
+        }
+    }
+
+    /**
+     * Revives a deterministic nob that was cancelled/failed but NEVER
+     * delivered (e.g. the installment went paid → unpaid after a reversal, or
+     * the due date moved). SENT rows are deliberately untouchable — a nob that
+     * already reached the student must never fire twice.
+     */
+    async reviveReminder(id: string, scheduledEpoch: number, timeStr: string, messageText: string): Promise<boolean> {
+        let changed = 0;
+        if (this.db) {
+            try {
+                const res = await this.db.prepare(`
+                    UPDATE reminders SET scheduled_epoch = ?, scheduled_time_str = ?, message_text = ?,
+                        status = 'SCHEDULED', error_message = '', retry_count = 0, sent_at_epoch = 0
+                    WHERE id = ? AND academy_id = ? AND status IN ('CANCELLED', 'FAILED')
+                `).bind(scheduledEpoch, timeStr, messageText, id, this.academyId).run();
+                changed = res.meta?.changes || 0;
+            } catch (e) {
+                console.warn('[DB] D1 reviveReminder failed:', e);
+            }
+        }
+        const r = memoryReminders.get(id);
+        if (r && (r.status === 'CANCELLED' || r.status === 'FAILED')) {
+            r.status = 'SCHEDULED';
+            r.scheduled_epoch = scheduledEpoch;
+            r.scheduled_time_str = timeStr;
+            r.message_text = messageText;
+            r.error_message = '';
+            r.retry_count = 0;
+            r.sent_at_epoch = 0;
+            changed++;
+        }
+        return changed > 0;
+    }
+
+    // ---- payment claims (student-submitted bank-transfer receipts) ----
+
+    async insertPaymentClaim(c: PaymentClaimRecord): Promise<void> {
+        if (this.db) {
+            try {
+                await this.db.prepare(`
+                    INSERT INTO payment_claims (
+                        id, academy_id, student_id, student_name, installment_id, installment_number,
+                        course_title, claimed_amount, note, photo_bytes, photo_file_id, status,
+                        decided_by, decision_note, decided_at_epoch, payment_id, telegram_chat_id,
+                        manager_message_id, manager_chat_id, created_at_epoch, updated_at_epoch
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                `).bind(
+                    c.id, this.academyId, c.student_id, c.student_name, c.installment_id, c.installment_number,
+                    c.course_title, c.claimed_amount, c.note, c.photo_bytes, c.photo_file_id, c.status,
+                    c.decided_by, c.decision_note, c.decided_at_epoch, c.payment_id, c.telegram_chat_id,
+                    c.manager_message_id, c.manager_chat_id, c.created_at_epoch, c.updated_at_epoch
+                ).run();
+            } catch (e) {
+                console.warn('[DB] D1 insertPaymentClaim failed:', e);
+            }
+        }
+    }
+
+    async getPaymentClaim(id: string, academyId: string = this.academyId): Promise<PaymentClaimRecord | null> {
+        if (!id) return null;
+        if (this.db) {
+            try {
+                const row = await this.db
+                    .prepare('SELECT * FROM payment_claims WHERE id = ? AND academy_id = ?')
+                    .bind(id, academyId)
+                    .first<PaymentClaimRecord>();
+                return row ?? null;
+            } catch (e) {
+                console.warn('[DB] D1 getPaymentClaim failed:', e);
+            }
+        }
+        return null;
+    }
+
+    async updatePaymentClaim(id: string, academyId: string, patch: Partial<PaymentClaimRecord>): Promise<void> {
+        const allowed = [
+            'status', 'decided_by', 'decision_note', 'decided_at_epoch', 'payment_id',
+            'manager_message_id', 'manager_chat_id', 'photo_file_id', 'updated_at_epoch'
+        ] as const;
+        const sets: string[] = [];
+        const vals: unknown[] = [];
+        for (const k of allowed) {
+            if (patch[k] !== undefined) { sets.push(`${k} = ?`); vals.push(patch[k] as unknown); }
+        }
+        if (!sets.length) return;
+        if (!sets.includes('updated_at_epoch = ?')) { sets.push('updated_at_epoch = ?'); vals.push(Date.now()); }
+        vals.push(id, academyId);
+        if (this.db) {
+            try {
+                await this.db.prepare(
+                    `UPDATE payment_claims SET ${sets.join(', ')} WHERE id = ? AND academy_id = ?`
+                ).bind(...vals).run();
+            } catch (e) {
+                console.warn('[DB] D1 updatePaymentClaim failed:', e);
+            }
+        }
+    }
+
+    /**
+     * ATOMIC decision claim (CAS): flips a PENDING claim to APPROVED/REJECTED
+     * exactly once. Two managers clicking simultaneously (or a double click,
+     * or a webhook replay) can never both win — the loser reads changes = 0
+     * and gets the "already decided" answer.
+     */
+    async decidePaymentClaim(
+        id: string,
+        academyId: string,
+        decision: 'APPROVED' | 'REJECTED',
+        managerChatId: string,
+        decisionNote: string,
+        paymentId: string
+    ): Promise<boolean> {
+        if (!this.db) return false;
+        try {
+            const res = await this.db.prepare(`
+                UPDATE payment_claims SET
+                    status = ?, decided_by = ?, decision_note = ?, decided_at_epoch = ?,
+                    payment_id = ?, updated_at_epoch = ?
+                WHERE id = ? AND academy_id = ? AND status = 'PENDING'
+            `).bind(
+                decision, managerChatId, decisionNote || '', Date.now(), paymentId || '',
+                Date.now(), id, academyId
+            ).run();
+            return (res.meta?.changes || 0) > 0;
+        } catch (e) {
+            console.warn('[DB] D1 decidePaymentClaim failed:', e);
+            return false;
+        }
+    }
+
+    /** Open claims of one installment (newest first) — drives the bot statuses. */
+    async listClaimsForInstallment(
+        installmentId: string,
+        statuses: string[] = ['PENDING'],
+        academyId: string = this.academyId
+    ): Promise<PaymentClaimRecord[]> {
+        if (!installmentId) return [];
+        if (this.db) {
+            try {
+                const marks = statuses.map(() => '?').join(',');
+                const { results } = await this.db.prepare(`
+                    SELECT * FROM payment_claims
+                    WHERE installment_id = ? AND academy_id = ? AND status IN (${marks})
+                    ORDER BY created_at_epoch DESC
+                `).bind(installmentId, academyId, ...statuses).all<PaymentClaimRecord>();
+                return results || [];
+            } catch (e) {
+                console.warn('[DB] D1 listClaimsForInstallment failed:', e);
+            }
+        }
+        return [];
+    }
+
+    async listPendingClaims(academyId: string = this.academyId, limit = 20): Promise<PaymentClaimRecord[]> {
+        if (this.db) {
+            try {
+                const { results } = await this.db.prepare(`
+                    SELECT * FROM payment_claims
+                    WHERE academy_id = ? AND status = 'PENDING'
+                    ORDER BY created_at_epoch ASC LIMIT ?
+                `).bind(academyId, limit).all<PaymentClaimRecord>();
+                return results || [];
+            } catch (e) {
+                console.warn('[DB] D1 listPendingClaims failed:', e);
+            }
+        }
+        return [];
+    }
+
+    /** APPROVED claims since a cursor epoch — feeds the app's confirmed-payment pull. */
+    async listApprovedClaimsSince(academyId: string, since: number, limit = 200): Promise<PaymentClaimRecord[]> {
+        if (this.db) {
+            try {
+                const { results } = await this.db.prepare(`
+                    SELECT * FROM payment_claims
+                    WHERE academy_id = ? AND status = 'APPROVED' AND decided_at_epoch > ?
+                    ORDER BY decided_at_epoch ASC LIMIT ?
+                `).bind(academyId, since, limit).all<PaymentClaimRecord>();
+                return results || [];
+            } catch (e) {
+                console.warn('[DB] D1 listApprovedClaimsSince failed:', e);
+            }
+        }
+        return [];
+    }
+
+    /** Finds a PENDING claim by the manager-notification message id (reply-based reason). */
+    async findPendingClaimByManagerMessage(
+        managerChatId: string,
+        messageId: number,
+        academyId: string = this.academyId
+    ): Promise<PaymentClaimRecord | null> {
+        if (!this.db) return null;
+        try {
+            const row = await this.db.prepare(`
+                SELECT * FROM payment_claims
+                WHERE academy_id = ? AND manager_chat_id = ? AND manager_message_id = ? AND status = 'PENDING'
+                LIMIT 1
+            `).bind(academyId, managerChatId, String(messageId)).first<PaymentClaimRecord>();
+            return row ?? null;
+        } catch (e) {
+            console.warn('[DB] D1 findPendingClaimByManagerMessage failed:', e);
+            return null;
+        }
+    }
+
+    // ---- payment lifecycle events (report backbone) ----
+
+    async insertPaymentEvent(e: PaymentEventRecord): Promise<void> {
+        if (this.db) {
+            try {
+                await this.db.prepare(`
+                    INSERT INTO payment_events (
+                        id, academy_id, student_id, installment_id, payment_id, claim_id,
+                        event_type, channel, actor, amount, detail, created_at_epoch
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+                `).bind(
+                    e.id, this.academyId, e.student_id, e.installment_id, e.payment_id, e.claim_id,
+                    e.event_type, e.channel, e.actor, e.amount, e.detail, e.created_at_epoch
+                ).run();
+            } catch (err) {
+                console.warn('[DB] D1 insertPaymentEvent failed:', err);
+            }
+        }
+    }
+
+    async listPaymentEvents(
+        opts: { studentId?: string; installmentId?: string; limit?: number } = {},
+        academyId: string = this.academyId
+    ): Promise<PaymentEventRecord[]> {
+        const limit = Math.min(500, Math.max(1, opts.limit || 100));
+        if (this.db) {
+            try {
+                const where = ['academy_id = ?'];
+                const vals: unknown[] = [academyId];
+                if (opts.studentId) { where.push('student_id = ?'); vals.push(opts.studentId); }
+                if (opts.installmentId) { where.push('installment_id = ?'); vals.push(opts.installmentId); }
+                vals.push(limit);
+                const { results } = await this.db.prepare(`
+                    SELECT * FROM payment_events WHERE ${where.join(' AND ')}
+                    ORDER BY created_at_epoch DESC LIMIT ?
+                `).bind(...vals).all<PaymentEventRecord>();
+                return results || [];
+            } catch (e) {
+                console.warn('[DB] D1 listPaymentEvents failed:', e);
+            }
+        }
+        return [];
+    }
+
+    /** Open (PENDING) claims of one STUDENT — one live claim per installment. */
+    async listPendingClaimsForStudent(studentId: string, academyId: string = this.academyId): Promise<PaymentClaimRecord[]> {
+        if (!studentId) return [];
+        if (this.db) {
+            try {
+                const { results } = await this.db.prepare(`
+                    SELECT * FROM payment_claims
+                    WHERE student_id = ? AND academy_id = ? AND status = 'PENDING'
+                    ORDER BY created_at_epoch DESC
+                `).bind(studentId, academyId).all<PaymentClaimRecord>();
+                return results || [];
+            } catch (e) {
+                console.warn('[DB] D1 listPendingClaimsForStudent failed:', e);
+            }
+        }
+        return [];
+    }
+
+    /** Idempotent SMS outbox row (real sending stays DISABLED until a panel is connected). */
+    async insertSmsOutbox(
+        id: string, academyId: string, reminderId: string, phone: string,
+        body: string, status: string, error: string, now: number
+    ): Promise<void> {
+        if (!phone) return;
+        if (this.db) {
+            try {
+                await this.db.prepare(`
+                    INSERT OR IGNORE INTO sms_outbox (id, academy_id, reminder_id, phone, body, status, error, created_at_epoch)
+                    VALUES (?,?,?,?,?,?,?,?)
+                `).bind(id, academyId, reminderId, phone, body, status, error, now).run();
+            } catch (e) {
+                console.warn('[DB] D1 insertSmsOutbox failed:', e);
+            }
+        }
+    }
+
+    /** Tracks the SMS channel status on the reminder row itself (independent of Telegram). */
+    async updateSmsStatus(academyId: string, reminderId: string, status: string, error = ''): Promise<void> {
+        if (this.db) {
+            try {
+                await this.db.prepare(`
+                    UPDATE reminders SET sms_status = ?, sms_error = ?, sms_attempts = sms_attempts + 1,
+                        sms_sent_at_epoch = CASE WHEN ? = 'SENT' THEN ? ELSE sms_sent_at_epoch END
+                    WHERE academy_id = ? AND id = ?
+                `).bind(status, error, status, Date.now(), academyId, reminderId).run();
+            } catch (e) {
+                console.warn('[DB] D1 updateSmsStatus failed:', e);
+            }
         }
     }
 }

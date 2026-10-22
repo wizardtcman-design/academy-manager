@@ -121,6 +121,23 @@ export async function ingestPayments(
                     });
                 }
                 out.updated++;
+                // Stage 5: reversal is part of the audited lifecycle (exactly once).
+                try {
+                    await db.insertPaymentEvent({
+                        id: crypto.randomUUID(),
+                        academy_id: academyId,
+                        student_id: p.studentId,
+                        installment_id: p.installmentId || existing.installment_id,
+                        payment_id: p.id,
+                        claim_id: '',
+                        event_type: 'PAYMENT_REVERSED',
+                        channel: 'app',
+                        actor: p.recordedBy || 'system',
+                        amount: existing.amount,
+                        detail: p.reversalReason || '',
+                        created_at_epoch: now
+                    });
+                } catch (_) { /* auditing must never block ingestion */ }
             } else {
                 out.skipped++;
             }
@@ -174,6 +191,30 @@ export async function ingestPayments(
             updated_at_epoch: now
         });
         out.created++;
+
+        // Stage 5: a REAL payment stops the installment's reminders right away
+        // (the pre-send re-check in the dispatcher catches anything in flight
+        // too) and lands in the payment lifecycle history. A partial payment
+        // re-arms its five nobs automatically on the next installment sync.
+        if (p.installmentId) {
+            await db.cancelPendingRemindersForInstallment(p.installmentId);
+            try {
+                await db.insertPaymentEvent({
+                    id: crypto.randomUUID(),
+                    academy_id: academyId,
+                    student_id: p.studentId,
+                    installment_id: p.installmentId,
+                    payment_id: p.id,
+                    claim_id: '',
+                    event_type: 'PAYMENT_REGISTERED',
+                    channel: p.id.startsWith('clm-') ? 'telegram' : 'app',
+                    actor: p.recordedBy || 'system',
+                    amount: Number(p.amount),
+                    detail: p.transactionId || p.paymentCode || '',
+                    created_at_epoch: now
+                });
+            } catch (_) { /* auditing must never block ingestion */ }
+        }
     }
     return out;
 }

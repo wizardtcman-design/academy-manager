@@ -431,6 +431,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             if (res.isSuccess) {
                 val p = res.getOrNull()
                 showMessage("پرداخت با موفقیت ثبت شد (کد تراکنش: ${p?.transactionId}).")
+                // Stage 5: a REAL payment stops this installment's reminders on
+                // BOTH sides — local Room rows (so the local alarms never fire
+                // for a paid installment and pushAll stops re-publishing them)
+                // and the worker queue (idempotent, best-effort).
+                runCatching {
+                    AppDatabase.getDatabase(getApplication()).reminderDao()
+                        .cancelScheduledForInstallment(installmentId, "پرداخت ثبت شد")
+                }
+                runCatching {
+                    viewModelScope.launch {
+                        com.example.service.messaging.BotCloudBridge(getApplication())
+                            .cancelInstallmentReminders(installmentId)
+                    }
+                }
                 // Stage 4: the recorded payment IS the receipt — push it now so
                 // Telegram delivery starts immediately (idempotent server-side).
                 com.example.service.SyncWorker.syncNow(getApplication())

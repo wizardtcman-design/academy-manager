@@ -110,6 +110,76 @@ export class TelegramBotClient {
     }
 
     /**
+     * Stage 5: sends a photo (e.g. the student's bank-transfer receipt) with
+     * an optional inline keyboard (manager approve/reject buttons).
+     */
+    async sendPhoto(params: {
+        chatId: string | number;
+        bytes: Uint8Array;
+        fileName?: string;
+        caption?: string;
+        replyMarkup?: any;
+    }): Promise<TelegramApiResponse<any>> {
+        const form = new FormData();
+        form.append('chat_id', String(params.chatId));
+        form.append('photo', new Blob([params.bytes], { type: 'image/jpeg' }), params.fileName || 'receipt.jpg');
+        if (params.caption) form.append('caption', params.caption);
+        if (params.replyMarkup) form.append('reply_markup', JSON.stringify(params.replyMarkup));
+        const res = await fetch(`${this.baseUrl}/sendPhoto`, { method: 'POST', body: form });
+        return await res.json() as TelegramApiResponse<any>;
+    }
+
+    /** Answers an inline-button callback (stops the client-side spinner). */
+    async answerCallbackQuery(callbackQueryId: string, text?: string, showAlert = false): Promise<TelegramApiResponse<any>> {
+        const payload: Record<string, any> = { callback_query_id: callbackQueryId };
+        if (text) payload.text = text;
+        if (showAlert) payload.show_alert = true;
+        try {
+            const res = await fetch(`${this.baseUrl}/answerCallbackQuery`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            return await res.json() as TelegramApiResponse<any>;
+        } catch (e: any) {
+            return { ok: false, description: `network: ${e?.message || e}` } as TelegramApiResponse<any>;
+        }
+    }
+
+    /** Rewrites a sent message (used to settle the manager claim message after a decision). */
+    async editMessageText(chatId: string | number, messageId: number | string, text: string): Promise<TelegramApiResponse<any>> {
+        try {
+            const res = await fetch(`${this.baseUrl}/editMessageText`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ chat_id: chatId, message_id: messageId, text, parse_mode: 'HTML' })
+            });
+            return await res.json() as TelegramApiResponse<any>;
+        } catch (e: any) {
+            return { ok: false, description: `network: ${e?.message || e}` } as TelegramApiResponse<any>;
+        }
+    }
+
+    /**
+     * Stage 5: downloads a file by id (getFile → file download endpoint).
+     * Used for student-submitted receipt photos. Returns null on failure —
+     * the caller must degrade gracefully (file id is kept for re-download).
+     */
+    async downloadFile(fileId: string): Promise<Uint8Array | null> {
+        try {
+            const meta = await fetch(`${this.baseUrl}/getFile?file_id=${encodeURIComponent(fileId)}`);
+            const metaJson = await meta.json() as TelegramApiResponse<{ file_path?: string }>;
+            const path = metaJson.result?.file_path;
+            if (!metaJson.ok || !path) return null;
+            const bin = await fetch(`https://api.telegram.org/file/bot${this.botToken}/${path}`);
+            if (!bin.ok) return null;
+            return new Uint8Array(await bin.arrayBuffer());
+        } catch (_) {
+            return null;
+        }
+    }
+
+    /**
      * Standard Persian Student Interactive Reply Keyboard
      */
     static getStudentReplyKeyboard() {
@@ -117,11 +187,22 @@ export class TelegramBotClient {
             keyboard: [
                 [{ text: '💰 وضعیت مالی' }, { text: '📅 اقساط من' }],
                 [{ text: '🧾 رسیدهای من' }, { text: '📄 قرارداد من' }],
-                [{ text: '📞 تماس با آموزشگاه' }, { text: '🔄 بروزرسانی اطلاعات' }]
+                [{ text: '📤 ارسال رسید پرداخت' }, { text: '📞 تماس با آموزشگاه' }],
+                [{ text: '🔄 بروزرسانی اطلاعات' }]
             ],
             resize_keyboard: true,
             persistent: true,
             is_persistent: true
+        };
+    }
+
+    /** Stage 5: manager inline buttons on a claim notification. */
+    static getClaimDecisionKeyboard(claimId: string) {
+        return {
+            inline_keyboard: [[
+                { text: '✅ ثبت و تأیید پرداخت', callback_data: `clm:ok:${claimId}` },
+                { text: '❌ رد رسید', callback_data: `clm:no:${claimId}` }
+            ]]
         };
     }
 }

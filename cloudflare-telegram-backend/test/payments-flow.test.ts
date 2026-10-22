@@ -553,7 +553,7 @@ describe('online payment links, verification and reminder integration', () => {
         expect(reminderText).toContain('800,000');
         expect(reminderText).toMatch(/https:\/\/worker\.test\/pay\/[A-Za-z0-9_-]{20,64}/);
         // SMS: queued but DISABLED (no real provider; infrastructure ready)
-        const sms = db.get(`SELECT status, error FROM sms_outbox WHERE id = 'paylink-rem-pay'`) as any;
+        const sms = db.get(`SELECT status, error FROM sms_outbox WHERE id = 'sms-rem-pay'`) as any;
         expect(sms?.status).toBe('DISABLED');
         expect(String(sms?.error)).toContain('sms_provider_not_configured');
     });
