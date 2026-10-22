@@ -98,6 +98,31 @@ export function makeSignaturePng(width = 4, height = 4): Uint8Array {
     return concat([sig, chunk('IHDR', ihdr), chunk('IDAT', deflateSync(raw)), chunk('IEND', new Uint8Array(0))]);
 }
 
+/**
+ * Minimal baseline JPEG (SOI + APP0 + DQT + SOF0 + SOS + EOI). The worker only
+ * reads the SOF0 dimensions and stores the bytes verbatim (DCTDecode), so this
+ * fixture is enough to prove the real image data reaches the final PDF.
+ */
+export function makeJpegFixture(width = 6, height = 5): Uint8Array {
+    const b: number[] = [];
+    b.push(0xff, 0xd8); // SOI
+    // APP0 JFIF (len 16)
+    b.push(0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0x00, 0x01, 0x01, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00);
+    // DQT (len 67 = 2 + 1 + 64)
+    b.push(0xff, 0xdb, 0x00, 0x43, 0x00);
+    for (let i = 1; i <= 64; i++) b.push(i & 0xff);
+    // SOF0 (len 17): precision 8, height, width, 3 components
+    b.push(0xff, 0xc0, 0x00, 0x11, 0x08,
+        (height >> 8) & 0xff, height & 0xff,
+        (width >> 8) & 0xff, width & 0xff, 0x03,
+        0x01, 0x22, 0x00, 0x02, 0x11, 0x01, 0x03, 0x11, 0x01);
+    // SOS (len 12) + a few entropy bytes without 0xFF
+    b.push(0xff, 0xda, 0x00, 0x0c, 0x03, 0x01, 0x00, 0x02, 0x11, 0x03, 0x11, 0x00, 0x3f, 0x00);
+    b.push(0x12, 0x34, 0x56, 0x78, 0x9a, 0xab, 0xcd);
+    b.push(0xff, 0xd9); // EOI
+    return new Uint8Array(b);
+}
+
 export interface UploadMeta {
     enrollmentId: string;
     studentId: string;

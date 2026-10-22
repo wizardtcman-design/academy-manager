@@ -14,7 +14,7 @@ import { handleApiRequest } from '../src/handlers/api';
 import { sha256Hex } from '../src/crypto';
 import { D1Shim } from './helpers/d1-shim';
 import {
-    makeEnv, makePdf, makeSignaturePng, uploadRequest,
+    makeEnv, makePdf, makeSignaturePng, makeJpegFixture, uploadRequest,
     sha256Bytes, bearer, ACADEMY_A, ACADEMY_B
 } from './helpers/fixtures';
 
@@ -558,5 +558,155 @@ describe('duplicate + expiry guarantees', () => {
         const token = body.data.link.split('?start=')[1];
         expect((db.get('SELECT telegram_link_hash FROM students WHERE id = ?', 'stu-gen') as any).telegram_link_hash)
             .toBe(await sha256Hex(token));
+    });
+});
+
+// ============================================================
+// 6. Final PDF composition — the academy seal and the manager
+//    signature are REALLY PAINTED INTO the signed PDF, not
+//    merely stored next to it.
+// ============================================================
+
+/** Reads the body of object `num` from a latin1-decoded PDF (no false match on N0). */
+function objectBody(pdfText: string, num: number): string | null {
+    const m = new RegExp(`(?:^|[^\\d])(${num} 0 obj)`).exec(pdfText);
+    if (!m) return null;
+    const start = m.index + (m[0].startsWith(`${num}`) ? 0 : 1);
+    const end = pdfText.indexOf('endobj', start);
+    return end > 0 ? pdfText.slice(start, end + 6) : pdfText.slice(start);
+}
+
+describe('final PDF composition: seal + manager signature embedded (not just stored)', () => {
+    let env: Env; let db: D1Shim;
+
+    beforeAll(() => {
+        ({ env, db } = makeEnv());
+        insertStudent(db, 'stu-comp', ACADEMY_A); // no telegram chat: composition tests stay focused
+    });
+
+    async function uploadWithImages(
+        enrollmentId: string,
+        token: string,
+        seal: Uint8Array | null,
+        signature: Uint8Array | null
+    ): Promise<Response> {
+        const form = new FormData();
+        form.append('meta', JSON.stringify({
+            contractId: '', enrollmentId, studentId: 'stu-comp',
+            tokenHash: await sha256Hex(token), publicToken: token,
+            expiresAtEpoch: Date.now() + 86400000, signerName: 'مدیر', signerTitle: 'مدیر آموزشگاه',
+            enrollment: { info: {}, student: { fullName: 'هنرجو تست', phone: '09121234567', nationalCode: '0079123456' } }
+        }));
+        form.append('file', new Blob([makePdf(21) as BlobPart], { type: 'application/pdf' }), 'c.pdf');
+        if (seal) form.append('seal', new Blob([seal as BlobPart], { type: 'image/png' }), 'seal.png');
+        if (signature) form.append('signature', new Blob([signature as BlobPart], { type: 'image/png' }), 'sig.png');
+        return handleContractsApi(
+            new Request(`${BASE}/api/contracts`, { method: 'POST', body: form, headers: bearer(ACADEMY_A) }),
+            env, URL_('/api/contracts'));
+    }
+
+    async function signAndDownloadSignedPdf(token: string): Promise<{ bytes: Uint8Array; shaHeader: string | null }> {
+        const open = await handleSignRoute(
+            new Request(`${BASE}/sign/${token}/open`, { method: 'POST' }), env, URL_(`/sign/${token}/open`));
+        expect(open.status).toBe(200);
+        const sign = await signContract(env, token);
+        const body = await sign.json() as any;
+        expect(sign.status, JSON.stringify(body)).toBe(200);
+
+        // The exact bytes the student receives from the signing link:
+        const res = await handleSignRoute(
+            new Request(`${BASE}/sign/${token}/pdf`), env, URL_(`/sign/${token}/pdf`));
+        expect(res.status).toBe(200);
+        const bytes = new Uint8Array(await res.arrayBuffer());
+        return { bytes, shaHeader: res.headers.get('X-Content-SHA256') };
+    }
+
+    it('a PNG seal + manager signature become real /Seal + /MSig image XObjects painted on the page', async () => {
+        const TOKEN = 'stage2-comp-png-token-aaaaaaaaaa';
+        const sealPng = makeSignaturePng(4, 4);
+        const sigPng = makeSignaturePng(4, 4);
+        const up = await uploadWithImages('enr-comp-png', TOKEN, sealPng, sigPng);
+        expect(up.status).toBe(200);
+
+        const { bytes, shaHeader } = await signAndDownloadSignedPdf(TOKEN);
+        const pdf = new TextDecoder('latin1').decode(bytes);
+
+        // 1) the page resources reference dedicated XObjects
+        const sealRef = /\/Seal (\d+) 0 R/.exec(pdf);
+        const msigRef = /\/MSig (\d+) 0 R/.exec(pdf);
+        const sigRef = /\/Sig (\d+) 0 R/.exec(pdf);
+        expect(sealRef).toBeTruthy();
+        expect(msigRef).toBeTruthy();
+        expect(sigRef).toBeTruthy();
+
+        // 2) the content stream really PAINTS them (Do operators with a transform)
+        expect(pdf).toContain('/Seal Do');
+        expect(pdf).toContain('/MSig Do');
+        expect(pdf).toMatch(/\/Sig Do/);
+
+        // 3) each reference resolves to a real RGB image object with an alpha mask
+        const sealObj = objectBody(pdf, Number(sealRef![1]));
+        const msigObj = objectBody(pdf, Number(msigRef![1]));
+        expect(sealObj).toContain('/Subtype /Image');
+        expect(sealObj).toContain('/ColorSpace /DeviceRGB');
+        expect(sealObj).toContain('/Width 4 /Height 4');
+        expect(sealObj).toMatch(/\/SMask (\d+) 0 R/);
+        expect(msigObj).toContain('/Subtype /Image');
+        expect(msigObj).toContain('/ColorSpace /DeviceRGB');
+        const sealMaskNum = Number(/\/SMask (\d+) 0 R/.exec(sealObj!)![1]);
+        expect(objectBody(pdf, sealMaskNum)).toContain('/Subtype /Image');
+
+        // 4) the flattened RGB stream is really present (not a dangling dict)
+        const sealPayload = sealObj!.slice(sealObj!.indexOf('stream') + 6);
+        expect(sealPayload.length).toBeGreaterThan(10);
+
+        // 5) download integrity: header hash == real bytes hash
+        expect(shaHeader).toBe(await sha256Bytes(bytes));
+
+        // 6) the seal digest recorded at upload equals the uploaded PNG
+        const row = db.get('SELECT seal_sha256, sig_sha256 FROM contracts WHERE enrollment_id = ?', 'enr-comp-png') as any;
+        expect(row.seal_sha256).toBe(await sha256Bytes(sealPng));
+        expect(row.sig_sha256).toBe(await sha256Bytes(sigPng));
+    });
+
+    it('a JPEG seal + manager signature are embedded BYTE-FOR-BYTE (DCTDecode, verbatim)', async () => {
+        const TOKEN = 'stage2-comp-jpg-token-bbbbbbbbbb';
+        const sealJpeg = makeJpegFixture(6, 5);
+        const sigJpeg = makeJpegFixture(8, 3);
+        const up = await uploadWithImages('enr-comp-jpg', TOKEN, sealJpeg, sigJpeg);
+        expect(up.status).toBe(200);
+        const row = db.get('SELECT seal_key, seal_width, seal_height FROM contracts WHERE enrollment_id = ?', 'enr-comp-jpg') as any;
+        expect(row.seal_key).toContain('/seal.jpg');
+        expect(row.seal_width).toBe(6);
+        expect(row.seal_height).toBe(5);
+
+        const { bytes } = await signAndDownloadSignedPdf(TOKEN);
+        const pdf = new TextDecoder('latin1').decode(bytes);
+
+        // the exact uploaded JPEG payload is inside the final PDF (verbatim)
+        const toLatin = (b: Uint8Array) => new TextDecoder('latin1').decode(b);
+        expect(pdf).toContain(toLatin(sealJpeg));
+        expect(pdf).toContain(toLatin(sigJpeg));
+
+        // painted on the page and declared as DCTDecode images
+        expect(pdf).toContain('/Seal Do');
+        expect(pdf).toContain('/MSig Do');
+        expect(pdf).toMatch(/\/Filter \/DCTDecode/);
+    });
+
+    it('without an uploaded seal nothing seal-like is painted (no silent placeholders)', async () => {
+        const TOKEN = 'stage2-comp-none-token-cccccccccc';
+        const up = await uploadWithImages('enr-comp-none', TOKEN, null, null);
+        expect(up.status).toBe(200);
+
+        const { bytes } = await signAndDownloadSignedPdf(TOKEN);
+        const pdf = new TextDecoder('latin1').decode(bytes);
+        expect(pdf).not.toContain('/Seal Do');
+        expect(pdf).not.toContain('/MSig Do');
+        expect(pdf).not.toMatch(/\/Seal \d+ 0 R/);
+        expect(pdf).not.toMatch(/\/MSig \d+ 0 R/);
+        // the student signature itself is still there
+        expect(pdf).toMatch(/\/Sig \d+ 0 R/);
+        expect(pdf).toMatch(/\/Sig Do/);
     });
 });
