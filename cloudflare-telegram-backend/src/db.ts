@@ -635,32 +635,56 @@ export class AcademyDatabase {
         return this.strict ? [] : memoryLogs.slice(0, limit);
     }
 
+    // ------------------------------------------------------------
+    // Settings are PER ACADEMY without a schema change: rows are stored
+    // under the namespaced key "<academyId>:<key>" so two academies can
+    // never overwrite or read each other's contact info. Reads fall back
+    // to the legacy unprefixed row so data written before this change
+    // (single-tenant deployments) keeps working. Writes are always
+    // namespaced, so a tenant can never clobber a global/other row.
+    // ------------------------------------------------------------
+    private scopedSettingKey(key: string): string {
+        return `${this.academyId}:${key}`;
+    }
+
     async getSetting(key: string, defaultValue: string = ''): Promise<string> {
         if (this.db) {
             try {
-                const stmt = this.db.prepare('SELECT value FROM academy_settings WHERE key = ?').bind(key);
-                const record = await stmt.first<{ value: string }>();
-                return record?.value ?? defaultValue;
+                const record = await this.db
+                    .prepare('SELECT value FROM academy_settings WHERE key = ?')
+                    .bind(this.scopedSettingKey(key))
+                    .first<{ value: string }>();
+                if (record?.value !== undefined && record?.value !== null) return record.value;
+                // Legacy fallback: settings written before per-academy scoping.
+                const legacy = await this.db
+                    .prepare('SELECT value FROM academy_settings WHERE key = ?')
+                    .bind(key)
+                    .first<{ value: string }>();
+                if (legacy?.value !== undefined && legacy?.value !== null) return legacy.value;
+                return defaultValue;
             } catch (e) {
                 console.warn('[DB] D1 getSetting failed:', e);
             }
         }
-        return (this.strict ? undefined : memorySettings.get(key)) || defaultValue;
+        return (this.strict ? undefined : memorySettings.get(this.scopedSettingKey(key)))
+            ?? (this.strict ? undefined : memorySettings.get(key))
+            ?? defaultValue;
     }
 
     async setSetting(key: string, value: string): Promise<void> {
         const now = Date.now();
+        const scoped = this.scopedSettingKey(key);
         if (this.db) {
             try {
                 await this.db.prepare(`
                     INSERT INTO academy_settings (key, value, updated_at_epoch)
                     VALUES (?, ?, ?)
                     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at_epoch = excluded.updated_at_epoch
-                `).bind(key, value, now).run();
+                `).bind(scoped, value, now).run();
             } catch (e) {
                 console.warn('[DB] D1 setSetting failed:', e);
             }
         }
-        if (!this.strict) memorySettings.set(key, value);
+        if (!this.strict) memorySettings.set(scoped, value);
     }
 }

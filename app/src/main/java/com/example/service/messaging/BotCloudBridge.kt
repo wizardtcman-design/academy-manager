@@ -166,6 +166,22 @@ class BotCloudBridge(private val context: Context) {
             JSONObject().put("summaries", summaryPayload)
         ).first
 
+        // Push the academy's public contact info so the bot menu "تماس با آموزشگاه"
+        // shows the academy's REAL name/phone/address — never hardcoded defaults.
+        // Keys match what the Worker reads (getSetting) and are stored per academy.
+        // Credentials (bot token, API secret, SMS key, app-lock PIN) never leave the device.
+        val settingsPayload = JSONObject().apply {
+            put("academy_name", settings.academyName.trim())
+            put("currency_unit", settings.currencyUnit.trim())
+            if (settings.phone.isNotBlank()) put("phone", settings.phone.trim())
+            if (settings.address.isNotBlank()) put("address", settings.address.trim())
+        }
+        val settingsOk = postJson(
+            settings,
+            "/api/sync/settings",
+            settingsPayload
+        ).first
+
         // Publish all future reminders so the server can send them with the app closed
         val now = System.currentTimeMillis()
         val reminderPayload = JSONArray()
@@ -197,7 +213,7 @@ class BotCloudBridge(private val context: Context) {
         // Pull links the students created in the bot back into Room
         val linked = pullTelegramLinks(students)
 
-        val ok = studentsOk && installmentsOk && summariesOk && remindersOk
+        val ok = studentsOk && installmentsOk && summariesOk && remindersOk && settingsOk
         val msg = buildString {
             append(if (ok) "همگام‌سازی سرور انجام شد" else "همگام‌سازی ناقص بود")
             append(" · هنرجو: ${students.size}")

@@ -464,17 +464,40 @@ async function handleInstallments(bot: TelegramBotClient, db: AcademyDatabase, s
     });
 }
 
-// 🧾 Receipts Handler
+// 🧾 Receipts Handler — itemized from the academy's own pushed installment data.
+// Every installment marked paid IS a receipt (amount + paid date + course);
+// it is read from D1 with the student's own id only, never another student's.
 async function handleReceipts(bot: TelegramBotClient, db: AcademyDatabase, student: StudentRecord, chatId: string) {
-    const summary = await db.getFinancialSummary(student.id);
-    const currency = await db.getSetting('currency_unit', 'تومان');
+    const [summary, installments, currency] = await Promise.all([
+        db.getFinancialSummary(student.id),
+        db.getInstallmentsForStudent(student.id),
+        db.getSetting('currency_unit', 'تومان')
+    ]);
     const totalPaid = summary?.total_paid || 0;
 
-    const res = `🧾 <b>رسیدهای پرداخت</b>\n` +
+    const paid = (installments || []).filter((i) => i.is_paid === 1);
+
+    let res = `🧾 <b>رسیدهای پرداخت</b>\n` +
         `━━━━━━━━━━━━━━━━━━━\n` +
         `👤 <b>هنرجو:</b> ${student.full_name}\n` +
-        `💰 کل مبالغ واریز شده: <b>${totalPaid.toLocaleString()} ${currency}</b>\n\n` +
-        `📄 رسیدهای تفصیلی شما در اپلیکیشن آموزشگاه ثبت شده و پس از ثبت هر تراکنش مستقیماً ارسال می‌گردد.`;
+        `💰 کل مبالغ واریز شده: <b>${totalPaid.toLocaleString()} ${currency}</b>\n`;
+
+    if (paid.length > 0) {
+        res += `\n<b>پرداخت‌های ثبت‌شده (${paid.length} مورد):</b>\n`;
+        paid.forEach((inst, idx) => {
+            const numStr = inst.total_installments > 0 ? `قسط ${inst.installment_number} از ${inst.total_installments}` : `قسط ${idx + 1}`;
+            const paidAmount = inst.paid_amount > 0 ? inst.paid_amount : inst.amount;
+            const course = inst.course_title ? ` — ${inst.course_title}` : '';
+            res += `\n${idx + 1}. ✅ <b>${numStr}</b>${course}\n`;
+            res += `   💵 مبلغ: <b>${paidAmount.toLocaleString()} ${currency}</b>\n`;
+            if (inst.paid_date_shamsi) res += `   📆 تاریخ پرداخت: <b>${inst.paid_date_shamsi}</b>\n`;
+        });
+    } else {
+        res += `\nهنوز پرداختی در سامانه برای شما ثبت نشده است.\n`;
+    }
+
+    res += `\n━━━━━━━━━━━━━━━━━━━\n` +
+        `📄 رسیدهای تفصیلی و فاکتورهای هر تراکنش در اپلیکیشن آموزشگاه نگهداری می‌شود و با همگام‌سازی آموزشگاه اینجا به‌روز می‌گردد.`;
 
     await bot.sendMessage({
         chatId,
@@ -562,20 +585,30 @@ async function handleContactInfo(bot: TelegramBotClient, db: AcademyDatabase, ch
     });
 }
 
-// 🔄 Refresh Handler
+// 🔄 Refresh Handler — re-reads the student's OWN rows (identity, summary and
+// installments) as last synced by the academy; nothing from another chat or
+// tenant can ever appear here.
 async function handleRefresh(bot: TelegramBotClient, db: AcademyDatabase, student: StudentRecord, chatId: string) {
-    const refreshed = await db.getStudentById(student.id, db.academyId) || student;
-    const summary = await db.getFinancialSummary(refreshed.id);
-    const currency = await db.getSetting('currency_unit', 'تومان');
+    const [refreshed, summary, installments, currency] = await Promise.all([
+        db.getStudentById(student.id, db.academyId),
+        db.getFinancialSummary(student.id),
+        db.getInstallmentsForStudent(student.id),
+        db.getSetting('currency_unit', 'تومان')
+    ]);
+    const s = refreshed || student;
+    const paidCount = (installments || []).filter((i) => i.is_paid === 1).length;
+    const pendingCount = (installments || []).length - paidCount;
 
     const res = `🔄 <b>اطلاعات حساب کاربری شما به‌روزرسانی شد</b> ✅\n` +
         `━━━━━━━━━━━━━━━━━━━\n` +
-        `👤 <b>نام:</b> ${refreshed.full_name}\n` +
-        (refreshed.student_code ? `🆔 <b>کد هنرجویی:</b> ${refreshed.student_code}\n` : '') +
-        (refreshed.phone ? `📱 <b>تلفن:</b> ${refreshed.phone}\n` : '') +
+        `👤 <b>نام:</b> ${s.full_name}\n` +
+        (s.student_code ? `🆔 <b>کد هنرجویی:</b> ${s.student_code}\n` : '') +
+        (s.phone ? `📱 <b>تلفن:</b> ${s.phone}\n` : '') +
         `💰 <b>مانده بدهی:</b> ${(summary?.remaining_debt || 0).toLocaleString()} ${currency}\n` +
+        `📅 <b>اقساط:</b> ${installments.length} ثبت‌شده (${paidCount} پرداخت‌شده | ${pendingCount} مانده)\n` +
         `🟢 <b>وضعیت اتصال:</b> متصل و فعال\n` +
-        `━━━━━━━━━━━━━━━━━━━`;
+        `━━━━━━━━━━━━━━━━━━━\n` +
+        `💡 اطلاعات مالی شما هر بار که آموزشگاه سامانه را همگام‌سازی کند، خودکار به‌روز می‌شود.`;
 
     await bot.sendMessage({
         chatId,
