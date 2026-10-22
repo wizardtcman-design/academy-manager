@@ -7,6 +7,7 @@ import { TelegramBotClient } from '../telegram';
 import { AcademyDatabase } from '../db';
 import { ContractStore, ContractRow } from '../contracts-store';
 import { readContractFile } from './contracts-api';
+import { timingSafeEqual } from '../crypto';
 
 /** Telegram stops retrying an update after ~1 minute; finish sending before then. */
 const SEND_TIMEOUT_MS = 25_000;
@@ -48,8 +49,8 @@ export async function handleTelegramWebhook(
 
     // Verify Telegram Webhook Secret Token if configured
     if (webhookSecret) {
-        const receivedToken = request.headers.get('X-Telegram-Bot-Api-Secret-Token');
-        if (receivedToken !== webhookSecret) {
+        const receivedToken = request.headers.get('X-Telegram-Bot-Api-Secret-Token') || '';
+        if (!timingSafeEqual(receivedToken, webhookSecret)) {
             return new Response('Unauthorized Webhook Source', { status: 401 });
         }
     }

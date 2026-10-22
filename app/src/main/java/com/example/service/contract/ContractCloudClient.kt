@@ -214,12 +214,17 @@ class ContractCloudClient(
                     return Result(false, error = "دانلود ناقص است ($size از $expected بایت)", code = 0)
                 }
                 val headSha = res.header("X-Content-SHA256")?.trim()?.lowercase().orEmpty()
-                verifyDownload(
-                    partial,
-                    expectedSha256 = expectedSha256.ifBlank { headSha }
-                )?.let { problem ->
-                    partial.delete()
-                    return Result(false, error = problem, code = 0)
+                // 1) Prefer the recorded row hash (end-to-end integrity, 2.7.2+).
+                // 2) Rows uploaded before 2.7.2 store a legacy non-standard
+                //    digest; the server re-hashes the bytes it actually serves
+                //    into X-Content-SHA256, so accept that as the fallback.
+                val rowProblem = verifyDownload(partial, expectedSha256)
+                if (rowProblem != null) {
+                    val headerOk = headSha.isNotEmpty() && verifyDownload(partial, headSha) == null
+                    if (!headerOk) {
+                        partial.delete()
+                        return Result(false, error = rowProblem, code = 0)
+                    }
                 }
                 if (target.exists()) target.delete()
                 if (!partial.renameTo(target)) {

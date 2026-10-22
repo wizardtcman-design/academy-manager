@@ -15,6 +15,7 @@ import { TelegramBotClient } from '../telegram';
 import { AcademyDatabase } from '../db';
 import { ContractStore } from '../contracts-store';
 import { readContractFileForStudent } from './contracts-api';
+import { timingSafeEqual } from '../crypto';
 
 // JSON response helper
 function jsonResponse<T>(data: ApiResponse<T>, status: number = 200): Response {
@@ -51,7 +52,8 @@ function authenticate(request: Request, env: Env): boolean {
     const authHeader = request.headers.get('Authorization') || '';
     if (!authHeader.startsWith('Bearer ')) return false;
     const token = authHeader.replace('Bearer ', '').trim();
-    return Boolean(env.API_SECRET_KEY && token === env.API_SECRET_KEY.trim());
+    // Constant-time compare: the bearer key guards PDF delivery too.
+    return Boolean(env.API_SECRET_KEY) && timingSafeEqual(token, env.API_SECRET_KEY.trim());
 }
 
 export async function handleApiRequest(

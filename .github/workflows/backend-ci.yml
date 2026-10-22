@@ -1,10 +1,17 @@
 name: Backend CI
+
 on:
   push:
-    branches: [main]
+    branches: [main, 'sec/**']
     paths:
       - 'cloudflare-telegram-backend/**'
+      - '.github/workflows/backend-ci.yml'
+  pull_request:
+    paths:
+      - 'cloudflare-telegram-backend/**'
+      - '.github/workflows/backend-ci.yml'
   workflow_dispatch:
+
 jobs:
   check:
     runs-on: ubuntu-latest
@@ -16,11 +23,15 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
-      - run: npm ci
+      - name: Install dependencies
+        run: npm ci
       - name: Typecheck worker
         run: npx tsc -p tsconfig.json --noEmit
+      - name: Worker security tests (vitest + real SQLite schema/migrations)
+        run: npm test
       - name: Bundle dry-run
         run: npx wrangler deploy --dry-run --outdir /tmp/worker-build
+
   android-check:
     runs-on: ubuntu-latest
     steps:

@@ -11,7 +11,7 @@
 
 import { Env } from '../types';
 import { ContractStore } from '../contracts-store';
-import { sha256Hex, maskPhone, maskNational, timingSafeEqual } from '../crypto';
+import { sha256Hex, sha256HexBytes, sha256HexLegacyLatin1, maskPhone, maskNational, timingSafeEqual } from '../crypto';
 
 const MAX_PDF_BYTES = 6 * 1024 * 1024;
 const MAX_SEAL_BYTES = 512 * 1024;
@@ -80,15 +80,17 @@ export function bearerAuthorized(request: Request, env: Env): boolean {
 export async function handleContractsApi(request: Request, env: Env, url: URL): Promise<Response> {
     const store = new ContractStore(env);
 
-    // Health only reports readiness, never data.
+    // Health only reports readiness, never data. Error details are reserved
+    // for the academy key holder: an anonymous caller gets booleans only.
     if (url.pathname === '/api/contracts/health') {
         const health = await store.health();
+        const authed = bearerAuthorized(request, env);
         return ok('contract service', {
             version: 'contracts-1',
             d1: health.d1,
             r2: health.r2,
             r2Enabled: Boolean(env.CONTRACTS),
-            error: health.error || '',
+            error: authed ? (health.error || '') : '',
             academyScoped: (env.ACADEMY_IDS || '').includes(','),
             time: new Date().toISOString()
         });
@@ -142,7 +144,9 @@ export async function handleContractsApi(request: Request, env: Env, url: URL): 
         }
 
         const pdfBytes = new Uint8Array(await (file as any).arrayBuffer());
-        const pdfSha = await sha256Hex(new TextDecoder('latin1').decode(pdfBytes));
+        // Standard SHA-256 over the raw bytes: the app verifies exactly this
+        // digest, so hashing through a latin1 string would break every PDF.
+        const pdfSha = await sha256HexBytes(pdfBytes);
         const info = meta.enrollment?.info || {};
         const student = meta.enrollment?.student || {};
         const verifySeed = `${student.phone || ''}|${student.nationalCode || ''}|${enrollmentId}`;
@@ -164,7 +168,7 @@ export async function handleContractsApi(request: Request, env: Env, url: URL): 
             if (!png && !jpeg) return undefined;
             if (bytes.length > MAX_SEAL_BYTES) return undefined;
             const dims = imageDims(bytes);
-            const sha = await sha256Hex(new TextDecoder('latin1').decode(bytes));
+            const sha = await sha256HexBytes(bytes);
             const key = `contracts/${academyId}/${enrollmentId}/${slug}.${png ? 'png' : 'jpg'}`;
             await putContractFile(env, key, bytes, sha, academyId);
             return { key, sha256: sha, width: dims.width, height: dims.height, png };
@@ -316,7 +320,10 @@ export async function handleContractsApi(request: Request, env: Env, url: URL): 
                 'Content-Type': 'application/pdf',
                 'Content-Disposition': `attachment; filename="${wantSigned ? 'signed' : 'contract'}-${row.id.slice(0, 8)}.pdf"`,
                 'Cache-Control': 'no-store',
-                'X-Content-Type-Options': 'nosniff'
+                'X-Content-Type-Options': 'nosniff',
+                // Standard SHA-256 of the exact bytes served: lets the app verify
+                // the download even when the row still carries a legacy hash.
+                'X-Content-SHA256': file.sha256 || ''
             }
         });
     }
@@ -342,17 +349,22 @@ export async function handleContractsApi(request: Request, env: Env, url: URL): 
     }
 
     if (request.method === 'GET' && match[2] === '/pdf') {
+        // Legacy app path (bearer-protected, tenant-scoped): served through the
+        // same ownership/integrity reader as the per-student route, so a wrong
+        // key can never read a file and a damaged file is never served.
         const signed = url.searchParams.get('signed') === '1';
         if (signed && row.status !== 'SIGNED') return fail('این قرارداد هنوز امضا نشده است.', 409);
         const key = signed ? row.signed_pdf_key : row.pdf_key;
-        if (!key) return fail('فایلی برای این قرارداد ثبت نشده است.', 404);
-        const bytes = await readContractFile(env, key);
-        if (!bytes) return fail('فایل در فضای ذخیره‌سازی نیست.', 404);
-        return new Response(bytes, {
+        const sha = signed ? row.signed_pdf_sha256 : row.pdf_sha256;
+        const file = await readContractFileForStudent(env, academyId, row.id, row.student_id, key, sha);
+        if (!file.bytes) return fail(file.error || 'فایل در فضای ذخیره‌سازی نیست.', file.status);
+        return new Response(file.bytes, {
             headers: {
                 'Content-Type': 'application/pdf',
                 'Content-Disposition': `attachment; filename="${signed ? 'signed' : 'contract'}-${row.id.slice(0, 8)}.pdf"`,
-                'Cache-Control': 'no-store'
+                'Cache-Control': 'no-store',
+                'X-Content-Type-Options': 'nosniff',
+                'X-Content-SHA256': file.sha256 || ''
             }
         });
     }
@@ -419,7 +431,7 @@ export async function readContractFile(env: Env, key: string): Promise<Uint8Arra
     const row = await env.DB!.prepare('SELECT content FROM contract_files WHERE key = ?').bind(key).first<any>();
     if (row?.content) {
         // Legacy rows: the whole file in one BLOB, written before chunking.
-        return toBinary(row.content);
+        return await verifyStoredBytes(env, key, meta, toBinary(row.content));
     }
     const { results } = await env.DB!.prepare(
         'SELECT part, content FROM contract_file_chunks WHERE file_key = ? ORDER BY part ASC'
@@ -439,11 +451,23 @@ export async function readContractFile(env: Env, key: string): Promise<Uint8Arra
         offset += p.length;
     }
     // Verify against the recorded SHA-256 (end-to-end integrity of the download).
-    if (meta.sha256) {
-        const got = await sha256Hex(new TextDecoder('latin1').decode(out));
+    return await verifyStoredBytes(env, key, meta, out);
+}
+
+/**
+ * Accepts stored bytes only when they match the recorded digest. Rows written
+ * from 2.7.2 on carry the standard SHA-256 of the raw bytes; rows written by
+ * older builds carry the legacy latin1 digest. Anything else is refused.
+ */
+async function verifyStoredBytes(env: Env, key: string, meta: { sha256?: string } | null, out: Uint8Array): Promise<Uint8Array | null> {
+    if (meta?.sha256) {
+        const got = await sha256HexBytes(out);
         if (got !== meta.sha256) {
-            console.error(`contract file hash mismatch key=${key} expected=${meta.sha256.slice(0, 12)} got=${got.slice(0, 12)}`);
-            return null;
+            const legacy = await sha256HexLegacyLatin1(out);
+            if (legacy !== meta.sha256) {
+                console.error(`contract file hash mismatch key=${key} expected=${meta.sha256.slice(0, 12)} got=${got.slice(0, 12)}`);
+                return null;
+            }
         }
     }
     // A PDF must start and end with its trailer, otherwise it is truncated.
@@ -487,7 +511,7 @@ export async function writeContractFile(
     const joined = new Uint8Array(total);
     let off = 0;
     for (const p of back) { joined.set(p, off); off += p.length; }
-    const backSha = await sha256Hex(new TextDecoder('latin1').decode(joined));
+    const backSha = await sha256HexBytes(joined);
     if (backSha !== sha256) {
         await env.DB!.prepare('DELETE FROM contract_file_chunks WHERE file_key = ?').bind(key).run();
         throw new Error('contract file verification failed after write');
@@ -505,7 +529,7 @@ export async function writeContractFile(
  */
 export async function readContractFileForStudent(
     env: Env, academyId: string, contractId: string, studentId: string, key: string, expectedSha: string
-): Promise<{ bytes: Uint8Array | null; error: string; status: number }> {
+): Promise<{ bytes: Uint8Array | null; error: string; status: number; sha256?: string }> {
     if (!key) return { bytes: null, error: 'فایلی ثبت نشده است.', status: 404 };
     const { results } = await env.DB!.prepare(
         'SELECT id, student_id, pdf_key, signed_pdf_key FROM contracts WHERE academy_id = ? AND student_id = ? AND id = ?'
@@ -518,9 +542,14 @@ export async function readContractFileForStudent(
     }
     const bytes = await readContractFile(env, key);
     if (!bytes) return { bytes: null, error: 'فایل سالم نیست یا ناقص است.', status: 409 };
+    // The digest the caller recorded must match; legacy rows (pre-2.7.2) carry
+    // the latin1 digest and are accepted only through that exact fallback.
     if (expectedSha) {
-        const got = await sha256Hex(new TextDecoder('latin1').decode(bytes));
-        if (got !== expectedSha) return { bytes: null, error: 'فایل با نسخه ثبت‌شده مطابقت ندارد.', status: 409 };
+        const got = await sha256HexBytes(bytes);
+        if (got !== expectedSha) {
+            const legacy = await sha256HexLegacyLatin1(bytes);
+            if (legacy !== expectedSha) return { bytes: null, error: 'فایل با نسخه ثبت‌شده مطابقت ندارد.', status: 409 };
+        }
     }
-    return { bytes, error: '', status: 200 };
+    return { bytes, error: '', status: 200, sha256: await sha256HexBytes(bytes) };
 }

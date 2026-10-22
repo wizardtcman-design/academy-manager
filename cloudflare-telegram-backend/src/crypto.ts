@@ -8,6 +8,27 @@ export async function sha256Hex(value: string): Promise<string> {
     return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
+/**
+ * Standard SHA-256 over RAW bytes.
+ * Binary files (PDF/PNG/JPEG) must NEVER be hashed through a latin1/UTF-8
+ * string: every byte >= 0x80 would grow into two UTF-8 bytes and the stored
+ * digest would not match what the Android app computes for the same file.
+ */
+export async function sha256HexBytes(bytes: Uint8Array | ArrayBuffer): Promise<string> {
+    const data = bytes instanceof ArrayBuffer ? new Uint8Array(bytes) : bytes;
+    const digest = await crypto.subtle.digest('SHA-256', data as unknown as BufferSource);
+    return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+/**
+ * Legacy compatibility digest: builds written before 2.7.2 hashed the file as
+ * a latin1 string (UTF-8 encoded), which corrupted every high byte. Kept ONLY
+ * to keep pre-existing stored files readable until the one-time backfill.
+ */
+export async function sha256HexLegacyLatin1(bytes: Uint8Array): Promise<string> {
+    return sha256Hex(new TextDecoder('latin1').decode(bytes));
+}
+
 export function randomToken(bytes = 32): string {
     const buf = new Uint8Array(bytes);
     crypto.getRandomValues(buf);
