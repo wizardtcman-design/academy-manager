@@ -32,7 +32,8 @@ export default {
         if (url.pathname === '/sign' || url.pathname.startsWith('/sign/')) {
             return await handleSignRoute(request, env, url);
         }
-        if (url.pathname.startsWith('/api/contracts')) {
+        if (url.pathname.startsWith('/api/contracts') || url.pathname.startsWith('/api/students/') ||
+            url.pathname.startsWith('/api/admin/')) {
             return await handleContractsApi(request, env, url);
         }
 

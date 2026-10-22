@@ -123,7 +123,10 @@ export class AcademyDatabase {
 
         if (this.db) {
             try {
-                const stmt = this.db.prepare('SELECT * FROM students WHERE telegram_chat_id = ?').bind(chatId);
+                // Scoped by academy: one chat can only ever see its own tenant.
+                const stmt = this.db
+                    .prepare('SELECT * FROM students WHERE telegram_chat_id = ? AND academy_id = ? LIMIT 1')
+                    .bind(chatId, this.academyId);
                 const record = await stmt.first<StudentRecord>();
                 if (record && this.kv) {
                     await this.kv.put(`chat:${chatId}`, record.id, { expirationTtl: 3600 });

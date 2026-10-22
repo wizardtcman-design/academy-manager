@@ -214,7 +214,13 @@ class ContractManager(private val context: Context) {
     /** Pulls the remote status; when signed, downloads the final PDF once. */
     suspend fun refresh(enrollment: Enrollment): Contract? = withContext(Dispatchers.IO) {
         val contract = dao.getByEnrollment(enrollment.id) ?: return@withContext null
-        if (contract.remoteId.isBlank() || contract.isSigned) return@withContext contract
+        if (contract.remoteId.isBlank()) return@withContext contract
+        // A signed contract is final, but its final file may still be missing
+        // (app closed mid-download). Fetch it once more instead of giving up.
+        if (contract.isSigned) {
+            val existing = contract.localSignedPdfPath.takeIf { it.isNotBlank() }?.let(::File)
+            if (existing != null && existing.exists() && existing.length() > 0) return@withContext contract
+        }
         val client = ContractCloudClient.fromSettings(db.settingsDao().getSettingsDirect())
         val res = client.getContract(contract.remoteId)
         if (!res.ok || res.data == null) return@withContext contract
@@ -227,14 +233,20 @@ class ContractManager(private val context: Context) {
         )
         if (remoteStatus == "SIGNED") {
             val target = File(context.filesDir, "contracts_signed/Contract_${contract.id.take(8)}.pdf")
-            val dl = client.downloadSignedPdf(contract.remoteId, target)
+            val dl = client.downloadContractForStudent(
+                studentId = contract.studentId,
+                contractId = contract.remoteId,
+                signed = true,
+                target = target,
+                expectedSha256 = data.optString("signedPdfSha256")
+            )
             updated = updated.copy(
                 status = "SIGNED",
                 signedAtEpoch = data.optLong("signedAtEpoch", System.currentTimeMillis()),
                 signedAtShamsi = data.optString("signedAtShamsi").ifBlank {
                     PersianDateUtil.currentShamsiString()
                 },
-                localSignedPdfPath = if (dl.ok && dl.data != null) dl.data.absolutePath else "",
+                localSignedPdfPath = downloadedSignedPath(dl, context, contract.id),
                 lastError = if (dl.ok) "" else "دریافت PDF امضاشده ناموفق: ${dl.error}"
             )
         } else if (remoteStatus.isNotBlank() && remoteStatus != "EXPIRED") {
@@ -244,6 +256,17 @@ class ContractManager(private val context: Context) {
         }
         dao.updateContract(updated)
         updated
+    }
+
+    /** The freshly checked file, or an earlier copy that is still complete. */
+    private fun downloadedSignedPath(
+        dl: ContractCloudClient.Result<File>,
+        context: android.content.Context,
+        contractId: String
+    ): String {
+        if (dl.ok && dl.data != null) return dl.data.absolutePath
+        val earlier = File(context.filesDir, "contracts_signed/Contract_${contractId.take(8)}.pdf")
+        return if (earlier.exists() && earlier.length() > 0) earlier.absolutePath else ""
     }
 
     suspend fun revoke(enrollment: Enrollment): IssueResult = withContext(Dispatchers.IO) {

@@ -7,6 +7,7 @@ import { TelegramBotClient } from '../telegram';
 import { AcademyDatabase } from '../db';
 import { ContractStore, ContractRow } from '../contracts-store';
 import { readContractFile } from './contracts-api';
+import { timingSafeEqual } from '../crypto';
 
 /** Telegram stops retrying an update after ~1 minute; finish sending before then. */
 const SEND_TIMEOUT_MS = 25_000;
@@ -48,8 +49,8 @@ export async function handleTelegramWebhook(
 
     // Verify Telegram Webhook Secret Token if configured
     if (webhookSecret) {
-        const receivedToken = request.headers.get('X-Telegram-Bot-Api-Secret-Token');
-        if (receivedToken !== webhookSecret) {
+        const receivedToken = request.headers.get('X-Telegram-Bot-Api-Secret-Token') || '';
+        if (!timingSafeEqual(receivedToken, webhookSecret)) {
             return new Response('Unauthorized Webhook Source', { status: 401 });
         }
     }
@@ -72,7 +73,7 @@ export async function handleTelegramWebhook(
         // Bounded processing: never let Telegram see a timeout and retry the update,
         // which would send the same reply twice.
         await Promise.race([
-            processUpdate(update, bot, db, env),
+            processUpdate(update, bot, db, env, academyId),
             new Promise<void>((resolve) => setTimeout(resolve, SEND_TIMEOUT_MS))
         ]);
     } catch (err: any) {
@@ -86,11 +87,16 @@ export async function handleTelegramWebhook(
     });
 }
 
+function dbAcademy(env: Env): string {
+    return (env.ACADEMY_IDS || 'default').split(',')[0].trim() || 'default';
+}
+
 async function processUpdate(
     update: TelegramUpdate,
     bot: TelegramBotClient,
     db: AcademyDatabase,
-    env: Env
+    env: Env,
+    academyOfBot = dbAcademy(env)
 ): Promise<void> {
     const message = update.message || update.edited_message;
     if (!message || !message.chat) return;
@@ -133,7 +139,7 @@ async function processUpdate(
         }
 
         // Student ID passed via Deep Link!
-        const student = await db.getStudentById(studentIdParam);
+        const student = await db.getStudentById(studentIdParam, db.academyId);
         if (!student) {
             const errorMsg = `❌ هنرجوی گرامی، شناسه کاربری (<code>${studentIdParam}</code>) در سیستم آموزشگاه یافت نشد.\nلطفاً با مدیریت آموزشگاه تماس حاصل فرمایید.`;
             await bot.sendMessage({ chatId, text: errorMsg, parseMode: 'HTML' });
@@ -210,7 +216,7 @@ async function processUpdate(
     } else if (normalized === '🧾 رسیدهای من' || normalized.includes('رسیدهای من') || normalized === '/receipts') {
         await handleReceipts(bot, db, student, chatId);
     } else if (normalized === '📄 قرارداد من' || normalized.includes('قرارداد من') || normalized === '/contract') {
-        await handleContract(bot, env, student, chatId);
+        await handleContract(bot, env, student, chatId, academyOfBot);
     } else if (normalized === '📞 تماس با آموزشگاه' || normalized.includes('تماس با آموزشگاه') || normalized === '/contact') {
         await handleContactInfo(bot, db, chatId);
     } else if (normalized === '🔄 بروزرسانی اطلاعات' || normalized.includes('بروزرسانی') || normalized === '/refresh') {
@@ -444,8 +450,12 @@ async function handleReceipts(bot: TelegramBotClient, db: AcademyDatabase, stude
 }
 
 // 📄 Contract Handler
-async function handleContract(bot: TelegramBotClient, env: Env, student: StudentRecord, chatId: string) {
-    const academyId = (env.ACADEMY_IDS || 'default').split(',')[0].trim() || 'default';
+async function handleContract(bot: TelegramBotClient, env: Env, student: StudentRecord, chatId: string, academyIdIn: string) {
+    // The academy of the bot that received the message: never another tenant's rows.
+    let academyId = academyIdIn;
+    if (!academyId || (env.ACADEMY_IDS || 'default').split(',').map((s) => s.trim()).indexOf(academyId) < 0) {
+        academyId = 'default';
+    }
     const store = new ContractStore(env);
     let rows: ContractRow[] = [];
     try {
@@ -515,7 +525,7 @@ async function handleContactInfo(bot: TelegramBotClient, db: AcademyDatabase, ch
 
 // 🔄 Refresh Handler
 async function handleRefresh(bot: TelegramBotClient, db: AcademyDatabase, student: StudentRecord, chatId: string) {
-    const refreshed = await db.getStudentById(student.id) || student;
+    const refreshed = await db.getStudentById(student.id, db.academyId) || student;
     const summary = await db.getFinancialSummary(refreshed.id);
     const currency = await db.getSetting('currency_unit', 'تومان');
 

@@ -1,0 +1,65 @@
+name: Backend CI
+
+on:
+  push:
+    branches: [main, 'sec/**']
+    paths:
+      - 'cloudflare-telegram-backend/**'
+      - '.github/workflows/backend-ci.yml'
+  pull_request:
+    paths:
+      - 'cloudflare-telegram-backend/**'
+      - '.github/workflows/backend-ci.yml'
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: cloudflare-telegram-backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install dependencies
+        run: npm ci
+      - name: Typecheck worker
+        run: npx tsc -p tsconfig.json --noEmit
+      - name: Worker security tests (vitest + real SQLite schema/migrations)
+        run: npm test
+      - name: Bundle dry-run
+        run: npx wrangler deploy --dry-run --outdir /tmp/worker-build
+
+  android-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Android SDK
+        run: |
+          SDK="$RUNNER_TEMP/android-sdk"
+          CMDLINE="$RUNNER_TEMP/cmdline-tools"
+          curl -sSLo "$RUNNER_TEMP/cmdline-tools.zip" https://dl.google.com/android/repository/commandlinetools-linux-13114758_latest.zip
+          mkdir -p "$CMDLINE" "$SDK"
+          unzip -q "$RUNNER_TEMP/cmdline-tools.zip" -d "$CMDLINE"
+          mv "$CMDLINE/cmdline-tools" "$CMDLINE/latest"
+          yes | "$CMDLINE/latest/bin/sdkmanager" --sdk_root="$SDK" --licenses >/dev/null || true
+          "$CMDLINE/latest/bin/sdkmanager" --sdk_root="$SDK" "platform-tools" "platforms;android-36" "build-tools;36.0.0"
+          echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK" >> "$GITHUB_ENV"
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.3.1'
+      - name: Create debug keystore
+        run: |
+          rm -f debug.keystore
+          keytool -genkeypair -keystore debug.keystore -storepass android -keypass android -alias androiddebugkey -dname "CN=Android Debug,O=Android,C=US" -keyalg RSA -keysize 2048 -validity 10000
+      - name: Compile (no publish)
+        run: gradle compileDebugKotlin --stacktrace
+      - name: Unit tests (pure JVM — contract download verification, validation, credential hashing)
+        run: gradle testDebugUnitTest --tests "com.example.ValidationUtilTest" --tests "com.example.CredentialHasherTest" --tests "com.example.ContractDownloadVerifyTest" --stacktrace

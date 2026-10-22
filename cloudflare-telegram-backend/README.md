@@ -156,7 +156,24 @@ All endpoints except `/api/status` require header: `Authorization: Bearer <API_S
   }
   ```
 
-### 4. Data Synchronization
+### 4. Contracts (signed PDFs)
+
+| Method | Path | Who |
+|---|---|---|
+| `GET` | `/api/contracts/health` | public (readiness only, no data) |
+| `POST` | `/api/contracts` | academy bearer key |
+| `GET` | `/api/contracts/:id` | academy bearer key |
+| `GET` | `/api/students/:studentId/contracts/:contractId/pdf` | academy bearer key **+ the contract must belong to that student** |
+| `GET` | `/api/students/:studentId/contracts/:contractId/signed-pdf` | same, only when SIGNED |
+| `POST` | `/api/send-document` | academy bearer key, the chat must be the one that student linked |
+| `GET` | `/api/admin/backup` | academy bearer key, read-only manifest (contracts, events, file links) |
+| `GET` | `/api/admin/file?key=&sha256=&from=&count=` | academy bearer key, paged base64 copy of one stored file |
+
+Signing links (`/sign?s=...`) are bearer tokens: random, stored only as SHA-256,
+expire, and stop working after signing. A PDF is served only when its SHA-256 and
+its `%PDF-`…`%%EOF` structure match what was recorded.
+
+### 5. Data Synchronization
 - **`POST /api/sync/student`**: Syncs single student details (id, name, phone, chat ID, status).
 - **`POST /api/sync/students-batch`**: Batch syncs students array.
 - **`POST /api/sync/installments`**: Batch syncs installment schedules.

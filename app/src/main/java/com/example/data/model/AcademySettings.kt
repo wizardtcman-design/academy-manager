@@ -157,6 +157,27 @@ data class AcademySettings(
         "updatedAt" to updatedAt
     )
 
+    /**
+     * Fields that stay on this device only. Firestore is shared with the
+     * manager's Google account and must never hold a credential that unlocks
+     * every contract (API key) or the bot itself (bot token).
+     */
+    /** Cloud copy: everything except this device's credentials, which stay local. */
+    fun toCloudMap(): Map<String, Any> = toMap() - setOf(
+        "telegramApiSecret", "telegramBotToken", "rubikaBotToken", "smsApiKey"
+    )
+
+    /** Re-attaches this device's secrets to settings that came from the cloud. */
+    fun withLocalSecrets(local: AcademySettings?): AcademySettings {
+        if (local == null) return this
+        return copy(
+            telegramApiSecret = telegramApiSecret.ifBlank { local.telegramApiSecret },
+            telegramBotToken = telegramBotToken.ifBlank { local.telegramBotToken },
+            rubikaBotToken = rubikaBotToken.ifBlank { local.rubikaBotToken },
+            smsApiKey = smsApiKey.ifBlank { local.smsApiKey }
+        )
+    }
+
     companion object {
         fun fromMap(map: Map<String, Any?>): AcademySettings {
             return AcademySettings(
@@ -172,6 +193,8 @@ data class AcademySettings(
                 telegramBotUsername = map["telegramBotUsername"] as? String ?: "",
                 telegramEnabled = map["telegramEnabled"] as? Boolean ?: false,
                 telegramWorkerUrl = map["telegramWorkerUrl"] as? String ?: "",
+                // Never restored from the cloud: a leaked document would hand
+                // out the key to every contract. The key is entered in the app.
                 telegramApiSecret = (map["telegramApiSecret"] as? String)?.takeIf { it.isNotBlank() } ?: "",
                 telegramUseWorker = map["telegramUseWorker"] as? Boolean ?: false,
                 rubikaEnabled = map["rubikaEnabled"] as? Boolean ?: false,

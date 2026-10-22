@@ -10,6 +10,7 @@ import okhttp3.RequestBody.Companion.asRequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
 import java.io.File
+import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
 
 /**
@@ -173,6 +174,72 @@ class ContractCloudClient(
         }
     }
 
+    /**
+     * Secure per-student download: the server checks that the contract BELONGS
+     * to this student and that the file hash matches the one recorded when it
+     * was signed. The file is written to a temporary name first and only moved
+     * into place when it is a complete PDF, so a cut-off download never looks
+     * like a saved contract.
+     */
+    fun downloadContractForStudent(
+        studentId: String,
+        contractId: String,
+        signed: Boolean,
+        target: File,
+        expectedSha256: String = ""
+    ): Result<File> {
+        if (!isConfigured()) return Result(false, error = "اتصال تنظیم نشده است.")
+        val kind = if (signed) "signed-pdf" else "pdf"
+        val partial = File(target.parentFile, target.name + ".part")
+        return try {
+            val req = Request.Builder()
+                .url(endpoint("/api/students/${java.net.URLEncoder.encode(studentId, "UTF-8")}" +
+                    "/contracts/${java.net.URLEncoder.encode(contractId, "UTF-8")}/$kind"))
+                .addHeader("Authorization", "Bearer $apiSecret")
+                .get()
+                .build()
+            http.newCall(req).execute().use { res ->
+                if (!res.isSuccessful) {
+                    val text = res.body?.string().orEmpty()
+                    return Result(false, error = "HTTP ${res.code} ${text.take(120)}", code = res.code)
+                }
+                val expected = res.header("Content-Length")?.toLongOrNull() ?: -1L
+                partial.parentFile?.mkdirs()
+                partial.outputStream().use { out ->
+                    res.body?.byteStream()?.copyTo(out) ?: return Result(false, error = "فایل خالی")
+                }
+                val size = partial.length()
+                if (expected >= 0 && size != expected) {
+                    partial.delete()
+                    return Result(false, error = "دانلود ناقص است ($size از $expected بایت)", code = 0)
+                }
+                val headSha = res.header("X-Content-SHA256")?.trim()?.lowercase().orEmpty()
+                // 1) Prefer the recorded row hash (end-to-end integrity, 2.7.2+).
+                // 2) Rows uploaded before 2.7.2 store a legacy non-standard
+                //    digest; the server re-hashes the bytes it actually serves
+                //    into X-Content-SHA256, so accept that as the fallback.
+                val rowProblem = verifyDownload(partial, expectedSha256)
+                if (rowProblem != null) {
+                    val headerOk = headSha.isNotEmpty() && verifyDownload(partial, headSha) == null
+                    if (!headerOk) {
+                        partial.delete()
+                        return Result(false, error = rowProblem, code = 0)
+                    }
+                }
+                if (target.exists()) target.delete()
+                if (!partial.renameTo(target)) {
+                    partial.copyTo(target, overwrite = true)
+                    partial.delete()
+                }
+                Result(true, target)
+            }
+        } catch (e: Exception) {
+            partial.delete()
+            Log.w(tag, "download failed: ${e.message}")
+            Result(false, error = e.message ?: "خطای دانلود")
+        }
+    }
+
     /** Revokes a link so it can no longer be opened (status stays signed if signed). */
     fun revoke(remoteId: String): Result<JSONObject> {
         if (!isConfigured()) return Result(false, error = "اتصال تنظیم نشده است.")
@@ -194,6 +261,41 @@ class ContractCloudClient(
     }
 
     companion object {
+        /**
+         * Null when the file is a complete PDF whose SHA-256 matches the
+         * recorded one; otherwise a Persian reason. A partial file fails
+         * BOTH checks: it has no %%EOF trailer and a different hash.
+         */
+        fun verifyDownload(file: File, expectedSha256: String): String? {
+            if (!file.exists() || file.length() == 0L) return "فایل خالی است"
+            val size = file.length()
+            val head = file.inputStream().use { input -> ByteArray(5).also { input.read(it) } }
+            if (!head.contentEquals("%PDF-".toByteArray())) return "فایل PDF معتبر نیست"
+            val tailSize = minOf(1024L, size).toInt()
+            val tailBytes = java.io.RandomAccessFile(file, "r").use { raf ->
+                raf.seek(size - tailSize)
+                ByteArray(tailSize).also { raf.readFully(it) }
+            }
+            if (!String(tailBytes, Charsets.ISO_8859_1).contains("%%EOF")) {
+                return "فایل ناقص است (پایان PDF پیدا نشد)"
+            }
+            val wanted = expectedSha256.trim().lowercase()
+            if (wanted.isNotEmpty()) {
+                val digest = MessageDigest.getInstance("SHA-256")
+                file.inputStream().use { input ->
+                    val buf = ByteArray(64 * 1024)
+                    while (true) {
+                        val n = input.read(buf)
+                        if (n < 0) break
+                        digest.update(buf, 0, n)
+                    }
+                }
+                val sha = digest.digest().joinToString("") { "%02x".format(it) }
+                if (sha != wanted) return "فایل با نسخه ثبت‌شده مطابقت ندارد"
+            }
+            return null
+        }
+    
         fun fromSettings(settings: AcademySettings?): ContractCloudClient =
             ContractCloudClient(
                 baseUrl = settings?.telegramWorkerUrl.orEmpty(),

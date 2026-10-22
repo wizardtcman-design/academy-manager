@@ -594,7 +594,8 @@ class FirebaseManager {
     suspend fun saveSettingsToFirestore(settings: AcademySettings): Boolean {
         if (!isReady()) return false
         return try {
-            settingsCollection()?.document(settings.id)?.set(settings.toMap(), SetOptions.merge())?.await()
+            // Tokens and API keys are device-only: never written to Firestore.
+            settingsCollection()?.document(settings.id)?.set(settings.toCloudMap(), SetOptions.merge())?.await()
             true
         } catch (e: Exception) {
             Log.w(tag, "Firestore saveSettings skipped: ${e.message}")

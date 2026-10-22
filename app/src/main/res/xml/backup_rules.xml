@@ -3,4 +3,7 @@
     <!-- Older devices (API < 31): keep student data and credentials off cloud backup -->
     <exclude domain="database" path="academy_manager_database" />
     <exclude domain="sharedpref" path="academy_auth_prefs.xml" />
+    <exclude domain="file" path="contracts" />
+    <exclude domain="file" path="contracts_signed" />
+    <exclude domain="file" path="letterhead" />
 </full-backup-content>

@@ -56,7 +56,7 @@ jobs:
             -keyalg RSA -keysize 2048 -validity 10000
 
       - name: Unit tests (pure JVM)
-        run: gradle testDebugUnitTest --tests "com.example.ValidationUtilTest" --tests "com.example.CredentialHasherTest" --stacktrace
+        run: gradle testDebugUnitTest --tests "com.example.ValidationUtilTest" --tests "com.example.CredentialHasherTest" --tests "com.example.ContractDownloadVerifyTest" --stacktrace
 
       - name: Build signed release APK
         env:
