@@ -453,6 +453,9 @@ fun StudentsScreen(
             onPayInstallment = { st, inst ->
                 installmentToPay = Pair(st, inst)
             },
+            onSetPaymentMethod = { inst, method ->
+                viewModel.setInstallmentPaymentMethod(inst, method)
+            },
             onTestReminder = { inst ->
                 viewModel.triggerTestNotification(inst)
             },

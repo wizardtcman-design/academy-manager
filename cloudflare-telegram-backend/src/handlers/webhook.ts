@@ -505,6 +505,31 @@ async function handleReceipts(bot: TelegramBotClient, db: AcademyDatabase, stude
         parseMode: 'HTML',
         replyMarkup: TelegramBotClient.getStudentReplyKeyboard()
     });
+
+    // Stage 4: the PRINTABLE version of the same receipts — the very same
+    // rows, rendered as PDF — is delivered here so the student can view or
+    // print them. Only the student's OWN receipts are ever attached.
+    try {
+        const receiptsMod = await import('../receipts');
+        const rows = await receiptsMod.getReceiptsForStudent(db, db.academyId, student.id);
+        const printable = rows.filter((r) => !r.is_reversed).slice(0, 5);
+        if (printable.length > 0) {
+            const academyName = await db.getSetting('academy_name', 'آموزشگاه');
+            const academyPhone = await db.getSetting('phone', '');
+            const currency = await db.getSetting('currency_unit', 'تومان');
+            for (const r of printable) {
+                const pdf = receiptsMod.composeReceiptPdfFor(r, academyName, academyPhone, currency);
+                await bot.sendDocument({
+                    chatId,
+                    fileName: `receipt-${(r.transaction_id || r.id).slice(0, 12)}.pdf`,
+                    bytes: pdf,
+                    caption: `🧾 رسید ${r.transaction_id || r.id.slice(0, 8)} — ${r.amount.toLocaleString()} ${currency}`
+                });
+            }
+        }
+    } catch (e) {
+        console.error('receipt PDF attach failed:', e);
+    }
 }
 
 // 📄 Contract Handler

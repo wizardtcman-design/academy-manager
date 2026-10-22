@@ -77,6 +77,16 @@ data class AcademySettings(
     val appLockEnabled: Boolean = false,
     val appLockPin: String = "",
     val appLockTimeoutMinutes: Int = 5,
+    // Stage 4: online payment gateway (NOTHING is activated until the manager
+    // connects a provider; keys stay on this device and go ONLY to the worker)
+    val gatewayProvider: String = "",            // "" or "none" = no gateway connected
+    val gatewayMerchantId: String = "",
+    val gatewayApiKey: String = "",
+    // Stage 4: first-installment receipt ordering
+    val receiptFirstPaymentDelayMinutes: Int = 10,
+    val receiptFirstPaymentRequiresContract: Boolean = true,
+    // Stage 4: epoch of the last confirmed-online-payment pull (auto-sync)
+    val onlinePaymentsPulledAtEpoch: Long = 0L,
     // Backup settings
     val lastBackupEpoch: Long = 0L,
     val autoBackupFrequency: String = "WEEKLY", // DAILY, WEEKLY, MONTHLY
@@ -104,6 +114,11 @@ data class AcademySettings(
         "address" to address,
         "logoUrl" to logoUrl,
         "currencyUnit" to currencyUnit,
+        "gatewayProvider" to gatewayProvider,
+        "gatewayMerchantId" to gatewayMerchantId,
+        // NOTE: gatewayApiKey intentionally NOT in toMap() — the cloud copy never carries the key.
+        "receiptFirstPaymentDelayMinutes" to receiptFirstPaymentDelayMinutes,
+        "receiptFirstPaymentRequiresContract" to receiptFirstPaymentRequiresContract,
         "reminderDaysBefore" to reminderDaysBefore,
         "smsTemplate" to smsTemplate,
         "telegramBotUsername" to telegramBotUsername,

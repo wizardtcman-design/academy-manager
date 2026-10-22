@@ -9,6 +9,7 @@ import { handleScheduledEvent } from './handlers/cron';
 import { handleContractsApi } from './handlers/contracts-api';
 import { handleSignRoute } from './handlers/sign';
 import { handleTelegramConnect } from './handlers/telegram-connect';
+import { handlePayRoute } from './handlers/pay';
 
 export default {
     async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -42,6 +43,13 @@ export default {
         //    to the bot does not need a redeploy.
         if (url.pathname.startsWith('/api/bot/')) {
             return await handleTelegramConnect(request, env, url);
+        }
+
+        // 0.c Online payment link entry (/pay/<token>) and provider callback.
+        //     Opening a link never confirms a payment — verification is
+        //     always a fresh server-to-server gateway check.
+        if (url.pathname === '/pay' || url.pathname.startsWith('/pay/')) {
+            return await handlePayRoute(request, env, url);
         }
 
         // 1. Route Telegram Webhook

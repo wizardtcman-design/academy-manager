@@ -48,6 +48,7 @@ import androidx.compose.material.icons.filled.Receipt
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.Undo
 import androidx.compose.ui.unit.sp
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Badge
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -113,6 +114,7 @@ fun StudentDetailsDialog(
     onDeleteStudent: (Student) -> Unit,
     onNewEnrollment: (Student) -> Unit,
     onPayInstallment: (Student, Installment) -> Unit,
+    onSetPaymentMethod: (Installment, String) -> Unit = { _, _ -> },
     onTestReminder: (Installment) -> Unit = {},
     onCancelReminder: (String) -> Unit = {},
     onViewReceipt: (Payment) -> Unit,
@@ -664,6 +666,25 @@ private fun InstallmentsTab(
 
                         if (inst.status != "PAID") {
                             Spacer(modifier = Modifier.height(8.dp))
+                            // Stage 4: the manager chooses HOW this installment is
+                            // paid — online (payment link in reminders) / card-to-card / POS.
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                listOf(
+                                    "ONLINE" to "آنلاین",
+                                    "TRANSFER" to "کارت‌به‌کارت",
+                                    "POS" to "کارتخوان"
+                                ).forEach { (code, label) ->
+                                    FilterChip(
+                                        selected = inst.paymentMethod == code,
+                                        onClick = { onSetPaymentMethod(inst, code) },
+                                        label = { Text(label, style = MaterialTheme.typography.labelSmall) }
+                                    )
+                                }
+                            }
+                            Spacer(modifier = Modifier.height(6.dp))
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.End,

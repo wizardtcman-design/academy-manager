@@ -200,6 +200,12 @@ fun SettingsScreen(
     var phone by remember(settings) { mutableStateOf(settings?.phone ?: "") }
     var address by remember(settings) { mutableStateOf(settings?.address ?: "") }
     var currencyUnit by remember(settings) { mutableStateOf(settings?.currencyUnit ?: "تومان") }
+    // Stage 4: gateway + receipt ordering
+    var gatewayProvider by remember(settings) { mutableStateOf(settings?.gatewayProvider ?: "") }
+    var gatewayMerchantId by remember(settings) { mutableStateOf(settings?.gatewayMerchantId ?: "") }
+    var gatewayApiKey by remember(settings) { mutableStateOf(settings?.gatewayApiKey ?: "") }
+    var receiptDelayText by remember(settings) { mutableStateOf((settings?.receiptFirstPaymentDelayMinutes ?: 10).toString()) }
+    var receiptRequiresContract by remember(settings) { mutableStateOf(settings?.receiptFirstPaymentRequiresContract ?: true) }
 
     // Theme & Appearance States
     // 0 ظاهر، 1 آموزشگاه و بانک، 2 پیام‌ها، 3 امنیت، 4 داده‌ها
@@ -1208,6 +1214,86 @@ fun SettingsScreen(
                 }
             }
 
+            // Stage 4: online payment gateway + receipt ordering
+            if (showAcademy) Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(18.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    Text(
+                        text = "درگاه پرداخت و رسیدها",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                Text(
+                    text = "هیچ درگاهی به‌صورت پیش‌فرض فعال نیست. پس از انتخاب و ثبت‌نام در سرویس پرداخت، نام سرویس و کلیدها را اینجا وارد کنید. کلیدها فقط روی گوشی شما و سرور اختصاصی خودتان ذخیره می‌شوند.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.height(10.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    listOf("" to "غیرفعال (پیش‌فرض)").forEach { (code, label) ->
+                        FilterChip(
+                            selected = gatewayProvider.isBlank() || gatewayProvider == "none",
+                            onClick = { gatewayProvider = "" },
+                            label = { Text(label, style = MaterialTheme.typography.bodySmall) }
+                        )
+                    }
+                }
+                OutlinedTextField(
+                    value = gatewayProvider,
+                    onValueChange = { gatewayProvider = it.trim() },
+                    label = { Text("شناسه سرویس درگاه (بعد از تأیید مدیر)") },
+                    supportingText = { Text("خالی یا none = غیرفعال. تا تأیید شما هیچ درگاهی فعال نمی‌شود.") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Spacer(Modifier.height(6.dp))
+                OutlinedTextField(
+                    value = gatewayMerchantId,
+                    onValueChange = { gatewayMerchantId = it.trim() },
+                    label = { Text("شناسه پذیرنده (Merchant ID)") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Spacer(Modifier.height(6.dp))
+                OutlinedTextField(
+                    value = gatewayApiKey,
+                    onValueChange = { gatewayApiKey = it.trim() },
+                    label = { Text("کلید API درگاه") },
+                    visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                Spacer(Modifier.height(12.dp))
+                Text("رسید قسط اول (پرداخت همزمان با ثبت‌نام):", style = MaterialTheme.typography.bodyMedium)
+                Spacer(Modifier.height(4.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Switch(checked = receiptRequiresContract, onCheckedChange = { receiptRequiresContract = it })
+                    Spacer(Modifier.width(8.dp))
+                    Text("فقط بعد از امضای قرارداد و ارسال PDF ارسال شود", style = MaterialTheme.typography.bodySmall)
+                }
+                Spacer(Modifier.height(4.dp))
+                OutlinedTextField(
+                    value = receiptDelayText,
+                    onValueChange = { receiptDelayText = it.filter { c -> c.isDigit() }.take(4) },
+                    label = { Text("تأخیر ارسال رسید پس از قرارداد (دقیقه)") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                }
+            }
+            Spacer(Modifier.height(16.dp))
+
             // Save Settings Button
             Button(
                 onClick = {
@@ -1224,6 +1310,11 @@ fun SettingsScreen(
                         phone = phone,
                         address = address,
                         currencyUnit = currencyUnit,
+                        gatewayProvider = gatewayProvider.trim(),
+                        gatewayMerchantId = gatewayMerchantId.trim(),
+                        gatewayApiKey = gatewayApiKey.trim(),
+                        receiptFirstPaymentDelayMinutes = receiptDelayText.toIntOrNull()?.coerceIn(1, 1440) ?: 10,
+                        receiptFirstPaymentRequiresContract = receiptRequiresContract,
                         themeName = selectedThemeName,
                         themeMode = selectedThemeMode,
                         reminder7DaysEnabled = remind7Days,

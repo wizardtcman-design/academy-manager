@@ -25,7 +25,8 @@ export function loadMigrations(): string[] {
         '0005_file_chunks.sql',
         '0006_token_links.sql',
         '0007_file_content_nullable.sql',
-        '0008_link_hash_index.sql'
+        '0008_link_hash_index.sql',
+        '0009_payments_receipts.sql'
     ];
     return [readFileSync(base, 'utf8'), ...names.map((n) => readFileSync(dir + n, 'utf8'))];
 }

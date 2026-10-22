@@ -141,6 +141,8 @@ export interface ReminderRecord {
     retry_count: number;
     created_at_epoch: number;
     sent_at_epoch: number;
+    /** Set by migration 0001; carried for SMS queuing. */
+    student_phone?: string;
 }
 
 export interface MessageLogRecord {
@@ -184,6 +186,8 @@ export interface ScheduleReminderRequest {
     message: string;
     scheduledEpoch: number;
     scheduledTimeStr?: string;
+    /** Carried so cron can queue the SMS copy (migration 0001 column). */
+    studentPhone?: string;
 }
 
 export interface SyncStudentRequest {
@@ -202,4 +206,72 @@ export interface SyncStudentRequest {
      */
     telegramLinkHash?: string;
     telegramLinkExpires?: number;
+}
+
+// ============================================================
+// Stage 4: payment receipts & online payment transactions
+// (migration 0009; every row is scoped by academy_id)
+// ============================================================
+
+export interface PaymentReceiptRecord {
+    id: string;
+    academy_id: string;
+    student_id: string;
+    installment_id: string;
+    installment_number: number;
+    course_title: string;
+    transaction_id: string;
+    tracking_number: string;
+    amount: number;
+    student_name: string;
+    paid_date_shamsi: string;
+    paid_time: string;
+    payment_method: string;
+    destination_account: string;
+    notes: string;
+    is_reversed: number;
+    reversal_reason: string;
+    source: string;              // manual | online
+    receipt_json: string;        // verbatim app payload snapshot
+    send_status: string;         // PENDING | WAITING_CONTRACT | QUEUED | SENT | FAILED | REVERSED | REVERSAL_QUEUED | REVERSED_NOTIFIED
+    send_reason: string;         // payment | after-contract | online
+    eligible_at_epoch: number;
+    attempts: number;
+    last_attempt_epoch: number;
+    telegram_message_id: string;
+    last_error: string;
+    created_at_epoch: number;
+    updated_at_epoch: number;
+    /** Joined for rendering (n of N); not a stored column. */
+    total_installments_hint?: number;
+}
+
+export interface PaymentTxnRecord {
+    id: string;
+    academy_id: string;
+    student_id: string;
+    installment_id: string;
+    amount: number;
+    status: string;              // PENDING | PAID | FAILED | CANCELED | EXPIRED | AMOUNT_MISMATCH
+    provider: string;
+    provider_ref: string;
+    link_token_hash: string;
+    redirect_url: string;
+    link_created_at_epoch: number;
+    expires_at_epoch: number;
+    paid_amount: number;
+    verified_payload: string;
+    verified_at_epoch: number;
+    receipt_id: string;
+    created_at_epoch: number;
+    updated_at_epoch: number;
+}
+
+export interface PaymentLinkTokenRecord {
+    token: string;               // raw capability token (needed to re-send the SAME link)
+    token_hash: string;
+    academy_id: string;
+    order_id: string;
+    expires_at_epoch: number;
+    created_at_epoch: number;
 }

@@ -451,6 +451,17 @@ export async function deliverSignedPdfToStudent(env: Env, row: ContractRow, byte
     if (sent.ok) {
         await store.finishContractDelivery(row.academy_id, row.id, 'SIGNED_PDF_TELEGRAM', true);
         await store.event(row.academy_id, row.id, { type: 'PDF_SENT', detail: 'telegram:auto-after-sign' });
+        // Stage 4 ordering guarantee: the first-installment receipt (paid at
+        // registration) is released ONLY here — after the contract PDF has
+        // REALLY reached the student's chat — and then after the configured
+        // delay. Held receipts that were never paid simply do not exist.
+        try {
+            const { releaseFirstReceiptsAfterContract } = await import('../receipts');
+            const released = await releaseFirstReceiptsAfterContract(env, db, row.academy_id, row.student_id);
+            if (released > 0) {
+                await store.event(row.academy_id, row.id, { type: 'RECEIPT_RELEASED', detail: `first-payment receipts queued after contract: ${released}` });
+            }
+        } catch (_) { /* receipt release must never break contract delivery */ }
         await db.logMessage({
             id: crypto.randomUUID(),
             student_id: row.student_id,

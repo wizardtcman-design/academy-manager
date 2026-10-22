@@ -41,7 +41,7 @@ import com.example.data.model.Student
         com.example.data.model.PendingStudentDeletion::class,
         com.example.data.model.Contract::class
     ],
-    version = 6,
+    version = 7,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -131,6 +131,22 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * v7 (Stage 4): per-installment payment method (online / card-to-card /
+         * POS) plus the gateway and receipt-ordering settings fields.
+         */
+        val MIGRATION_6_7 = object : androidx.room.migration.Migration(6, 7) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `installments` ADD COLUMN `paymentMethod` TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE `academy_settings` ADD COLUMN `gatewayProvider` TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE `academy_settings` ADD COLUMN `gatewayMerchantId` TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE `academy_settings` ADD COLUMN `gatewayApiKey` TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE `academy_settings` ADD COLUMN `receiptFirstPaymentDelayMinutes` INTEGER NOT NULL DEFAULT 10")
+                db.execSQL("ALTER TABLE `academy_settings` ADD COLUMN `receiptFirstPaymentRequiresContract` INTEGER NOT NULL DEFAULT 1")
+                db.execSQL("ALTER TABLE `academy_settings` ADD COLUMN `onlinePaymentsPulledAtEpoch` INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
         fun getDatabase(context: Context): AppDatabase {
             return INSTANCE ?: synchronized(this) {
                 val instance = Room.databaseBuilder(
@@ -140,7 +156,7 @@ abstract class AppDatabase : RoomDatabase() {
                 )
                     // Real migrations only. Never wipe the academy data silently:
                     // a missing migration is a build-time bug, not a user problem.
-                    .addMigrations(MIGRATION_4_5, MIGRATION_5_6)
+                    .addMigrations(MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7)
                     .build()
                 INSTANCE = instance
                 instance

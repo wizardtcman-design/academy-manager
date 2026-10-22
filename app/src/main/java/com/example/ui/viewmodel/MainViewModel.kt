@@ -386,6 +386,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /**
+     * Stage 4: the manager's payment-method choice per installment
+     * (ONLINE / TRANSFER / POS). ONLINE installments get a dedicated payment
+     * link in their Telegram reminders; the field travels with the regular
+     * installment sync.
+     */
+    fun setInstallmentPaymentMethod(installment: com.example.data.model.Installment, method: String) {
+        viewModelScope.launch {
+            academyRepository.updateInstallmentPaymentMethod(installment, method)
+            com.example.service.SyncWorker.syncNow(getApplication())
+        }
+    }
+
     // --- Payments ---
     fun recordPayment(
         studentId: String,
@@ -418,6 +431,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             if (res.isSuccess) {
                 val p = res.getOrNull()
                 showMessage("پرداخت با موفقیت ثبت شد (کد تراکنش: ${p?.transactionId}).")
+                // Stage 4: the recorded payment IS the receipt — push it now so
+                // Telegram delivery starts immediately (idempotent server-side).
+                com.example.service.SyncWorker.syncNow(getApplication())
                 onComplete(true, p, null)
             } else {
                 onComplete(false, null, res.exceptionOrNull()?.message)
@@ -434,6 +450,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val res = academyRepository.reversePayment(payment, reason)
             if (res.isSuccess) {
                 showMessage("تراکنش ${payment.transactionId} لغو و مانده قسط اصلاح شد.")
+                // Stage 4: reversal state travels with the same payment id — the
+                // worker blocks/annotates the receipt accordingly.
+                com.example.service.SyncWorker.syncNow(getApplication())
                 onComplete(true, null)
             } else {
                 onComplete(false, res.exceptionOrNull()?.message)

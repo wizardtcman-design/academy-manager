@@ -9,13 +9,16 @@ import {
     ScheduleReminderRequest,
     SyncStudentRequest,
     InstallmentRecord,
-    FinancialSummaryRecord
+    FinancialSummaryRecord,
+    PaymentTxnRecord
 } from '../types';
 import { TelegramBotClient, academyBotToken, academyBotUsername, academyWebhookSecret, allowedAcademies } from '../telegram';
 import { AcademyDatabase } from '../db';
 import { ContractStore } from '../contracts-store';
 import { readContractFileForStudent } from './contracts-api';
 import { timingSafeEqual, sha256Hex, randomToken } from '../crypto';
+import { ingestPayments, PaymentInput } from '../receipts';
+import { createInstallmentPaymentLink, verifyTransaction } from '../gateway';
 
 // JSON response helper
 function jsonResponse<T>(data: ApiResponse<T>, status: number = 200): Response {
@@ -357,7 +360,8 @@ export async function handleApiRequest(
                     error_message: '',
                     retry_count: 0,
                     created_at_epoch: now,
-                    sent_at_epoch: 0
+                    sent_at_epoch: 0,
+                    student_phone: (item as any).studentPhone || ''
                 });
                 upserted++;
             }
@@ -536,6 +540,106 @@ export async function handleApiRequest(
                 message: `خطا: ${err.message}`,
                 errorCode: 500
             }, 500);
+        }
+    }
+
+    // ============================================================
+    // Stage 4: payments — receipts, links, verification, app pull
+    // ============================================================
+
+    // Idempotent push of REAL payments recorded in the app (manual card-to-card
+    // / POS registration is the official path). Each payment becomes exactly
+    // one receipt row; re-pushing the same ids never re-sends anything.
+    if (path === '/api/sync/payments' && request.method === 'POST') {
+        try {
+            const body = await request.json() as { payments: PaymentInput[] };
+            const list = Array.isArray(body.payments) ? body.payments : [];
+            const out = await ingestPayments(env, db, academyId, list);
+            return jsonResponse({
+                success: true,
+                message: `رسیدها همگام‌سازی شد: ${out.created} جدید، ${out.updated} به‌روزرسانی، ${out.skipped} تکراری.`,
+                data: out
+            });
+        } catch (err: any) {
+            return jsonResponse({ success: false, message: `خطا در همگام‌سازی پرداخت‌ها: ${err.message}`, errorCode: 500 }, 500);
+        }
+    }
+
+    // A dedicated payment link for ONE installment of ONE student, for the
+    // exact remaining amount. Requires a CONNECTED provider (none is active
+    // until the manager connects one); refuses politely otherwise.
+    if (path === '/api/payments/link' && request.method === 'POST') {
+        try {
+            const body = await request.json() as { installmentId?: string; studentId?: string };
+            if (!body.installmentId || !body.studentId) {
+                return jsonResponse({ success: false, message: 'installmentId و studentId الزامی است.', errorCode: 400 }, 400);
+            }
+            const base = env.PUBLIC_BASE_URL || url?.origin || '';
+            const res = await createInstallmentPaymentLink(env, db, academyId, body.studentId, body.installmentId, base);
+            if (!res.ok) {
+                return jsonResponse({ success: false, message: res.reason, errorCode: res.errorCode }, res.errorCode);
+            }
+            return jsonResponse({
+                success: true,
+                message: 'لینک پرداخت اختصاصی ساخته شد.',
+                data: { orderId: res.orderId, url: res.url, amount: res.amount, reused: res.reused }
+            });
+        } catch (err: any) {
+            return jsonResponse({ success: false, message: `خطا در ساخت لینک پرداخت: ${err.message}`, errorCode: 500 }, 500);
+        }
+    }
+
+    // Server-side verification trigger (app pull or manager action). The user's
+    // claim, the redirect or the opened link NEVER verify — this runs the
+    // gateway's own verification endpoint and applies the state machine.
+    if (path === '/api/payments/verify' && request.method === 'POST') {
+        try {
+            const body = await request.json() as { orderId?: string };
+            if (!body.orderId) {
+                return jsonResponse({ success: false, message: 'orderId الزامی است.', errorCode: 400 }, 400);
+            }
+            let bot: TelegramBotClient | null = null;
+            const token = await academyBotToken(env, academyId);
+            if (token) bot = new TelegramBotClient(token);
+            const res = await verifyTransaction(env, db, academyId, body.orderId, bot);
+            if (res.state === 'PAID') {
+                return jsonResponse({
+                    success: true,
+                    message: res.alreadyPaid ? 'این پرداخت قبلاً تأیید شده است (بدون ثبت تکراری).' : 'پرداخت با موفقیت تأیید و رسید ارسال شد.',
+                    data: { state: res.state, orderId: res.orderId, amount: res.amount, ref: res.ref, alreadyPaid: res.alreadyPaid, receiptSent: res.receiptSent }
+                });
+            }
+            return jsonResponse({
+                success: false,
+                message: res.error || `وضعیت پرداخت: ${res.state}`,
+                data: { state: res.state, orderId: res.orderId }
+            });
+        } catch (err: any) {
+            return jsonResponse({ success: false, message: `خطا در تأیید پرداخت: ${err.message}`, errorCode: 500 }, 500);
+        }
+    }
+
+    // The app pulls confirmed ONLINE payments and applies them into Room
+    // automatically (insert Payment + update installment) — no manual re-entry.
+    if (path === '/api/payments/confirmed' && request.method === 'GET') {
+        try {
+            const since = Number(new URL(request.url).searchParams.get('since') || '0');
+            const txns = await db.listConfirmedTxnsSince(academyId, Number.isFinite(since) ? since : 0);
+            const data = txns.map((t: PaymentTxnRecord) => ({
+                orderId: t.id,
+                installmentId: t.installment_id,
+                studentId: t.student_id,
+                amount: t.paid_amount,
+                ref: t.provider_ref,
+                verifiedAtEpoch: t.verified_at_epoch
+            }));
+            return jsonResponse({
+                success: true,
+                message: `${data.length} پرداخت تأییدشده آنلاین`,
+                data: { payments: data }
+            });
+        } catch (err: any) {
+            return jsonResponse({ success: false, message: `خطا: ${err.message}`, errorCode: 500 }, 500);
         }
     }
 

@@ -799,7 +799,10 @@ class AcademyRepository(
             remainingAmount = newRemaining,
             status = newStatus,
             fullPaidDateShamsi = if (newStatus == "PAID") paymentDateShamsi else installment.fullPaidDateShamsi,
-            fullPaidDateEpoch = if (newStatus == "PAID") nowEpoch else installment.fullPaidDateEpoch
+            fullPaidDateEpoch = if (newStatus == "PAID") nowEpoch else installment.fullPaidDateEpoch,
+            // Stage 4: the method the manager actually used becomes the installment's
+            // payment method (the truthful choice, synced to the worker).
+            paymentMethod = paymentMethod
         )
 
         installmentDao.updateInstallment(updatedInstallment)
@@ -850,6 +853,18 @@ class AcademyRepository(
     /**
      * Reverses/Corrects a payment transaction with mandatory reason and audit log
      */
+    /** Stage 4: records the manager's payment-method choice on the installment. */
+    suspend fun updateInstallmentPaymentMethod(
+        installment: Installment,
+        method: String
+    ): Result<Unit> = runCatching {
+        val allowed = setOf("", "ONLINE", "TRANSFER", "POS", "CASH", "BANK_DEPOSIT")
+        require(method in allowed) { "روش پرداخت نامعتبر است." }
+        val updated = installment.copy(paymentMethod = method)
+        installmentDao.updateInstallment(updated)
+        firebaseManager.saveInstallmentToFirestore(updated)
+    }
+
     suspend fun reversePayment(
         payment: Payment,
         reason: String

@@ -5,6 +5,8 @@ import android.util.Log
 import androidx.work.Constraints
 import androidx.work.CoroutineWorker
 import androidx.work.ExistingPeriodicWorkPolicy
+import androidx.work.ExistingWorkPolicy
+import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.NetworkType
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
@@ -65,6 +67,26 @@ class SyncWorker(
             WorkManager.getInstance(context).enqueueUniquePeriodicWork(
                 UNIQUE_NAME,
                 ExistingPeriodicWorkPolicy.KEEP,
+                request
+            )
+        }
+
+        /**
+         * Stage 4: one-shot sync right after a payment is recorded or reversed,
+         * so the Telegram receipt goes out immediately instead of waiting for
+         * the periodic cycle. Safe to call anywhere; no-op without network.
+         */
+        fun syncNow(context: Context) {
+            val request = OneTimeWorkRequestBuilder<SyncWorker>()
+                .setConstraints(
+                    Constraints.Builder()
+                        .setRequiredNetworkType(NetworkType.CONNECTED)
+                        .build()
+                )
+                .build()
+            WorkManager.getInstance(context).enqueueUniqueWork(
+                "academy_oneshot_sync",
+                ExistingWorkPolicy.REPLACE,
                 request
             )
         }

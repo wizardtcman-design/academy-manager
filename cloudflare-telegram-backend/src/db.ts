@@ -8,7 +8,9 @@ import {
     InstallmentRecord,
     FinancialSummaryRecord,
     ReminderRecord,
-    MessageLogRecord
+    MessageLogRecord,
+    PaymentReceiptRecord,
+    PaymentTxnRecord
 } from './types';
 
 // In-Memory Fallback Map, used ONLY by the local test server (`npm run dev`).
@@ -350,8 +352,8 @@ export class AcademyDatabase {
                     INSERT INTO installments (
                         id, academy_id, student_id, installment_number, total_installments, course_title,
                         amount, paid_amount, remaining_amount, due_date_shamsi, due_date_epoch,
-                        is_paid, paid_date_shamsi, updated_at_epoch
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        is_paid, paid_date_shamsi, payment_method, updated_at_epoch
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(id) DO UPDATE SET
                         installment_number = excluded.installment_number,
                         total_installments = excluded.total_installments,
@@ -363,11 +365,12 @@ export class AcademyDatabase {
                         due_date_epoch = excluded.due_date_epoch,
                         is_paid = excluded.is_paid,
                         paid_date_shamsi = excluded.paid_date_shamsi,
+                        payment_method = excluded.payment_method,
                         updated_at_epoch = ?
                 `).bind(
                     inst.id, this.academyId, inst.student_id, inst.installment_number, inst.total_installments, inst.course_title,
                     inst.amount, inst.paid_amount, inst.remaining_amount, inst.due_date_shamsi, inst.due_date_epoch,
-                    inst.is_paid, inst.paid_date_shamsi, now, now
+                    inst.is_paid, inst.paid_date_shamsi, (inst as any).payment_method || '', now, now
                 ));
 
                 await this.db.batch(stmts);
@@ -431,12 +434,13 @@ export class AcademyDatabase {
                     INSERT INTO reminders (
                         id, academy_id, student_id, student_name, chat_id, installment_id,
                         reminder_type, message_text, scheduled_epoch, scheduled_time_str,
-                        status, error_message, retry_count, created_at_epoch, sent_at_epoch
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        status, error_message, retry_count, created_at_epoch, sent_at_epoch, student_phone
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 `).bind(
                     reminder.id, this.academyId, reminder.student_id, reminder.student_name, reminder.chat_id, reminder.installment_id,
                     reminder.reminder_type, reminder.message_text, reminder.scheduled_epoch, reminder.scheduled_time_str,
-                    reminder.status, reminder.error_message, reminder.retry_count, reminder.created_at_epoch, reminder.sent_at_epoch
+                    reminder.status, reminder.error_message, reminder.retry_count, reminder.created_at_epoch, reminder.sent_at_epoch,
+                    (reminder as any).student_phone || ''
                 ).run();
             } catch (e) {
                 console.warn('[DB] D1 addReminder failed:', e);
@@ -686,5 +690,296 @@ export class AcademyDatabase {
             }
         }
         if (!this.strict) memorySettings.set(scoped, value);
+    }
+
+    // ============================================================
+    // Stage 4: installments lookup / post-payment update
+    // ============================================================
+
+    async getInstallmentById(id: string, academyId: string = this.academyId): Promise<InstallmentRecord | null> {
+        if (!id) return null;
+        if (this.db) {
+            try {
+                return await this.db
+                    .prepare('SELECT * FROM installments WHERE id = ? AND academy_id = ?')
+                    .bind(id, academyId)
+                    .first<InstallmentRecord>() ?? null;
+            } catch (e) {
+                console.warn('[DB] D1 getInstallmentById failed:', e);
+            }
+        }
+        if (this.strict) return null;
+        for (const list of memoryInstallments.values()) {
+            const hit = list.find((i) => i.id === id);
+            if (hit) return hit;
+        }
+        return null;
+    }
+
+    /** Post-payment update after a VERIFIED online payment (auto, no manual re-entry). */
+    async updateInstallmentAfterPayment(
+        id: string,
+        academyId: string,
+        patch: { paid_amount: number; remaining_amount: number; is_paid: number; paid_date_shamsi: string }
+    ): Promise<void> {
+        if (this.db) {
+            try {
+                await this.db.prepare(`
+                    UPDATE installments
+                    SET paid_amount = ?, remaining_amount = ?, is_paid = ?, paid_date_shamsi = ?, updated_at_epoch = ?
+                    WHERE id = ? AND academy_id = ?
+                `).bind(patch.paid_amount, patch.remaining_amount, patch.is_paid, patch.paid_date_shamsi, Date.now(), id, academyId).run();
+            } catch (e) {
+                console.warn('[DB] D1 updateInstallmentAfterPayment failed:', e);
+            }
+        }
+    }
+
+    // ============================================================
+    // Stage 4: payment receipts (one row per app payment id — dedupe by PK)
+    // ============================================================
+
+    async insertPaymentReceipt(r: PaymentReceiptRecord): Promise<void> {
+        if (this.db) {
+            try {
+                await this.db.prepare(`
+                    INSERT INTO payment_receipts (
+                        id, academy_id, student_id, installment_id, installment_number, course_title,
+                        transaction_id, tracking_number, amount, student_name, paid_date_shamsi, paid_time,
+                        payment_method, destination_account, notes, is_reversed, reversal_reason, source,
+                        receipt_json, send_status, send_reason, eligible_at_epoch, attempts,
+                        last_attempt_epoch, telegram_message_id, last_error, created_at_epoch, updated_at_epoch
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                `).bind(
+                    r.id, r.academy_id, r.student_id, r.installment_id, r.installment_number, r.course_title,
+                    r.transaction_id, r.tracking_number, r.amount, r.student_name, r.paid_date_shamsi, r.paid_time,
+                    r.payment_method, r.destination_account, r.notes, r.is_reversed, r.reversal_reason, r.source,
+                    r.receipt_json, r.send_status, r.send_reason, r.eligible_at_epoch, r.attempts,
+                    r.last_attempt_epoch, r.telegram_message_id, r.last_error, r.created_at_epoch, r.updated_at_epoch
+                ).run();
+            } catch (e) {
+                console.warn('[DB] D1 insertPaymentReceipt failed:', e);
+            }
+        }
+    }
+
+    async getPaymentReceipt(id: string, academyId: string = this.academyId): Promise<PaymentReceiptRecord | null> {
+        if (!id) return null;
+        if (this.db) {
+            try {
+                return await this.db
+                    .prepare('SELECT * FROM payment_receipts WHERE id = ? AND academy_id = ?')
+                    .bind(id, academyId)
+                    .first<PaymentReceiptRecord>() ?? null;
+            } catch (e) {
+                console.warn('[DB] D1 getPaymentReceipt failed:', e);
+            }
+        }
+        return null;
+    }
+
+    async updatePaymentReceipt(id: string, academyId: string, patch: Partial<PaymentReceiptRecord>): Promise<void> {
+        const sets: string[] = [];
+        const vals: unknown[] = [];
+        for (const [k, v] of Object.entries(patch)) {
+            sets.push(`${k} = ?`);
+            vals.push(v);
+        }
+        if (!sets.length) return;
+        sets.push('updated_at_epoch = ?');
+        vals.push(Date.now(), id, academyId);
+        if (this.db) {
+            try {
+                await this.db.prepare(`UPDATE payment_receipts SET ${sets.join(', ')} WHERE id = ? AND academy_id = ?`)
+                    .bind(...(vals as never[])).run();
+            } catch (e) {
+                console.warn('[DB] D1 updatePaymentReceipt failed:', e);
+            }
+        }
+    }
+
+    /** All receipts of one student (bot menu "رسیدهای من") — never another student's. */
+    async listPaymentReceiptsForStudent(academyId: string, studentId: string): Promise<PaymentReceiptRecord[]> {
+        if (this.db) {
+            try {
+                const { results } = await this.db.prepare(
+                    'SELECT * FROM payment_receipts WHERE academy_id = ? AND student_id = ? ORDER BY created_at_epoch DESC LIMIT 50'
+                ).bind(academyId, studentId).all<PaymentReceiptRecord>();
+                return results || [];
+            } catch (e) {
+                console.warn('[DB] D1 listPaymentReceiptsForStudent failed:', e);
+            }
+        }
+        return [];
+    }
+
+    async listPaymentReceiptsByStatus(academyId: string, status: string, studentId?: string): Promise<PaymentReceiptRecord[]> {
+        if (this.db) {
+            try {
+                const { results } = studentId
+                    ? await this.db.prepare('SELECT * FROM payment_receipts WHERE academy_id = ? AND send_status = ? AND student_id = ?')
+                        .bind(academyId, status, studentId).all<PaymentReceiptRecord>()
+                    : await this.db.prepare('SELECT * FROM payment_receipts WHERE academy_id = ? AND send_status = ?')
+                        .bind(academyId, status).all<PaymentReceiptRecord>();
+                return results || [];
+            } catch (e) {
+                console.warn('[DB] D1 listPaymentReceiptsByStatus failed:', e);
+            }
+        }
+        return [];
+    }
+
+    /** Dispatch queue: QUEUED (incl. reversal notices) whose eligibility time has passed. */
+    async listDuePaymentReceipts(academyId: string, now: number, limit: number): Promise<PaymentReceiptRecord[]> {
+        if (this.db) {
+            try {
+                const { results } = await this.db.prepare(`
+                    SELECT * FROM payment_receipts
+                    WHERE academy_id = ? AND send_status IN ('QUEUED', 'REVERSAL_QUEUED') AND eligible_at_epoch <= ?
+                    ORDER BY eligible_at_epoch ASC LIMIT ?
+                `).bind(academyId, now, limit).all<PaymentReceiptRecord>();
+                return results || [];
+            } catch (e) {
+                console.warn('[DB] D1 listDuePaymentReceipts failed:', e);
+            }
+        }
+        return [];
+    }
+
+    // ============================================================
+    // Stage 4: online payment transactions (link ledger)
+    // ============================================================
+
+    async insertPaymentTransaction(t: PaymentTxnRecord): Promise<void> {
+        if (this.db) {
+            try {
+                await this.db.prepare(`
+                    INSERT INTO payment_transactions (
+                        id, academy_id, student_id, installment_id, amount, status, provider,
+                        provider_ref, link_token_hash, redirect_url, link_created_at_epoch, expires_at_epoch,
+                        paid_amount, verified_payload, verified_at_epoch, receipt_id, created_at_epoch, updated_at_epoch
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                `).bind(
+                    t.id, t.academy_id, t.student_id, t.installment_id, t.amount, t.status, t.provider,
+                    t.provider_ref, t.link_token_hash, t.redirect_url, t.link_created_at_epoch, t.expires_at_epoch,
+                    t.paid_amount, t.verified_payload, t.verified_at_epoch, t.receipt_id, t.created_at_epoch, t.updated_at_epoch
+                ).run();
+            } catch (e) {
+                console.warn('[DB] D1 insertPaymentTransaction failed:', e);
+            }
+        }
+    }
+
+    async getPaymentTransaction(id: string, academyId: string = this.academyId): Promise<PaymentTxnRecord | null> {
+        if (!id) return null;
+        if (this.db) {
+            try {
+                return await this.db
+                    .prepare('SELECT * FROM payment_transactions WHERE id = ? AND academy_id = ?')
+                    .bind(id, academyId)
+                    .first<PaymentTxnRecord>() ?? null;
+            } catch (e) {
+                console.warn('[DB] D1 getPaymentTransaction failed:', e);
+            }
+        }
+        return null;
+    }
+
+    async updatePaymentTransaction(id: string, academyId: string, patch: Partial<PaymentTxnRecord>): Promise<void> {
+        const sets: string[] = [];
+        const vals: unknown[] = [];
+        for (const [k, v] of Object.entries(patch)) {
+            sets.push(`${k} = ?`);
+            vals.push(v);
+        }
+        if (!sets.length) return;
+        sets.push('updated_at_epoch = ?');
+        vals.push(Date.now(), id, academyId);
+        if (this.db) {
+            try {
+                await this.db.prepare(`UPDATE payment_transactions SET ${sets.join(', ')} WHERE id = ? AND academy_id = ?`)
+                    .bind(...(vals as never[])).run();
+            } catch (e) {
+                console.warn('[DB] D1 updatePaymentTransaction failed:', e);
+            }
+        }
+    }
+
+    async findActiveTxnForInstallment(academyId: string, installmentId: string, now: number): Promise<PaymentTxnRecord | null> {
+        if (this.db) {
+            try {
+                return await this.db.prepare(`
+                    SELECT * FROM payment_transactions
+                    WHERE academy_id = ? AND installment_id = ? AND status = 'PENDING' AND expires_at_epoch > ?
+                    ORDER BY created_at_epoch DESC LIMIT 1
+                `).bind(academyId, installmentId, now).first<PaymentTxnRecord>() ?? null;
+            } catch (e) {
+                console.warn('[DB] D1 findActiveTxnForInstallment failed:', e);
+            }
+        }
+        return null;
+    }
+
+    async findTxnByTokenHash(hash: string): Promise<PaymentTxnRecord | null> {
+        if (!hash) return null;
+        if (this.db) {
+            try {
+                return await this.db
+                    .prepare('SELECT * FROM payment_transactions WHERE link_token_hash = ?')
+                    .bind(hash)
+                    .first<PaymentTxnRecord>() ?? null;
+            } catch (e) {
+                console.warn('[DB] D1 findTxnByTokenHash failed:', e);
+            }
+        }
+        return null;
+    }
+
+    /** Confirmed (PAID) online payments the app has not pulled yet — auto-sync into Room. */
+    async listConfirmedTxnsSince(academyId: string, since: number, limit = 200): Promise<PaymentTxnRecord[]> {
+        if (this.db) {
+            try {
+                const { results } = await this.db.prepare(`
+                    SELECT * FROM payment_transactions
+                    WHERE academy_id = ? AND status = 'PAID' AND verified_at_epoch > ?
+                    ORDER BY verified_at_epoch ASC LIMIT ?
+                `).bind(academyId, since, limit).all<PaymentTxnRecord>();
+                return results || [];
+            } catch (e) {
+                console.warn('[DB] D1 listConfirmedTxnsSince failed:', e);
+            }
+        }
+        return [];
+    }
+
+    // ---- link token registry (raw token kept ONLY to re-send the SAME link) ----
+
+    async insertLinkToken(token: string, hash: string, academyId: string, orderId: string, expiresAt: number): Promise<void> {
+        if (this.db) {
+            try {
+                await this.db.prepare(`
+                    INSERT INTO payment_link_tokens (token, token_hash, academy_id, order_id, expires_at_epoch, created_at_epoch)
+                    VALUES (?,?,?,?,?,?)
+                `).bind(token, hash, academyId, orderId, expiresAt, Date.now()).run();
+            } catch (e) {
+                console.warn('[DB] D1 insertLinkToken failed:', e);
+            }
+        }
+    }
+
+    async getLinkTokenByHash(hash: string): Promise<string> {
+        if (!hash || !this.db) return '';
+        try {
+            const row = await this.db
+                .prepare('SELECT token, expires_at_epoch FROM payment_link_tokens WHERE token_hash = ?')
+                .bind(hash)
+                .first<{ token: string; expires_at_epoch: number }>();
+            if (!row) return '';
+            if (row.expires_at_epoch > 0 && row.expires_at_epoch < Date.now()) return '';
+            return row.token;
+        } catch (e) {
+            console.warn('[DB] D1 getLinkTokenByHash failed:', e);
+            return '';
+        }
     }
 }

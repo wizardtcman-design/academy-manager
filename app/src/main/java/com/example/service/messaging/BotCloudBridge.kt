@@ -119,21 +119,7 @@ class BotCloudBridge(private val context: Context) {
 
         val installmentPayload = JSONArray()
         for (i in installments) {
-            installmentPayload.put(JSONObject().apply {
-                put("id", i.id)
-                put("student_id", i.studentId)
-                put("installment_number", i.installmentNumber)
-                put("total_installments", i.totalInstallments)
-                put("course_title", i.courseTitle)
-                put("amount", i.amount)
-                put("paid_amount", i.paidAmount)
-                put("remaining_amount", i.remainingAmount)
-                put("due_date_shamsi", i.dueDateShamsi)
-                put("due_date_epoch", i.dueDateEpoch)
-                put("is_paid", if (i.isPaid) 1 else 0)
-                put("paid_date_shamsi", i.fullPaidDateShamsi)
-                put("updated_at_epoch", System.currentTimeMillis())
-            })
+            installmentPayload.put(com.example.data.util.PaymentSyncPayloads.installmentJson(i))
         }
         val installmentsOk = postJson(
             settings,
@@ -175,12 +161,38 @@ class BotCloudBridge(private val context: Context) {
             put("currency_unit", settings.currencyUnit.trim())
             if (settings.phone.isNotBlank()) put("phone", settings.phone.trim())
             if (settings.address.isNotBlank()) put("address", settings.address.trim())
+            // Stage 4: gateway + receipt ordering (the API key goes ONLY to the
+            // worker over HTTPS for server-side verification — never to any other
+            // service, and no endpoint ever echoes it back).
+            put("gateway_provider", settings.gatewayProvider.trim())
+            if (settings.gatewayMerchantId.isNotBlank()) put("gateway_merchant_id", settings.gatewayMerchantId.trim())
+            if (settings.gatewayApiKey.isNotBlank()) put("gateway_api_key", settings.gatewayApiKey.trim())
+            put("receipt_first_payment_delay_minutes", settings.receiptFirstPaymentDelayMinutes)
+            put("receipt_first_payment_requires_contract", if (settings.receiptFirstPaymentRequiresContract) "true" else "false")
         }
         val settingsOk = postJson(
             settings,
             "/api/sync/settings",
             settingsPayload
         ).first
+
+        // Stage 4: push the app's REAL payments — the same records shown in the
+        // "پرداخت‌ها" tab become the Telegram receipts. The push is idempotent:
+        // the worker keys each receipt by the payment id, so re-syncing can
+        // never duplicate a transaction or re-send a receipt.
+        val payments = db.paymentDao().getAllPayments().firstOrNull() ?: emptyList()
+        val paymentsOk = if (payments.isNotEmpty()) {
+            postJson(
+                settings,
+                "/api/sync/payments",
+                com.example.data.util.PaymentSyncPayloads.paymentsJson(payments)
+            ).first
+        } else true
+
+        // Stage 4: pull confirmed ONLINE payments into Room automatically —
+        // a verified gateway payment updates the installment with NO manual
+        // re-registration (idempotent by orderId).
+        val pulledOnline = pullConfirmedOnlinePayments(settings, db)
 
         // Publish all future reminders so the server can send them with the app closed
         val now = System.currentTimeMillis()
@@ -213,13 +225,14 @@ class BotCloudBridge(private val context: Context) {
         // Pull links the students created in the bot back into Room
         val linked = pullTelegramLinks(students)
 
-        val ok = studentsOk && installmentsOk && summariesOk && remindersOk && settingsOk
+        val ok = studentsOk && installmentsOk && summariesOk && remindersOk && settingsOk && paymentsOk
         val msg = buildString {
             append(if (ok) "همگام‌سازی سرور انجام شد" else "همگام‌سازی ناقص بود")
             append(" · هنرجو: ${students.size}")
             append(" · قسط: ${installments.size}")
             append(" · یادآوری: ${reminderPayload.length()}")
             if (linked > 0) append(" · لینک تلگرام: $linked")
+            if (pulledOnline > 0) append(" · پرداخت آنلاین: $pulledOnline")
             if (deleted > 0) append(" · حذف‌شده: $deleted")
         }
         Log.d(tag, msg)
@@ -314,6 +327,60 @@ class BotCloudBridge(private val context: Context) {
         ok
     }
 
+    /**
+     * Stage 4: pulls VERIFIED online payments from the worker and applies them
+     * into Room exactly once (order id = payment id). Mirrors the repository's
+     * own installment math so balances stay consistent without manual entry.
+     */
+    private suspend fun pullConfirmedOnlinePayments(
+        settings: AcademySettings,
+        db: AppDatabase
+    ): Int = withContext(Dispatchers.IO) {
+        val current = db.settingsDao().getSettingsDirect() ?: return@withContext 0
+        if (!isWorkerConfigured(current)) return@withContext 0
+        val since = current.onlinePaymentsPulledAtEpoch
+        val (ok, body) = getJson(settings, "/api/payments/confirmed?since=$since")
+        if (!ok) return@withContext 0
+
+        var applied = 0
+        try {
+            val list = JSONObject(body).optJSONObject("data")?.optJSONArray("payments")
+                ?: return@withContext 0
+            var newest = since
+            for (i in 0 until list.length()) {
+                val t = list.optJSONObject(i) ?: continue
+                val orderId = t.optString("orderId")
+                val verifiedAt = t.optLong("verifiedAtEpoch", 0L)
+                if (verifiedAt > newest) newest = verifiedAt
+                val payment = com.example.data.util.PaymentSyncPayloads.onlinePaymentFromTxn(
+                    orderId = orderId,
+                    studentId = t.optString("studentId"),
+                    installmentId = t.optString("installmentId"),
+                    amount = t.optLong("amount", 0L),
+                    ref = t.optString("ref"),
+                    verifiedAtEpoch = verifiedAt,
+                    existingPaymentIds = db.paymentDao().getPaymentById(orderId)?.let { setOf(it.id) } ?: emptySet()
+                ) ?: continue
+
+                db.paymentDao().insertPayment(payment)
+                val inst = db.installmentDao().getInstallmentById(payment.installmentId)
+                if (inst != null) {
+                    val paymentsFor = db.paymentDao().getPaymentsForInstallment(inst.id).firstOrNull() ?: listOf(payment)
+                    db.installmentDao().updateInstallment(
+                        com.example.data.util.PaymentSyncPayloads.installmentAfterPayment(inst, paymentsFor)
+                    )
+                }
+                applied++
+            }
+            if (newest > since) {
+                db.settingsDao().insertOrUpdate(current.copy(onlinePaymentsPulledAtEpoch = newest))
+            }
+        } catch (e: Exception) {
+            Log.w(tag, "pullConfirmedOnlinePayments parse failed: ${e.message}")
+        }
+        applied
+    }
+
     /** Cancels the server-side reminder queue of an installment (e.g. after payment). */
     suspend fun cancelInstallmentReminders(installmentId: String) {
         withContext(Dispatchers.IO) {
@@ -370,6 +437,27 @@ class BotCloudBridge(private val context: Context) {
             }
         } catch (e: Exception) {
             Log.w(tag, "POST $path failed: ${e.message}")
+            Pair(false, e.message ?: "network error")
+        }
+    }
+
+    private fun getJson(settings: AcademySettings, path: String): Pair<Boolean, String> {
+        return try {
+            val base = settings.telegramWorkerUrl.trim().removeSuffix("/")
+            val request = Request.Builder()
+                .url(base + path)
+                .addHeader("Authorization", "Bearer ${settings.telegramApiSecret.trim()}")
+                .addHeader("X-Academy-Id", WorkerBotApi.ACADEMY_ID)
+                .build()
+
+            httpClient.newCall(request).execute().use { response ->
+                val body = response.body?.string() ?: ""
+                val json = runCatching { JSONObject(body) }.getOrNull()
+                val success = response.isSuccessful && json?.optBoolean("success", false) == true
+                Pair(success, body)
+            }
+        } catch (e: Exception) {
+            Log.w(tag, "GET $path failed: ${e.message}")
             Pair(false, e.message ?: "network error")
         }
     }

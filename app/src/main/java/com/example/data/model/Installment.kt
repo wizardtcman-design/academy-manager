@@ -23,6 +23,8 @@ data class Installment(
     val fullPaidDateEpoch: Long = 0L,
     val status: String = "PENDING", // PENDING (پرداخت نشده), NEAR_DUE (نزدیک سررسید), DUE_TODAY (سررسید امروز), PARTIAL_PAID (پرداخت ناقص), PAID (پرداخت شده), OVERDUE (دیرکرد), CANCELLED (لغو شده)
     val notes: String = "",
+    /** Manager-chosen method: "" | ONLINE | TRANSFER | POS | CASH | BANK_DEPOSIT (Stage 4). */
+    val paymentMethod: String = "",
     val isSampleData: Boolean = false,
     val createdAt: Long = System.currentTimeMillis()
 ) {
@@ -47,6 +49,7 @@ data class Installment(
         "fullPaidDateEpoch" to fullPaidDateEpoch,
         "status" to status,
         "notes" to notes,
+        "paymentMethod" to paymentMethod,
         "isSampleData" to isSampleData,
         "createdAt" to createdAt
     )
@@ -74,6 +77,7 @@ data class Installment(
                 fullPaidDateEpoch = (map["fullPaidDateEpoch"] as? Number)?.toLong() ?: 0L,
                 status = map["status"] as? String ?: "PENDING",
                 notes = map["notes"] as? String ?: "",
+                paymentMethod = map["paymentMethod"] as? String ?: "",
                 isSampleData = map["isSampleData"] as? Boolean ?: false,
                 createdAt = (map["createdAt"] as? Number)?.toLong() ?: System.currentTimeMillis()
             )
