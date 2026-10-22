@@ -20,6 +20,7 @@ import { timingSafeEqual, sha256Hex, randomToken } from '../crypto';
 import { ingestPayments, PaymentInput } from '../receipts';
 import { createInstallmentPaymentLink, verifyTransaction } from '../gateway';
 import { syncInstallmentReminders } from '../reminders';
+import { handleMessagingApi } from './messaging-api';
 
 // JSON response helper
 function jsonResponse<T>(data: ApiResponse<T>, status: number = 200): Response {
@@ -237,6 +238,34 @@ export async function handleApiRequest(
                 }, 400);
             }
 
+            // Stage 6: optional idempotency — the app sends a clientMsgId so a
+            // double click / retry / concurrent request can never send twice.
+            const clientMsgId = String((payload as any).clientMsgId || '').trim();
+            if (clientMsgId && clientMsgId.length <= 80) {
+                const ledgerId = `manual:${clientMsgId}`;
+                const store = new ContractStore(env);
+                const claimed = await store.claimDelivery(academyId, ledgerId, 'telegram');
+                if (!claimed) {
+                    const statuses = await store.deliveryStatuses(academyId, [ledgerId]);
+                    const prev = statuses[ledgerId]?.telegram?.status;
+                    if (prev === 'SENT' || prev === 'SKIPPED') {
+                        return jsonResponse({
+                            success: true,
+                            message: 'این پیام قبلاً ارسال شده است؛ ارسال تکراری انجام نشد.',
+                            data: { idempotent: true }
+                        });
+                    }
+                    if (prev === 'PENDING') {
+                        return jsonResponse({
+                            success: true,
+                            message: 'ارسال این پیام در جریان است.',
+                            data: { inFlight: true }
+                        });
+                    }
+                    // FAILED → fall through for one bounded retry.
+                }
+            }
+
             const sendRes = await bot.sendMessage({
                 chatId: payload.chatId,
                 text: payload.message,
@@ -246,6 +275,9 @@ export async function handleApiRequest(
 
             const logId = crypto.randomUUID();
             if (sendRes.ok) {
+                if (clientMsgId && clientMsgId.length <= 80) {
+                    await new ContractStore(env).finishDelivery(academyId, `manual:${clientMsgId}`, 'telegram', 'SENT', '', String(sendRes.result?.message_id || ''));
+                }
                 await db.logMessage({
                     id: logId,
                     student_id: payload.studentId || '',
@@ -265,6 +297,9 @@ export async function handleApiRequest(
                     data: { messageId: sendRes.result?.message_id, logId }
                 });
             } else {
+                if (clientMsgId && clientMsgId.length <= 80) {
+                    await new ContractStore(env).finishDelivery(academyId, `manual:${clientMsgId}`, 'telegram', 'FAILED', sendRes.description || 'send failed');
+                }
                 await db.logMessage({
                     id: logId,
                     student_id: payload.studentId || '',
@@ -811,6 +846,13 @@ export async function handleApiRequest(
             }, 500);
         }
     }
+
+    // ============================================================
+    // 7. Stage 6: messaging settings / templates / manual send
+    //    (bearer + tenant already enforced above)
+    // ============================================================
+    const messagingRes = await handleMessagingApi(request, env, db, academyId, botToken, path, url);
+    if (messagingRes) return messagingRes;
 
     return jsonResponse({
         success: false,

@@ -156,7 +156,7 @@ export async function notifyManagersOfClaim(
         if (photoBytes && photoBytes.length > 0) {
             try {
                 res = await bot.sendPhoto({
-                    chatId: chat, bytes: photoBytes, caption: text, replyMarkup: keyboard
+                    chatId: chat, bytes: photoBytes, caption: text, parseMode: 'HTML', replyMarkup: keyboard
                 });
             } catch (e: any) {
                 res = { ok: false, description: `network: ${e?.message || e}` } as any;

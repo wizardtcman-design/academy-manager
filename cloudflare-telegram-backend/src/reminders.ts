@@ -29,6 +29,20 @@
 //     panel is actually chosen and connected;
 //   - before sending, the installment is RE-CHECKED: a payment
 //     registered between scheduling and sending cancels the message.
+//
+// Stage 6 (SAME cycle, not a parallel system):
+//   - daily overdue continuation: for an installment that is still
+//     unpaid from overdue day 2 on, the SAME scheduler owns one row
+//     per day (`auto:<installment>:<day>`, day >= 2 — day 1 IS the
+//     Stage-5 "+1" nob) with the OVERDUE_DAILY template; the cron
+//     extends the chain every tick so it keeps running while the app
+//     is offline;
+//   - per-event policy from the academy's messaging config: turning
+//     auto-send OFF for a message type leaves the rows SCHEDULED and
+//     simply does not dispatch them (resume works, nothing is lost);
+//   - a manager stop on ONE installment cancels its pending rows and
+//     blocks re-scheduling until resumed — other installments are
+//     never affected.
 // ============================================================
 
 import { Env, InstallmentRecord, ReminderRecord, StudentRecord, PaymentEventRecord } from './types';
@@ -37,6 +51,7 @@ import { TelegramBotClient } from './telegram';
 import { ContractStore } from './contracts-store';
 import { shamsiAtAcademyTime, academyTzOffsetMinutes } from './tz';
 import { createInstallmentPaymentLink } from './gateway';
+import { MessagingConfig, MsgEventKey, renderEvent, getMessagingConfig, getReminderStops } from './messaging';
 
 export const DEFAULT_OFFSETS = [-7, -4, -1, 0, 1];
 /** Fresh scheduling never lands deeper in the past than this. */
@@ -88,7 +103,9 @@ export function dueStatusFa(inst: InstallmentRecord, now: number): string {
     return '⏳ در انتظار پرداخت';
 }
 
-/** The reminder body — real data only: student, course, nob, amount, Shamsi due date, status. */
+/** The reminder body — real data only: student, course, nob, amount, Shamsi due date, status.
+ *  Legacy pure builder: the variable source + render fallback for the
+ *  config-aware renderer below (Stage 6). Output is unchanged. */
 export function renderReminderText(
     student: StudentRecord | null,
     inst: InstallmentRecord,
@@ -115,6 +132,53 @@ export function renderReminderText(
         `لطفاً در صورت پرداخت، رسید خود را از دکمه «ارسال رسید پرداخت» برای مدیریت ارسال کنید. 🙏`;
 }
 
+/** Template variables of one reminder nob (shared by both event keys). */
+function reminderVars(
+    student: StudentRecord | null,
+    inst: InstallmentRecord,
+    nobHead: string,
+    nobLabel: string,
+    currency: string,
+    statusLine?: string
+): Record<string, string> {
+    const amount = (inst.remaining_amount || 0) > 0 ? inst.remaining_amount : inst.amount;
+    const numStr = inst.total_installments > 0
+        ? `قسط ${inst.installment_number} از ${inst.total_installments}`
+        : `قسط ${inst.installment_number}`;
+    return {
+        nobHead,
+        studentName: student?.full_name || inst.student_id,
+        courseTitle: inst.course_title || '-',
+        installmentLine: numStr,
+        nobLabel,
+        amount: amount.toLocaleString('en-US'),
+        currency,
+        dueDateShamsi: inst.due_date_shamsi,
+        statusLine: statusLine || dueStatusFa(inst, Date.now())
+    };
+}
+
+/** Config-aware message for a nob: override template when valid, default
+ *  template otherwise — an invalid customized template is never sent. */
+export function renderReminderViaConfig(
+    cfg: MessagingConfig,
+    key: MsgEventKey,
+    student: StudentRecord | null,
+    inst: InstallmentRecord,
+    offset: number,
+    currency: string,
+    statusLine?: string
+): string {
+    const head = offset < 0 ? '🔔 یادآوری قسط'
+        : offset === 0 ? '⏰ سررسید قسط امروز'
+        : '🚨 قسط معوق شده';
+    const nobLabel = key === 'OVERDUE_DAILY'
+        ? `${offset} روز پس از سررسید (معوق)`
+        : offsetLabelFa(offset);
+    const vars = reminderVars(student, inst, head, nobLabel, currency, statusLine);
+    return renderEvent(cfg, key, vars, renderReminderText(student, inst, offset, currency, vars.statusLine)).text;
+}
+
 /**
  * Ensures the five nobs exist for one installment, aligned with its CURRENT
  * due date and payment state. Idempotent — safe to run on every sync.
@@ -134,11 +198,22 @@ export async function syncInstallmentReminders(
         return out;
     }
 
-    const [hour, minute, tz, offsetsRaw] = await Promise.all([
+    // Stage 6: a manager stop on THIS installment blocks scheduling (and
+    // cancels whatever is still pending) until it is resumed. The stop is
+    // scoped to exactly this installment — other installments are untouched.
+    const stops = await getReminderStops(db);
+    if (stops[inst.id]) {
+        out.cancelled = await db.cancelPendingRemindersForInstallment(inst.id);
+        return out;
+    }
+
+    const [hour, minute, tz, offsetsRaw, currency, cfg] = await Promise.all([
         db.getSetting('reminder_send_hour', '10'),
         db.getSetting('reminder_send_minute', '0'),
         db.getSetting('reminder_timezone', 'Asia/Tehran'),
-        db.getSetting('reminder_offsets', '')
+        db.getSetting('reminder_offsets', ''),
+        db.getSetting('currency_unit', 'تومان'),
+        getMessagingConfig(db)
     ]);
     const offsets = reminderOffsets(offsetsRaw);
     const tzMin = academyTzOffsetMinutes(tz);
@@ -146,12 +221,25 @@ export async function syncInstallmentReminders(
     const mm = clampInt(minute, 0, 0, 59);
 
     const student = await db.getStudentById(inst.student_id, academyId);
-    const currency = await db.getSetting('currency_unit', 'تومان');
+
+    // Overdue age in WHOLE days measured from the due-day send moment
+    // (academy tz). 0 = due day not reached yet at the send hour.
+    const dueDayEpoch = shamsiAtAcademyTime(inst.due_date_shamsi, 0, hh, mm, tzMin);
+    const daysOverdue = dueDayEpoch > 0 ? Math.floor((now - dueDayEpoch) / 86_400_000) : -1;
+    const dailyEnabled = cfg.overdueDaily.enabled && daysOverdue >= 1;
+    // ONLY today's day and the forward horizon are materialized — past days
+    // are history (the controlled catch-up never backfills them), and a
+    // legacy/old Shamsi date must never mint hundreds of stale rows.
+    const dailyFrom = dailyEnabled ? Math.max(2, daysOverdue) : 2;
+    const dailyTo = dailyEnabled
+        ? daysOverdue + Math.max(0, cfg.overdueDaily.forwardDays)
+        : 1;
 
     for (const offset of offsets) {
         const epoch = shamsiAtAcademyTime(inst.due_date_shamsi, offset, hh, mm, tzMin);
         const existing = await db.findScheduledReminderForOffset(inst.id, offset, academyId);
-        const message = renderReminderText(student, inst, offset, currency);
+        const key: MsgEventKey = offset < 0 || offset === 0 ? 'INSTALLMENT_REMINDER' : 'OVERDUE_DAILY';
+        const message = renderReminderViaConfig(cfg, key, student, inst, offset, currency);
 
         // Unparsable due date (should not happen — the app pushes Shamsi) or a
         // nob whose window is long gone: never schedule into the deep past.
@@ -210,16 +298,86 @@ export async function syncInstallmentReminders(
         out.created++;
     }
 
+    // ---- Stage 6: the DAILY OVERDUE continuation (day >= 2) ----
+    // The SAME scheduler, the SAME rows table, the SAME dispatch — only more
+    // deterministic ids. Day 1 stays the Stage-5 "+1" nob above. Rows for the
+    // past beyond the freshness window are never created (a long outage is
+    // covered by the CURRENT day's message, not a burst of stale ones).
+    if (dailyEnabled) {
+        const timeStr = `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')} ${inst.due_date_shamsi}`;
+        for (let day = dailyFrom; day <= dailyTo; day++) {
+            const epoch = shamsiAtAcademyTime(inst.due_date_shamsi, day, hh, mm, tzMin);
+            if (epoch <= 0) break;
+            const existing = await db.findScheduledReminderForOffset(inst.id, day, academyId);
+            if (epoch < now - MAX_LATE_MS) {
+                if (existing) {
+                    await db.updateReminderStatus(existing.id, 'CANCELLED', 'missed schedule window');
+                    out.cancelled++;
+                }
+                continue;
+            }
+            const message = renderReminderViaConfig(cfg, 'OVERDUE_DAILY', student, inst, day, currency);
+            const id = `auto:${inst.id}:${day}`;
+
+            if (existing) {
+                if (existing.scheduled_epoch !== epoch || existing.message_text !== message) {
+                    await db.rescheduleReminder(existing.id, epoch, timeStr, message);
+                    out.rescheduled++;
+                }
+                continue;
+            }
+            const dead = await db.getReminderById(id);
+            if (dead && dead.id === id) {
+                // SENT days are history — never re-sent, never re-inserted;
+                // cancelled/failed days without delivery are revived.
+                if (dead.status !== 'SENT') {
+                    await db.reviveReminder(id, epoch, timeStr, message);
+                    out.rescheduled++;
+                }
+                continue;
+            }
+            await db.addReminder({
+                id,
+                student_id: inst.student_id,
+                student_name: student?.full_name || '',
+                chat_id: student?.telegram_chat_id || '',
+                installment_id: inst.id,
+                reminder_type: 'INSTALLMENT_OVERDUE_DAILY',
+                message_text: message,
+                scheduled_epoch: epoch,
+                scheduled_time_str: timeStr,
+                status: 'SCHEDULED',
+                error_message: '',
+                retry_count: 0,
+                created_at_epoch: now,
+                sent_at_epoch: 0,
+                student_phone: student?.phone || '',
+                trigger_offset: day,
+                schedule_source: 'server'
+            } as ReminderRecord);
+            out.created++;
+        }
+    }
+
     // Supersede app-pushed SCHEDULED rows whose (installment, offset) nob the
-    // scheduler now owns — otherwise the same nob could fire twice.
+    // scheduler now owns — otherwise the same nob could fire twice. Server
+    // rows whose day fell OUT of the owned set (due date moved back) are
+    // cancelled as stale.
     const rows = await db.listRemindersForInstallment(inst.id, academyId);
     const serverIds = new Set(offsets.map((o) => `auto:${inst.id}:${o}`));
+    for (let day = dailyFrom; day <= dailyTo; day++) serverIds.add(`auto:${inst.id}:${day}`);
     for (const r of rows) {
         if (r.status !== 'SCHEDULED') continue;
-        if (r.id.startsWith('auto:')) continue;
+        if (r.id.startsWith('auto:')) {
+            if (!serverIds.has(r.id)) {
+                await db.updateReminderStatus(r.id, 'CANCELLED', 'outside the owned schedule (due date changed)');
+                out.cancelled++;
+            }
+            continue;
+        }
         const off = Number((r as any).trigger_offset ?? 0);
         const hasServer = serverIds.has(`auto:${inst.id}:${off}`);
-        const offsetKnown = offsets.includes(off);
+        const offsetKnown = off >= -60 && off <= 60 && (offsets.includes(off) || (dailyEnabled && off >= 2 && off <= dailyTo));
         if (offsetKnown && hasServer) {
             await db.updateReminderStatus(r.id, 'CANCELLED', 'superseded by server schedule');
             out.cancelled++;
@@ -232,7 +390,25 @@ export async function syncInstallmentReminders(
 // Dual-channel dispatch (cron-driven, per academy, own bot only)
 // ============================================================
 
-export interface ReminderDispatchResult { sent: number; retried: number; failed: number; cancelledPaid: number; superseded: number }
+export interface ReminderDispatchResult { sent: number; retried: number; failed: number; cancelledPaid: number; superseded: number; skippedAuto: number }
+
+/** The messaging event a reminder row belongs to (policy gating).
+ *  Overdue rows (+1 nob and the daily chain day>=2) all belong to the
+ *  OVERDUE_DAILY event — the daily overdue reminder IS that cycle. */
+export function reminderEventKey(reminder: ReminderRecord): MsgEventKey | null {
+    switch (reminder.reminder_type) {
+        case 'INSTALLMENT_OVERDUE':
+        case 'INSTALLMENT_OVERDUE_DAILY':
+            return 'OVERDUE_DAILY';
+        case 'INSTALLMENT_UPCOMING':
+        case 'INSTALLMENT_DUE':
+        case 'INSTALLMENT':
+        case 'REMINDER':
+            return 'INSTALLMENT_REMINDER';
+        default:
+            return null; // unknown/app-defined types keep the legacy behavior
+    }
+}
 
 /**
  * Sends every due reminder through BOTH channels with independent status:
@@ -250,11 +426,13 @@ export async function dispatchDueReminders(
     now = Date.now(),
     limit = 50
 ): Promise<ReminderDispatchResult> {
-    const res: ReminderDispatchResult = { sent: 0, retried: 0, failed: 0, cancelledPaid: 0, superseded: 0 };
+    const res: ReminderDispatchResult = { sent: 0, retried: 0, failed: 0, cancelledPaid: 0, superseded: 0, skippedAuto: 0 };
     const due = await db.getDueReminders(now, limit * 3, academyId);
     if (due.length === 0) return res;
     const store = new ContractStore(env);
     const currency = await db.getSetting('currency_unit', 'تومان');
+    // Stage 6: per-event auto-send policy + the manager stop list.
+    const [cfg, stops] = await Promise.all([getMessagingConfig(db), getReminderStops(db)]);
 
     // Controlled catch-up: one nob per (student, installment) per tick.
     // getDueReminders returns rows oldest-first; walking BACKWARDS keeps the
@@ -288,6 +466,9 @@ export async function dispatchDueReminders(
         // Re-check the installment RIGHT BEFORE sending: a payment registered
         // after scheduling must cancel the message, not send it.
         if (reminder.installment_id) {
+            // A manager stop (or a config with auto-send OFF) holds the row:
+            // it stays SCHEDULED (resume works, nothing is deleted) and the
+            // policy gate below skips the actual send.
             const inst = await db.getInstallmentById(reminder.installment_id, academyId);
             if (!inst) {
                 await db.updateReminderStatus(reminder.id, 'CANCELLED', 'installment no longer exists');
@@ -299,6 +480,23 @@ export async function dispatchDueReminders(
                 await recordEvent(db, academyId, inst, 'REMINDER_CANCELLED_PAID', 'system');
                 continue;
             }
+        }
+
+        // ---- Stage 6 policy gates (BEFORE any channel is touched) ----
+        const eventKey = reminderEventKey(reminder);
+        if (eventKey && cfg.events[eventKey].auto === false) {
+            // Auto sending of this message type is OFF: keep the row
+            // SCHEDULED and skip it — resuming the toggle delivers whatever
+            // is still inside the catch-up window, nothing is lost.
+            res.skippedAuto++;
+            continue;
+        }
+        if (reminder.installment_id && stops[reminder.installment_id]) {
+            // Manager-stopped installment: cancel the pending rows (the stop
+            // itself was already audited when it was placed).
+            await db.updateReminderStatus(reminder.id, 'CANCELLED', 'stopped by manager');
+            res.superseded++;
+            continue;
         }
 
         // ---- Telegram channel (independent status) ----
@@ -464,4 +662,37 @@ async function recordEvent(
         };
         await db.insertPaymentEvent(ev);
     } catch (_) { /* auditing must never break the dispatch */ }
+}
+
+// ============================================================
+// Stage 6: the DAILY OVERDUE continuation driver.
+//
+// Called by the cron AFTER the five-nob dispatch of the SAME academy:
+// for every unpaid installment whose due date has passed it re-runs
+// the very same syncInstallmentReminders — which (idempotently)
+// extends the `auto:<installment>:<day>` chain for overdue day >= 2.
+// This keeps the daily chain alive even when the Android app is off
+// for weeks, without a second scheduling system. The config gate
+// (overdueDaily.enabled) and the manager stop list are enforced
+// inside syncInstallmentReminders itself.
+// ============================================================
+export async function runOverdueDailyScheduler(
+    db: AcademyDatabase,
+    academyId: string,
+    now = Date.now(),
+    limit = 100
+): Promise<{ checked: number; extended: number }> {
+    const cfg = await getMessagingConfig(db);
+    if (!cfg.overdueDaily.enabled) return { checked: 0, extended: 0 };
+    const overdue = await db.listOverdueUnpaidInstallments(academyId, now, limit);
+    let extended = 0;
+    for (const inst of overdue) {
+        try {
+            const out = await syncInstallmentReminders(db, academyId, inst, now);
+            extended += out.created + out.rescheduled;
+        } catch (e) {
+            console.warn(`[Reminders] daily-overdue sync failed for ${inst.id} (non-blocking):`, e);
+        }
+    }
+    return { checked: overdue.length, extended };
 }

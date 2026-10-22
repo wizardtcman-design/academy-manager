@@ -20,7 +20,9 @@ const MAX_SEAL_BYTES = 512 * 1024;
 /** One-time /start link tokens live for 30 days or until used. */
 const LINK_TOKEN_TTL_DAYS = 30;
 
-/** Persian welcome message shown/queued for a newly registered student. */
+/** Persian welcome message shown/queued for a newly registered student.
+ *  Stage 6: the WELCOME template's fallback builder — the per-academy
+ *  override (when valid) wins at the call site. Output unchanged. */
 export function welcomeMessageText(academyName: string, fullName: string, botLink: string): string {
     const name = (fullName || '').trim() || 'هنرجو';
     return `سلام ${name} عزیز! 👋\n\n` +
@@ -369,30 +371,47 @@ export async function handleContractsApi(request: Request, env: Env, url: URL): 
 
         // ---- welcome (SMS prepared but DISABLED) ----
         const academyName = await db.getSetting('academy_name', 'آموزشگاه');
-        const text = welcomeMessageText(academyName, student.full_name || '', botLink);
+        const legacyWelcome = welcomeMessageText(academyName, student.full_name || '', botLink);
+        // Stage 6: the WELCOME template (override when valid, default =
+        // legacyWelcome); auto=false prepares nothing (no outbox row).
+        const { getMessagingConfig, renderEvent } = await import('../messaging');
+        const cfg = await getMessagingConfig(db);
+        const text = cfg.events.WELCOME.auto
+            ? renderEvent(cfg, 'WELCOME', {
+                studentName: (student.full_name || '').trim() || 'هنرجو',
+                academyName,
+                botLink
+            }, legacyWelcome).text
+            : '';
         const outboxId = `welcome-${studentId}`;
-        await env.DB!.prepare(
-            `INSERT INTO sms_outbox (id, academy_id, reminder_id, phone, body, status, error, created_at_epoch)
-             VALUES (?,?,?,?,?,?,?,?)`
-        ).bind(outboxId, academyId, 'WELCOME', student.phone || '', text, 'DISABLED',
-            'sms_provider_not_configured', Date.now()).run();
-        await db.logMessage({
-            id: crypto.randomUUID(),
-            student_id: studentId,
-            student_name: student.full_name || '',
-            chat_id: '',
-            message_type: 'WELCOME_PREPARED',
-            content: 'welcome sms queued as DISABLED (no provider)',
-            status: 'SUCCESS',
-            error_message: '',
-            timestamp_epoch: Date.now(),
-            timestamp_shamsi: ''
-        });
-        return ok('پیام خوش‌آمد آماده شد؛ ارسال پیامک فعال نیست.', {
+        if (text) {
+            await env.DB!.prepare(
+                `INSERT INTO sms_outbox (id, academy_id, reminder_id, phone, body, status, error, created_at_epoch)
+                 VALUES (?,?,?,?,?,?,?,?)`
+            ).bind(outboxId, academyId, 'WELCOME', student.phone || '', text, 'DISABLED',
+                'sms_provider_not_configured', Date.now()).run();
+            await db.logMessage({
+                id: crypto.randomUUID(),
+                student_id: studentId,
+                student_name: student.full_name || '',
+                chat_id: '',
+                message_type: 'WELCOME_PREPARED',
+                content: 'welcome sms queued as DISABLED (no provider)',
+                status: 'SUCCESS',
+                error_message: '',
+                timestamp_epoch: Date.now(),
+                timestamp_shamsi: ''
+            });
+        }
+        return ok(text
+            ? 'پیام خوش‌آمد آماده شد؛ ارسال پیامک فعال نیست.'
+            : 'ارسال خودکار پیام خوش‌آمد در تنظیمات پیام‌رسانی غیرفعال است.', {
             message: text,
             botLink,
             tokenExpiresAtEpoch: expiresAt,
-            sms: { status: 'DISABLED', reason: 'sms_provider_not_configured' },
+            sms: text
+                ? { status: 'DISABLED', reason: 'sms_provider_not_configured' }
+                : { status: 'BLOCKED', reason: 'welcome_auto_disabled_by_settings' },
             deduped: false
         });
     }

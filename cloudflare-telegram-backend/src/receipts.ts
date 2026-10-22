@@ -25,6 +25,7 @@ import { Env, PaymentReceiptRecord } from './types';
 import { AcademyDatabase } from './db';
 import { TelegramBotClient } from './telegram';
 import { composeReceiptPdf, ReceiptPdfData } from './receipt-pdf';
+import { MessagingConfig, MsgEventKey, renderEvent, getMessagingConfig, escapeHtml, MSG_EVENTS, renderMsgTemplate } from './messaging';
 
 export const MAX_RECEIPT_ATTEMPTS = 5;
 const DISPATCH_LIMIT = 25;
@@ -246,9 +247,51 @@ export async function releaseFirstReceiptsAfterContract(
 }
 
 // ============================================================
-// Rendering — the SAME fields as the app's digital receipt
+// Rendering — the SAME fields as the app's digital receipt.
+// Stage 6: the text is the PAYMENT_RECEIPT / REVERSAL_NOTICE template
+// rendered with real server-side values (default template = the
+// original output, byte for byte; variable VALUES are HTML-escaped).
 // ============================================================
+export interface ReceiptRenderVars {
+    key: MsgEventKey;
+    vars: Record<string, string>;
+}
+
+/** Template variables of one receipt row (shared by both event keys). */
+export function receiptVars(r: ReceiptRow, academyName: string, currency: string): ReceiptRenderVars {
+    const reversed = !!r.is_reversed;
+    const headLine = reversed
+        ? `⚠️ <b>رسید برگشتی (ابطال پرداخت)</b>`
+        : `🧾 <b>رسید پرداخت شهریه</b>`;
+    const inst = r.installment_number > 0
+        ? `قسط ${r.installment_number}${r.total_installments_hint ? ` از ${r.total_installments_hint}` : ''}${r.course_title ? ` — ${r.course_title}` : ''}`
+        : (r.course_title || '-');
+    return {
+        key: reversed ? 'REVERSAL_NOTICE' : 'PAYMENT_RECEIPT',
+        vars: {
+            headLine,
+            academyName: academyName || '-',
+            transactionCode: r.transaction_id || r.id.slice(0, 8),
+            dateLine: `${r.paid_date_shamsi || '-'}${r.paid_time ? ` — ${r.paid_time}` : ''}`,
+            studentName: r.student_name || '-',
+            installmentLine: inst,
+            amount: `${r.amount.toLocaleString('en-US')} ${currency}`,
+            methodLabel: methodLabelFa(r.payment_method),
+            destinationLine: r.destination_account ? `🏦 حساب مقصد: ${escapeHtml(r.destination_account)}\n` : '',
+            trackingLine: r.tracking_number ? `🔎 کد رهگیری: <code>${escapeHtml(r.tracking_number)}</code>\n` : '',
+            onlineLine: r.source === 'online' ? `🌐 نوع: پرداخت آنلاین (تأیید شده توسط درگاه)\n` : '',
+            reversalLine: reversed && r.reversal_reason ? `↩️ دلیل برگشت: ${escapeHtml(r.reversal_reason)}\n` : '',
+            notesLine: r.notes ? `📝 توضیحات: ${escapeHtml(r.notes)}\n` : '',
+            footerLine: reversed ? 'این پرداخت توسط آموزشگاه برگشت زده شده است.' : 'با تشکر از پرداخت شما 🌸'
+        }
+    };
+}
+
+/** Legacy byte-identical builder — the render fallback of the config path. */
 export function renderReceiptText(r: ReceiptRow, academyName: string, currency: string): string {
+    const { key, vars } = receiptVars(r, academyName, currency);
+    const rendered = renderMsgTemplateForReceipt(key, vars);
+    if (rendered) return rendered;
     const money = `${r.amount.toLocaleString()} ${currency}`;
     const head = r.is_reversed
         ? `⚠️ <b>رسید برگشتی (ابطال پرداخت)</b>`
@@ -272,6 +315,22 @@ export function renderReceiptText(r: ReceiptRow, academyName: string, currency: 
         (r.notes ? `📝 توضیحات: ${r.notes}\n` : '') +
         `━━━━━━━━━━━━━━━━━━━\n` +
         (r.is_reversed ? 'این پرداخت توسط آموزشگاه برگشت زده شده است.' : 'با تشکر از پرداخت شما 🌸');
+}
+
+function renderMsgTemplateForReceipt(key: MsgEventKey, vars: Record<string, string>): string | null {
+    const res = renderMsgTemplate(key, MSG_EVENTS[key].template, vars);
+    return res.ok ? res.text : null;
+}
+
+/** Config-aware receipt text (override template when valid, default otherwise). */
+export function renderReceiptViaConfig(
+    cfg: MessagingConfig,
+    r: ReceiptRow,
+    academyName: string,
+    currency: string
+): string {
+    const { key, vars } = receiptVars(r, academyName, currency);
+    return renderEvent(cfg, key, vars, renderReceiptText(r, academyName, currency)).text;
 }
 
 export function receiptPdfData(r: ReceiptRow, academyName: string, academyPhone: string, currency: string): ReceiptPdfData {
@@ -304,7 +363,7 @@ export function composeReceiptPdfFor(r: ReceiptRow, academyName: string, academy
 // ============================================================
 // Delivery (cron-driven, per academy, own bot only)
 // ============================================================
-export interface DispatchOutcome { sent: number; failed: number; notices: number }
+export interface DispatchOutcome { sent: number; failed: number; notices: number; skippedAuto: number }
 
 /**
  * Sends every QUEUED receipt whose eligibility time has passed, and every
@@ -319,14 +378,18 @@ export async function dispatchReceipts(
     academyId: string,
     now = Date.now()
 ): Promise<DispatchOutcome> {
-    const out: DispatchOutcome = { sent: 0, failed: 0, notices: 0 };
+    const out: DispatchOutcome = { sent: 0, failed: 0, notices: 0, skippedAuto: 0 };
     const academyName = await db.getSetting('academy_name', 'آموزشگاه');
     const currency = await db.getSetting('currency_unit', 'تومان');
+    // Stage 6: per-event auto-send policy (receipts / reversal notices).
+    const cfg = await getMessagingConfig(db);
 
     const due = await db.listDuePaymentReceipts(academyId, now, DISPATCH_LIMIT);
     for (const r of due) {
         // Reversal notices ride the same pipeline.
         if (r.send_status === 'REVERSAL_QUEUED') {
+            // Stage 6: auto-send policy gate — the row stays queued.
+            if (cfg.events.REVERSAL_NOTICE.auto === false) { out.skippedAuto++; continue; }
             const student = await db.getStudentById(r.student_id, academyId);
             const chat = student?.telegram_chat_id;
             if (!chat) continue; // stays queued until the student connects
@@ -334,7 +397,7 @@ export async function dispatchReceipts(
             try {
                 res = await bot.sendMessage({
                     chatId: chat,
-                    text: renderReceiptText(r, academyName, currency),
+                    text: renderReceiptViaConfig(cfg, r, academyName, currency),
                     parseMode: 'HTML',
                     replyMarkup: TelegramBotClient.getStudentReplyKeyboard()
                 });
@@ -367,11 +430,15 @@ export async function dispatchReceipts(
             continue; // stays QUEUED: delivered the moment the student connects
         }
 
+        // Stage 6: auto-send policy gate — the receipt stays QUEUED and is
+        // delivered whenever the manager re-enables this event type.
+        if (cfg.events.PAYMENT_RECEIPT.auto === false) { out.skippedAuto++; continue; }
+
         let res: Awaited<ReturnType<TelegramBotClient['sendMessage']>>;
         try {
             res = await bot.sendMessage({
                 chatId: chat,
-                text: renderReceiptText(r, academyName, currency),
+                text: renderReceiptViaConfig(cfg, r, academyName, currency),
                 parseMode: 'HTML',
                 replyMarkup: TelegramBotClient.getStudentReplyKeyboard()
             });

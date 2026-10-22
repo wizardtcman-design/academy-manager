@@ -1044,6 +1044,91 @@ export class AcademyDatabase {
         return null;
     }
 
+    // ============================================================
+    // Stage 6: daily-overdue continuation + manager reminder view
+    // ============================================================
+
+    /**
+     * UNPAID installments whose due date has passed (oldest first) — the
+     * input of the daily-overdue continuation of the SAME Stage-5 scheduler
+     * (no separate system). Bounded per tick.
+     */
+    async listOverdueUnpaidInstallments(
+        academyId: string = this.academyId,
+        nowEpoch: number = Date.now(),
+        limit: number = 100
+    ): Promise<InstallmentRecord[]> {
+        if (this.db) {
+            try {
+                const { results } = await this.db.prepare(`
+                    SELECT * FROM installments
+                    WHERE academy_id = ? AND is_paid = 0 AND remaining_amount > 0
+                      AND due_date_epoch > 0 AND due_date_epoch < ?
+                    ORDER BY due_date_epoch ASC
+                    LIMIT ?
+                `).bind(academyId, nowEpoch, Math.min(500, Math.max(1, limit))).all<InstallmentRecord>();
+                return results || [];
+            } catch (e) {
+                console.warn('[DB] D1 listOverdueUnpaidInstallments failed:', e);
+            }
+        }
+        if (this.strict) return [];
+        const out: InstallmentRecord[] = [];
+        for (const list of memoryInstallments.values()) {
+            for (const i of list) {
+                if (i.is_paid === 0 && (i.remaining_amount || 0) > 0
+                    && (i.due_date_epoch || 0) > 0 && i.due_date_epoch < nowEpoch) {
+                    out.push(i);
+                    if (out.length >= limit) return out;
+                }
+            }
+        }
+        return out;
+    }
+
+    /**
+     * Manager reminder-status view: all rows of one installment, one student
+     * or the whole academy (bounded), any status — the data behind
+     * GET /api/messaging/reminders (schedule, last send, status, error).
+     */
+    async listRemindersForView(
+        academyId: string = this.academyId,
+        opts: { studentId?: string; installmentId?: string; limit?: number } = {}
+    ): Promise<ReminderRecord[]> {
+        const limit = Math.min(500, Math.max(1, opts.limit ?? 200));
+        if (this.db) {
+            try {
+                if (opts.installmentId) {
+                    const { results } = await this.db.prepare(
+                        'SELECT * FROM reminders WHERE academy_id = ? AND installment_id = ? ORDER BY scheduled_epoch ASC LIMIT ?'
+                    ).bind(academyId, opts.installmentId, limit).all<ReminderRecord>();
+                    return results || [];
+                }
+                if (opts.studentId) {
+                    const { results } = await this.db.prepare(
+                        'SELECT * FROM reminders WHERE academy_id = ? AND student_id = ? ORDER BY scheduled_epoch DESC LIMIT ?'
+                    ).bind(academyId, opts.studentId, limit).all<ReminderRecord>();
+                    return results || [];
+                }
+                const { results } = await this.db.prepare(
+                    'SELECT * FROM reminders WHERE academy_id = ? ORDER BY scheduled_epoch DESC LIMIT ?'
+                ).bind(academyId, limit).all<ReminderRecord>();
+                return results || [];
+            } catch (e) {
+                console.warn('[DB] D1 listRemindersForView failed:', e);
+            }
+        }
+        if (this.strict) return [];
+        const rows: ReminderRecord[] = [];
+        for (const r of memoryReminders.values()) {
+            if (opts.installmentId && r.installment_id !== opts.installmentId) continue;
+            if (opts.studentId && r.student_id !== opts.studentId) continue;
+            rows.push(r);
+            if (rows.length >= limit) break;
+        }
+        return rows;
+    }
+
     /** Rewrites schedule + message of a SCHEDULED row (due-date reconciliation). */
     async rescheduleReminder(id: string, scheduledEpoch: number, timeStr: string, messageText: string): Promise<void> {
         if (this.db) {

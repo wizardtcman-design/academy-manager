@@ -112,18 +112,22 @@ export class TelegramBotClient {
     /**
      * Stage 5: sends a photo (e.g. the student's bank-transfer receipt) with
      * an optional inline keyboard (manager approve/reject buttons).
+     * Stage 6: optional parseMode ('HTML') so captions with formatting tags
+     * render correctly instead of showing the raw tags.
      */
     async sendPhoto(params: {
         chatId: string | number;
         bytes: Uint8Array;
         fileName?: string;
         caption?: string;
+        parseMode?: string;
         replyMarkup?: any;
     }): Promise<TelegramApiResponse<any>> {
         const form = new FormData();
         form.append('chat_id', String(params.chatId));
         form.append('photo', new Blob([params.bytes], { type: 'image/jpeg' }), params.fileName || 'receipt.jpg');
         if (params.caption) form.append('caption', params.caption);
+        if (params.parseMode) form.append('parse_mode', params.parseMode);
         if (params.replyMarkup) form.append('reply_markup', JSON.stringify(params.replyMarkup));
         const res = await fetch(`${this.baseUrl}/sendPhoto`, { method: 'POST', body: form });
         return await res.json() as TelegramApiResponse<any>;

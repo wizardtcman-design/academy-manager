@@ -14,6 +14,7 @@ import {
 } from '../claims';
 import { dueStatusFa } from '../reminders';
 import { createInstallmentPaymentLink } from '../gateway';
+import { getMessagingConfig, renderEvent } from '../messaging';
 
 /** Telegram stops retrying an update after ~1 minute; finish sending before then. */
 const SEND_TIMEOUT_MS = 25_000;
@@ -226,12 +227,27 @@ async function processUpdate(
                     (tokenStudent.student_code ? `🆔 <b>کد هنرجویی:</b> ${tokenStudent.student_code}\n` : '') +
                     `\nاز منوی زیر می‌توانید وضعیت مالی، اقساط، سوابق پرداختی و قراردادهای آموزشی خود را مشاهده نمایید 👇`;
 
-                await bot.sendMessage({
-                    chatId,
-                    text: welcomeMsg,
-                    parseMode: 'HTML',
-                    replyMarkup: TelegramBotClient.getStudentReplyKeyboard()
-                });
+                const welcomeRender = await (async () => {
+                    // Stage 6: CONNECT_WELCOME is configurable per academy
+                    // (default = the original text, byte for byte).
+                    try {
+                        const cfg = await getMessagingConfig(db);
+                        if (!cfg.events.CONNECT_WELCOME.auto) return null; // auto sending OFF: skip
+                        return renderEvent(cfg, 'CONNECT_WELCOME', {
+                            studentName: tokenStudent.full_name,
+                            codeLine: tokenStudent.student_code ? `🆔 <b>کد هنرجویی:</b> ${tokenStudent.student_code}\n` : ''
+                        }, welcomeMsg).text;
+                    } catch (_) { return welcomeMsg; }
+                })();
+
+                if (welcomeRender) {
+                    await bot.sendMessage({
+                        chatId,
+                        text: welcomeRender,
+                        parseMode: 'HTML',
+                        replyMarkup: TelegramBotClient.getStudentReplyKeyboard()
+                    });
+                }
 
                 await db.logMessage({
                     id: crypto.randomUUID(),
@@ -421,9 +437,18 @@ async function notifyStudentOfRejection(
     try {
         const student = await db.getStudentById(studentId, academyId);
         if (!student?.telegram_chat_id) return; // not connected: nothing to notify
+        // Stage 6: RECEIPT_REJECTED is a configurable template (default = the
+        // original wording); auto=false silences the notice, nothing is sent.
+        const cfg = await getMessagingConfig(db);
+        if (!cfg.events.RECEIPT_REJECTED.auto) return;
+        const legacy = `❌ رسید ارسالی شما برای قسط ${installmentNumber} تأیید نشد.${reason ? `\nعلت: ${reason}` : ''}\nدر صورت نیاز با آموزشگاه تماس بگیرید یا رسید جدید ارسال کنید.`;
+        const text = renderEvent(cfg, 'RECEIPT_REJECTED', {
+            installmentNumber: String(installmentNumber),
+            reasonLine: reason ? `\nعلت: ${reason}` : ''
+        }, legacy).text;
         await bot.sendMessage({
             chatId: student.telegram_chat_id,
-            text: `❌ رسید ارسالی شما برای قسط ${installmentNumber} تأیید نشد.${reason ? `\nعلت: ${reason}` : ''}\nدر صورت نیاز با آموزشگاه تماس بگیرید یا رسید جدید ارسال کنید.`,
+            text,
             parseMode: 'HTML',
             replyMarkup: TelegramBotClient.getStudentReplyKeyboard()
         });
@@ -489,12 +514,23 @@ async function handleReceiptPhoto(
     const claim = await db.getPaymentClaim(res.claimId, academyId);
     if (claim) await notifyManagersOfClaim(env, db, bot, academyId, claim, bytes);
 
-    await bot.sendMessage({
-        chatId,
-        text: `✅ رسید شما برای <b>قسط ${target.installment_number}</b> دریافت شد و برای بررسی مدیریت ارسال گردید.\n\n⚠️ توجه: تا تأیید مدیریت، این قسط پرداخت‌شده محسوب نمی‌شود و رسید رسمی صادر نمی‌گردد. نتیجهٔ بررسی از همین ربات اطلاع‌رسانی می‌شود.`,
-        parseMode: 'HTML',
-        replyMarkup: TelegramBotClient.getStudentReplyKeyboard()
-    });
+    // Stage 6: CLAIM_ACK is a configurable template (default = the original
+    // wording); auto=false silences the acknowledgement.
+    try {
+        const cfg = await getMessagingConfig(db);
+        if (cfg.events.CLAIM_ACK.auto) {
+            const ackLegacy = `✅ رسید شما برای <b>قسط ${target.installment_number}</b> دریافت شد و برای بررسی مدیریت ارسال گردید.\n\n⚠️ توجه: تا تأیید مدیریت، این قسط پرداخت‌شده محسوب نمی‌شود و رسید رسمی صادر نمی‌گردد. نتیجهٔ بررسی از همین ربات اطلاع‌رسانی می‌شود.`;
+            const ackText = renderEvent(cfg, 'CLAIM_ACK', {
+                installmentNumber: String(target.installment_number)
+            }, ackLegacy).text;
+            await bot.sendMessage({
+                chatId,
+                text: ackText,
+                parseMode: 'HTML',
+                replyMarkup: TelegramBotClient.getStudentReplyKeyboard()
+            });
+        }
+    } catch (_) { /* the claim itself is already stored; ack is best-effort */ }
 }
 
 function normalizeNum(s: string): string {
@@ -931,12 +967,27 @@ async function handleContract(bot: TelegramBotClient, env: Env, student: Student
             try {
                 await store.event(academyId, signed.id, { type: 'PDF_SENT', detail: 'telegram:bot-menu' });
             } catch (_) {}
-            await bot.sendMessage({
-                chatId,
-                text: `✅ این نسخهٔ نهایی و امضاشدهٔ قرارداد شماست.\nکد قرارداد: <code>${signed.id.slice(0, 8)}</code>`,
-                parseMode: 'HTML',
-                replyMarkup: TelegramBotClient.getStudentReplyKeyboard()
-            });
+            // Stage 6: CONTRACT_DELIVERED template (default = the original
+            // wording); auto=false sends no follow-up text (the PDF itself
+            // is always delivered).
+            const legacyFollowUp = `✅ این نسخهٔ نهایی و امضاشدهٔ قرارداد شماست.\nکد قرارداد: <code>${signed.id.slice(0, 8)}</code>`;
+            let followUp = legacyFollowUp;
+            try {
+                const cfg = await getMessagingConfig(new AcademyDatabase(env, academyId));
+                if (cfg.events.CONTRACT_DELIVERED.auto) {
+                    followUp = renderEvent(cfg, 'CONTRACT_DELIVERED', { contractCode: signed.id.slice(0, 8) }, legacyFollowUp).text;
+                } else {
+                    followUp = '';
+                }
+            } catch (_) { /* keep the legacy text */ }
+            if (followUp) {
+                await bot.sendMessage({
+                    chatId,
+                    text: followUp,
+                    parseMode: 'HTML',
+                    replyMarkup: TelegramBotClient.getStudentReplyKeyboard()
+                });
+            }
             return;
         }
     }

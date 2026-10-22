@@ -19,7 +19,7 @@ import { Env } from '../types';
 import { TelegramBotClient, academyBotToken, allowedAcademies } from '../telegram';
 import { AcademyDatabase } from '../db';
 import { dispatchReceipts } from '../receipts';
-import { dispatchDueReminders } from '../reminders';
+import { dispatchDueReminders, runOverdueDailyScheduler } from '../reminders';
 
 export async function handleScheduledEvent(
     event: ScheduledEvent,
@@ -65,10 +65,23 @@ async function processAcademy(env: Env, academyId: string): Promise<void> {
     // dispatchDueReminders so webhook- and cron-triggered runs behave alike.
     try {
         const rem = await dispatchDueReminders(env, db, bot, academyId, now);
-        if (rem.sent || rem.retried || rem.failed || rem.cancelledPaid || rem.superseded) {
-            console.log(`[Cron] Reminders for "${academyId}": sent=${rem.sent} retry=${rem.retried} failed=${rem.failed} paidCancel=${rem.cancelledPaid} superseded=${rem.superseded}`);
+        if (rem.sent || rem.retried || rem.failed || rem.cancelledPaid || rem.superseded || rem.skippedAuto) {
+            console.log(`[Cron] Reminders for "${academyId}": sent=${rem.sent} retry=${rem.retried} failed=${rem.failed} paidCancel=${rem.cancelledPaid} superseded=${rem.superseded} autoOff=${rem.skippedAuto}`);
         }
     } catch (e) {
         console.error(`[Cron] Reminder dispatch failed for "${academyId}":`, e);
+    }
+
+    // Stage 6: extend the DAILY-OVERDUE chain of the SAME scheduler
+    // (auto:<installment>:<day>, day >= 2). Config-gated (overdueDaily)
+    // and stop-list-aware inside syncInstallmentReminders; runs even when
+    // the app is offline so the daily continuation never stalls.
+    try {
+        const od = await runOverdueDailyScheduler(db, academyId, now);
+        if (od.extended > 0) {
+            console.log(`[Cron] Daily-overdue chain for "${academyId}": checked=${od.checked} extended=${od.extended}`);
+        }
+    } catch (e) {
+        console.error(`[Cron] Daily-overdue extension failed for "${academyId}":`, e);
     }
 }
