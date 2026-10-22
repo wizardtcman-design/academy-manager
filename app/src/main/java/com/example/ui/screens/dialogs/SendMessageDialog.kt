@@ -86,10 +86,15 @@ fun SendMessageDialog(
         "AUTO" to "خودکار (تلگرام / دستی)",
         "TELEGRAM" to "ربات تلگرام",
         "MANUAL" to "ارسال دستی / اشتراک‌گذاری",
-        "SMS" to "ارسال پیامک SMS"
+        "SMS" to "ارسال پیامک SMS (غیرفعال — پنل پیامکی متصل نیست)"
     )
     var selectedChannel by remember { mutableStateOf(channels.first()) }
     var channelDropdownExpanded by remember { mutableStateOf(false) }
+    // Stage 6: one send per dialog session — a double click (the dialog
+    // closes asynchronously) can never fire the callback twice, and the
+    // SMS choice is honestly marked inactive: no SMS provider exists yet,
+    // so selecting it is refused instead of pretending a send happened.
+    var sendInFlight by remember { mutableStateOf(false) }
 
     var messageBody by remember {
         mutableStateOf(
@@ -309,12 +314,21 @@ fun SendMessageDialog(
 
                     Button(
                         onClick = {
-                            if (messageBody.isNotBlank()) {
+                            if (messageBody.isNotBlank() && !sendInFlight) {
+                                if (selectedChannel.first == "SMS") {
+                                    android.widget.Toast.makeText(
+                                        context,
+                                        "پنل پیامکی متصل نیست؛ ارسال پیامک فعلاً امکان‌پذیر نیست.",
+                                        android.widget.Toast.LENGTH_SHORT
+                                    ).show()
+                                    return@Button
+                                }
+                                sendInFlight = true
                                 onSendMessage(messageBody, selectedChannel.first)
                                 onDismiss()
                             }
                         },
-                        enabled = messageBody.isNotBlank(),
+                        enabled = messageBody.isNotBlank() && !sendInFlight,
                         modifier = Modifier
                             .weight(1.3f)
                             .testTag("confirm_send_message_button")

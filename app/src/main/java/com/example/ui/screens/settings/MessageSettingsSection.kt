@@ -21,6 +21,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccessTime
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.CloudSync
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.EditNote
 import androidx.compose.material.icons.filled.ExpandLess
@@ -195,6 +196,16 @@ fun MessageSettingsSection(
                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                             Icon(Icons.Default.Send, contentDescription = null, modifier = Modifier.size(16.dp))
                             Text("ب) پیام‌های هنرجویان", fontWeight = FontWeight.Bold)
+                        }
+                    }
+                )
+                Tab(
+                    selected = selectedTab == 2,
+                    onClick = { onSelectedTabChange(2) },
+                    text = {
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Icon(Icons.Default.CloudSync, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Text("ج) تنظیمات سرور ربات", fontWeight = FontWeight.Bold)
                         }
                     }
                 )
@@ -399,6 +410,19 @@ fun MessageSettingsSection(
                         }
                     )
                 }
+            }
+
+            if (selectedTab == 2) {
+                // ==========================================
+                // SUB-SECTION C: تنظیمات سرور پیام‌رسانی (Stage 6)
+                // The worker is the source of truth: per-event policy,
+                // templates, daily overdue reminders, channel status and
+                // per-installment stop/resume live here.
+                // ==========================================
+                ServerMessagingSection(
+                    students = viewModel.students.collectAsState().value,
+                    installments = viewModel.installments.collectAsState().value
+                )
             }
         }
     }

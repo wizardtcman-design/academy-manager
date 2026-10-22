@@ -514,6 +514,10 @@ class TelegramProvider(
                 put("message", text)
                 put("parseMode", "HTML")
                 put("withMenu", true)
+                // Stage 6 idempotency: one UUID per send attempt — a retry of
+                // THIS attempt (network timeout, double click) can never send
+                // the message twice; a NEW attempt gets a fresh key.
+                put("clientMsgId", java.util.UUID.randomUUID().toString())
             }
 
             val reqBuilder = Request.Builder()

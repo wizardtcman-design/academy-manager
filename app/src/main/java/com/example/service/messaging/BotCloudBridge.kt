@@ -397,6 +397,115 @@ class BotCloudBridge(private val context: Context) {
         }
     }
 
+    // ============================================================
+    // Stage 6: server messaging settings / templates / manual send
+    // (the worker is the source of truth; these are thin transports)
+    // ============================================================
+
+    /** GET /api/messaging/config — null when the worker is not configured/unreachable. */
+    suspend fun pullServerMessagingConfig(): WorkerMessaging.MessagingConfig? = withContext(Dispatchers.IO) {
+        val settings = AppDatabase.getDatabase(context).settingsDao().getSettingsDirect()
+        if (!isWorkerConfigured(settings)) return@withContext null
+        val (ok, body) = getJson(settings!!, "/api/messaging/config")
+        if (!ok) return@withContext null
+        WorkerMessaging.parseConfig(body)
+    }
+
+    /** PUT /api/messaging/config — returns (ok, bodyOrError). */
+    suspend fun pushServerMessagingConfig(payload: JSONObject): Pair<Boolean, String> = withContext(Dispatchers.IO) {
+        val settings = AppDatabase.getDatabase(context).settingsDao().getSettingsDirect()
+        if (!isWorkerConfigured(settings)) return@withContext Pair(false, "اتصال به سرور پیکربندی نشده است.")
+        putJson(settings!!, "/api/messaging/config", payload)
+    }
+
+    /** POST /api/messaging/preview — sample-data render; NEVER sends anything. */
+    suspend fun previewServerTemplate(payload: JSONObject): Pair<Boolean, String> = withContext(Dispatchers.IO) {
+        val settings = AppDatabase.getDatabase(context).settingsDao().getSettingsDirect()
+        if (!isWorkerConfigured(settings)) return@withContext Pair(false, "اتصال به سرور پیکربندی نشده است.")
+        postJson(settings!!, "/api/messaging/preview", payload)
+    }
+
+    /** POST /api/messaging/templates/reset — eventType optional (null = all). */
+    suspend fun resetServerTemplate(eventType: String?): Pair<Boolean, String> = withContext(Dispatchers.IO) {
+        val settings = AppDatabase.getDatabase(context).settingsDao().getSettingsDirect()
+        if (!isWorkerConfigured(settings)) return@withContext Pair(false, "اتصال به سرور پیکربندی نشده است.")
+        val payload = JSONObject()
+        if (!eventType.isNullOrBlank()) payload.put("eventType", eventType)
+        postJson(settings!!, "/api/messaging/templates/reset", payload)
+    }
+
+    /** POST /api/messaging/send — manager manual reminder send (idempotent by clientMsgId). */
+    suspend fun sendManualReminder(
+        studentId: String,
+        installmentId: String,
+        eventType: String,
+        channel: String,
+        text: String?,
+        clientMsgId: String
+    ): Pair<Boolean, String> = withContext(Dispatchers.IO) {
+        val settings = AppDatabase.getDatabase(context).settingsDao().getSettingsDirect()
+        if (!isWorkerConfigured(settings)) return@withContext Pair(false, "اتصال به سرور پیکربندی نشده است.")
+        val payload = JSONObject()
+            .put("studentId", studentId)
+            .put("installmentId", installmentId)
+            .put("eventType", eventType)
+            .put("channel", channel)
+            .put("clientMsgId", clientMsgId)
+        if (!text.isNullOrBlank()) payload.put("text", text)
+        postJson(settings!!, "/api/messaging/send", payload)
+    }
+
+    /** GET /api/messaging/reminders — per-installment schedule/status for the manager. */
+    suspend fun pullRemindersView(studentId: String? = null, installmentId: String? = null): Pair<Boolean, String> = withContext(Dispatchers.IO) {
+        val settings = AppDatabase.getDatabase(context).settingsDao().getSettingsDirect()
+        if (!isWorkerConfigured(settings)) return@withContext Pair(false, "اتصال به سرور پیکربندی نشده است.")
+        val query = buildList {
+            if (!studentId.isNullOrBlank()) add("studentId=$studentId")
+            if (!installmentId.isNullOrBlank()) add("installmentId=$installmentId")
+        }.joinToString("&")
+        val path = if (query.isBlank()) "/api/messaging/reminders" else "/api/messaging/reminders?$query"
+        getJson(settings!!, path)
+    }
+
+    /** POST /api/messaging/reminders/stop — scope: THIS installment only. */
+    suspend fun stopInstallmentReminders(installmentId: String, reason: String): Pair<Boolean, String> = withContext(Dispatchers.IO) {
+        val settings = AppDatabase.getDatabase(context).settingsDao().getSettingsDirect()
+        if (!isWorkerConfigured(settings)) return@withContext Pair(false, "اتصال به سرور پیکربندی نشده است.")
+        val payload = JSONObject().put("installmentId", installmentId)
+        if (reason.isNotBlank()) payload.put("reason", reason)
+        postJson(settings!!, "/api/messaging/reminders/stop", payload)
+    }
+
+    /** POST /api/messaging/reminders/resume — rebuilds the schedule of ONE installment. */
+    suspend fun resumeInstallmentReminders(installmentId: String): Pair<Boolean, String> = withContext(Dispatchers.IO) {
+        val settings = AppDatabase.getDatabase(context).settingsDao().getSettingsDirect()
+        if (!isWorkerConfigured(settings)) return@withContext Pair(false, "اتصال به سرور پیکربندی نشده است.")
+        postJson(settings!!, "/api/messaging/reminders/resume", JSONObject().put("installmentId", installmentId))
+    }
+
+    /** PUT transport (the existing postJson/getJson are POST/GET only). */
+    private fun putJson(settings: AcademySettings, path: String, payload: JSONObject): Pair<Boolean, String> {
+        return try {
+            val base = settings.telegramWorkerUrl.trim().removeSuffix("/")
+            val request = Request.Builder()
+                .url(base + path)
+                .addHeader("Authorization", "Bearer ${settings.telegramApiSecret.trim()}")
+                .addHeader("X-Academy-Id", WorkerBotApi.ACADEMY_ID)
+                .put(payload.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
+                .build()
+
+            httpClient.newCall(request).execute().use { response ->
+                val body = response.body?.string() ?: ""
+                val json = runCatching { JSONObject(body) }.getOrNull()
+                val success = response.isSuccessful && json?.optBoolean("success", false) == true
+                Pair(success, body)
+            }
+        } catch (e: Exception) {
+            Log.w(tag, "PUT $path failed: ${e.message}")
+            Pair(false, e.message ?: "network error")
+        }
+    }
+
     private fun reminderMessage(
         reminder: com.example.data.model.Reminder,
         student: Student,
