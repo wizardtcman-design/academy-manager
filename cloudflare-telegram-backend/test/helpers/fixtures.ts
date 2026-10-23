@@ -13,7 +13,7 @@ export const ACADEMY_A = 'academy-a';
 export const ACADEMY_B = 'academy-b';
 export const API_KEY = 'test-key-123';
 
-/** Loads schema.sql + migrations 0001..0010 exactly like a real deployment. */
+/** Loads schema.sql + migrations 0001..0011 exactly like a real deployment. */
 export function loadMigrations(): string[] {
     const base = fileURLToPath(new URL('../../schema.sql', import.meta.url));
     const dir = fileURLToPath(new URL('../../migrations/', import.meta.url));
@@ -27,7 +27,8 @@ export function loadMigrations(): string[] {
         '0007_file_content_nullable.sql',
         '0008_link_hash_index.sql',
         '0009_payments_receipts.sql',
-        '0010_stage5_reminders_claims.sql'
+        '0010_stage5_reminders_claims.sql',
+        '0011_backups.sql'
     ];
     return [readFileSync(base, 'utf8'), ...names.map((n) => readFileSync(dir + n, 'utf8'))];
 }

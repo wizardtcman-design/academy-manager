@@ -21,6 +21,8 @@ import { ingestPayments, PaymentInput } from '../receipts';
 import { createInstallmentPaymentLink, verifyTransaction } from '../gateway';
 import { syncInstallmentReminders } from '../reminders';
 import { handleMessagingApi } from './messaging-api';
+import { runBackup, getBackupStatus } from '../backup';
+import { financeHealth } from '../finance';
 
 // JSON response helper
 function jsonResponse<T>(data: ApiResponse<T>, status: number = 200): Response {
@@ -853,6 +855,60 @@ export async function handleApiRequest(
     // ============================================================
     const messagingRes = await handleMessagingApi(request, env, db, academyId, botToken, path, url);
     if (messagingRes) return messagingRes;
+
+    // ============================================================
+    // 7-a. Server-side backups (Stage 7) — metadata only ever leaves
+    //    D1; the snapshot payload itself is never served over HTTP.
+    // ============================================================
+    if (path === '/api/backup/status' && request.method === 'GET') {
+        try {
+            const status = await getBackupStatus(env, academyId);
+            return jsonResponse({
+                success: true,
+                message: 'وضعیت پشتیبان‌گیری سرور دریافت شد.',
+                data: status
+            });
+        } catch (err: any) {
+            return jsonResponse({ success: false, message: `خطا: ${err.message}`, errorCode: 500 }, 500);
+        }
+    }
+
+    // Manual backup / retry after a failure. Same verify-before-replace
+    // path as the daily cron; failure keeps every previous healthy copy.
+    if (path === '/api/backup/run' && request.method === 'POST') {
+        try {
+            const outcome = await runBackup(env, academyId, 'MANUAL');
+            return jsonResponse({
+                success: outcome.ok,
+                message: outcome.ok
+                    ? `پشتیبان‌گیری با موفقیت انجام و صحت‌سنجی شد (${Math.round(outcome.storedBytes / 1024)} کیلوبایت فشرده).`
+                    : `پشتیبان‌گیری ناموفق بود: ${outcome.error}`,
+                data: outcome,
+                errorCode: outcome.ok ? undefined : 500
+            }, outcome.ok ? 200 : 500);
+        } catch (err: any) {
+            return jsonResponse({ success: false, message: `خطا: ${err.message}`, errorCode: 500 }, 500);
+        }
+    }
+
+    // ============================================================
+    // 7-b. Financial health check (Stage 7) — read-only; the server
+    //    never rewrites financial history.
+    // ============================================================
+    if (path === '/api/finance/health' && request.method === 'GET') {
+        try {
+            const report = await financeHealth(env, academyId);
+            return jsonResponse({
+                success: true,
+                message: report.ok
+                    ? 'بررسی سلامت مالی انجام شد؛ ناسازگاری بحرانی یافت نشد.'
+                    : `${report.issues.length} ناسازگاری در داده‌های مالی سرور یافت شد (فقط گزارش؛ هیچ داده‌ای تغییر نکرد).`,
+                data: report
+            });
+        } catch (err: any) {
+            return jsonResponse({ success: false, message: `خطا: ${err.message}`, errorCode: 500 }, 500);
+        }
+    }
 
     return jsonResponse({
         success: false,

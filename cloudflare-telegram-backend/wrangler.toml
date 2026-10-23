@@ -15,6 +15,15 @@ PUBLIC_BASE_URL = "https://academy-manager1.wizard-tcman.workers.dev"
 # Empty means SMS sending is disabled (a provider has not been chosen yet).
 SMS_PROVIDER = ""
 
+# Stage 7 (server-side daily backup). All optional; free-tier safe defaults.
+# How many VERIFIED healthy snapshots to keep per academy.
+BACKUP_RETENTION_DAYS = "7"
+# Above this compressed size, contract-file BYTES are summarized (hash+size)
+# instead of stored, so one snapshot can never blow past the free D1 space.
+BACKUP_MAX_BYTES = "26214400"
+# Set "false" only for a deliberate metadata-only backup.
+BACKUP_INCLUDE_FILES = "true"
+
 # D1 relational DB (required): students, reminders, contracts, delivery status.
 [[d1_databases]]
 binding = "DB"

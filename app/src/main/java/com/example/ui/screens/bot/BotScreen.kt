@@ -265,6 +265,9 @@ fun BotScreen(
                                 viewModel.testTelegramBot(token, callback)
                             }
                         )
+                        // Stage 7: manager visibility of the server-side daily backup
+                        // (last run, result, errors, manual retry).
+                        com.example.ui.screens.bot.BotBackupSection(settings = settings)
                     }
                 }
 

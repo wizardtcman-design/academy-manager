@@ -13,6 +13,10 @@
 // dual-channel (Telegram + SMS-outbox) with independent, per-channel
 // status, controlled catch-up after an outage, and a paid re-check
 // right before every send.
+//
+// Stage 7: the same cron also runs the DAILY SERVER BACKUP once per
+// Tehran calendar day, per academy. It does NOT depend on the bot
+// connection and a backup failure never blocks reminder dispatch.
 // ============================================================
 
 import { Env } from '../types';
@@ -20,6 +24,10 @@ import { TelegramBotClient, academyBotToken, allowedAcademies } from '../telegra
 import { AcademyDatabase } from '../db';
 import { dispatchReceipts } from '../receipts';
 import { dispatchDueReminders, runOverdueDailyScheduler } from '../reminders';
+import { runBackup } from '../backup';
+
+/** Iran has had no DST since 2022; a fixed +03:30 offset defines the backup day. */
+const TEHRAN_OFFSET_MS = 3.5 * 60 * 60 * 1000;
 
 export async function handleScheduledEvent(
     event: ScheduledEvent,
@@ -35,6 +43,43 @@ export async function handleScheduledEvent(
         } catch (error) {
             console.error(`[Cron] Critical error for academy "${academyId}":`, error);
         }
+        // Backup runs in its own try/catch: a storage problem must never
+        // delay or cancel a due reminder, and vice versa.
+        try {
+            await maybeDailyBackup(env, academyId);
+        } catch (error) {
+            console.error(`[Cron] Daily backup error for academy "${academyId}":`, error);
+        }
+    }
+}
+
+/**
+ * Runs the daily backup once per Tehran calendar day per academy.
+ * The last completed day is stored in academy_settings under the
+ * tenant-scoped key "<academyId>:backup:last_day", so re-running the
+ * cron within the same day never produces a second snapshot (the
+ * manual retry button does).
+ */
+export async function maybeDailyBackup(env: Env, academyId: string): Promise<void> {
+    if (!env.DB) return;
+    const db = new AcademyDatabase(env, academyId);
+    const now = Date.now();
+    const tehranDay = new Date(now + TEHRAN_OFFSET_MS).toISOString().slice(0, 10);
+    // Tenant-scoped marker key: academy A's backup day never satisfies academy B.
+    const dayKey = `${academyId}:backup:last_day`;
+
+    const last = await db.getSetting(dayKey);
+    if (last === tehranDay) return;
+
+    const outcome = await runBackup(env, academyId, 'AUTO');
+    if (outcome.ok) {
+        // Mark the day as done only after a VERIFIED healthy snapshot exists.
+        await db.setSetting(dayKey, tehranDay);
+        console.log(`[Cron] Daily backup for "${academyId}" stored (${outcome.storedBytes} bytes compressed).`);
+    } else {
+        // No day marker: the next cron minute retries automatically, and the
+        // failure stays visible in /api/backup/status for the manager.
+        console.error(`[Cron] Daily backup for "${academyId}" FAILED: ${outcome.error}`);
     }
 }
 

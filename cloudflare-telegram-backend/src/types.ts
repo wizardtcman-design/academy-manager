@@ -15,6 +15,14 @@ export interface Env {
     PUBLIC_BASE_URL?: string;
     /** Set once a real SMS provider is chosen; sending stays disabled while empty. */
     SMS_PROVIDER?: string;
+
+    // Stage 7 backup knobs (all optional, all free-tier safe):
+    /** How many verified healthy snapshots to keep per academy (default 7). */
+    BACKUP_RETENTION_DAYS?: string;
+    /** Above this compressed size, file bytes are summarized, not stored (default 25 MB). */
+    BACKUP_MAX_BYTES?: string;
+    /** Set to "false" to exclude contract file bytes entirely (default: included). */
+    BACKUP_INCLUDE_FILES?: string;
     /**
      * Production must never answer from process memory: the isolate can be
      * recycled between requests and the user would see a fake success.

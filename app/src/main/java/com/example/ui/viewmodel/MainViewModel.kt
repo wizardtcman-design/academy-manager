@@ -81,6 +81,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val payments: StateFlow<List<Payment>> = academyRepository.allPayments
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
+    /** Stage 7: refund ledger for the income reports (refunds net against collected). */
+    val refunds: StateFlow<List<com.example.data.model.Refund>> = academyRepository.allRefunds
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
     val bankAccounts: StateFlow<List<BankAccount>> = academyRepository.allBankAccounts
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 

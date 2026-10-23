@@ -48,9 +48,11 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -74,27 +76,34 @@ fun ReportsScreen(
 ) {
     val context = LocalContext.current
     val payments by viewModel.payments.collectAsState()
+    val refunds by viewModel.refunds.collectAsState()
     val enrollments by viewModel.enrollments.collectAsState()
     val installments by viewModel.installments.collectAsState()
     val bankAccounts by viewModel.bankAccounts.collectAsState()
     val settings by viewModel.settings.collectAsState()
 
-    var selectedPeriod by remember { mutableStateOf("MONTHLY") } // "DAILY", "WEEKLY", "MONTHLY", "QUARTERLY", "ANNUAL"
-
     val todayShamsi = remember { PersianDateUtil.currentShamsiString() }
     val currentJalali = remember { PersianDateUtil.currentJalali() }
+
+    var selectedPeriod by remember { mutableStateOf("MONTHLY") } // "DAILY", "WEEKLY", "MONTHLY", "QUARTERLY", "ANNUAL"
+
+    // Stage 7: any selected Jalali month / year — the current one is just the default.
+    var selectedYear by remember { mutableIntStateOf(currentJalali.year) }
+    var selectedMonth by remember { mutableIntStateOf(currentJalali.month) }
+    var showHealthDialog by remember { mutableStateOf(false) }
+    var healthSummary by remember { mutableStateOf("") }
 
     val periodTitle = when (selectedPeriod) {
         "DAILY" -> "گزارش روزانه (${todayShamsi})"
         "WEEKLY" -> "گزارش ۷ روز اخیر"
-        "MONTHLY" -> "گزارش ماه ${PersianDateUtil.getMonthName(currentJalali.month)} ${currentJalali.year}"
+        "MONTHLY" -> "گزارش ماه ${PersianDateUtil.getMonthName(selectedMonth)} ${selectedYear}"
         "QUARTERLY" -> "گزارش ۳ ماهه فصلی"
-        "ANNUAL" -> "گزارش سال ${currentJalali.year}"
+        "ANNUAL" -> "گزارش سال ${selectedYear}"
         else -> "گزارش جامع"
     }
 
-    // Filter payments based on period
-    val periodPayments = remember(payments, selectedPeriod) {
+    // Filter payments based on period (selected month/year for MONTHLY & ANNUAL)
+    val periodPayments = remember(payments, selectedPeriod, selectedYear, selectedMonth) {
         val validPayments = payments.filter { !it.isReversed }
         when (selectedPeriod) {
             "DAILY" -> validPayments.filter { it.paymentDateShamsi == todayShamsi }
@@ -103,7 +112,7 @@ fun ReportsScreen(
                 validPayments.filter { it.paymentDateEpoch >= sevenDaysAgoEpoch }
             }
             "MONTHLY" -> {
-                val monthPrefix = String.format("%04d/%02d", currentJalali.year, currentJalali.month)
+                val monthPrefix = String.format("%04d/%02d", selectedYear, selectedMonth)
                 validPayments.filter { it.paymentDateShamsi.startsWith(monthPrefix) }
             }
             "QUARTERLY" -> {
@@ -111,11 +120,26 @@ fun ReportsScreen(
                 validPayments.filter { it.paymentDateEpoch >= ninetyDaysAgoEpoch }
             }
             "ANNUAL" -> {
-                val yearPrefix = "${currentJalali.year}/"
+                val yearPrefix = "$selectedYear/"
                 validPayments.filter { it.paymentDateShamsi.startsWith(yearPrefix) }
             }
             else -> validPayments
         }
+    }
+
+    // Stage 7: full income report from the REAL payment ledger (never tuition
+    // or unpaid installments), plus refunds, debt and overdue totals.
+    val incomeReport = remember(payments, refunds, installments, enrollments, selectedYear, selectedMonth, selectedPeriod) {
+        com.example.data.util.ReportCalculator.build(
+            query = com.example.data.util.ReportCalculator.Query(
+                jalaliYear = selectedYear,
+                jalaliMonth = if (selectedPeriod == "MONTHLY") selectedMonth else null
+            ),
+            payments = payments,
+            refunds = refunds,
+            installments = installments,
+            enrollments = enrollments
+        )
     }
 
     val totalIncome = periodPayments.sumOf { it.amount }
@@ -127,21 +151,24 @@ fun ReportsScreen(
     val cashIncome = periodPayments.filter { it.paymentMethod == "CASH" }.sumOf { it.amount }
     val otherIncome = totalIncome - posIncome - transferIncome - cashIncome
 
-    // Debt metrics
-    val totalDebt = installments.filter { it.status != "PAID" }.sumOf { it.remainingAmount }
-    val overdueCount = installments.count { it.status == "OVERDUE" }
+    // Debt metrics (Stage 7: computed from raw data, excluding cancelled)
+    val totalDebt = incomeReport.remainingDebt
+    val overdueCount = incomeReport.overdueCount
+    val overdueAmount = incomeReport.overdueAmount
+    val periodRefundTotal = incomeReport.refunds
 
     val reportSummaryText = buildString {
         appendLine("📊 $periodTitle")
         appendLine("آموزشگاه: ${settings?.academyName ?: "آموزشگاه کامپیوتر"}")
         appendLine("━━━━━━━━━━━━━━━━━━━")
         appendLine("▫️ مجموع درآمد وصولی: ${PersianDateUtil.formatCurrency(totalIncome)}")
+        if (periodRefundTotal > 0) appendLine("▫️ برگشت وجه: ${PersianDateUtil.formatCurrency(periodRefundTotal)}")
         appendLine("▫️ تعداد کل تراکنش‌ها: ${PersianDateUtil.toPersianDigits(transactionCount.toString())}")
         appendLine("▫️ کارتخوان (POS): ${PersianDateUtil.formatCurrency(posIncome)}")
         appendLine("▫️ کارت به کارت: ${PersianDateUtil.formatCurrency(transferIncome)}")
         appendLine("▫️ نقدی: ${PersianDateUtil.formatCurrency(cashIncome)}")
         appendLine("▫️ مانده کل بدهی‌ها: ${PersianDateUtil.formatCurrency(totalDebt)}")
-        appendLine("▫️ تعداد اقساط معوقه: ${PersianDateUtil.toPersianDigits(overdueCount.toString())}")
+        appendLine("▫️ اقساط معوقه: ${PersianDateUtil.toPersianDigits(overdueCount.toString())} عدد (${PersianDateUtil.formatCurrency(overdueAmount)})")
         appendLine("━━━━━━━━━━━━━━━━━━━")
         appendLine("تاریخ صدور گزارش: $todayShamsi")
     }
@@ -186,13 +213,58 @@ fun ReportsScreen(
                         listOf(
                             com.example.ui.components.FilterOption("DAILY", "روزانه (امروز)"),
                             com.example.ui.components.FilterOption("WEEKLY", "۷ روز اخیر"),
-                            com.example.ui.components.FilterOption("MONTHLY", "ماه جاری"),
+                            com.example.ui.components.FilterOption("MONTHLY", "ماه دلخواه"),
                             com.example.ui.components.FilterOption("QUARTERLY", "فصلی (۳ ماهه)"),
-                            com.example.ui.components.FilterOption("ANNUAL", "سالانه")
+                            com.example.ui.components.FilterOption("ANNUAL", "سال دلخواه")
                         )
                     )
                 )
             )
+        }
+
+        // Stage 7: month / year picker for the MONTHLY & ANNUAL views
+        if (selectedPeriod == "MONTHLY" || selectedPeriod == "ANNUAL") {
+            item {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(16.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                    elevation = CardDefaults.cardElevation(defaultElevation = 1.5.dp)
+                ) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Text(
+                            text = if (selectedPeriod == "MONTHLY") "انتخاب ماه گزارش" else "انتخاب سال گزارش",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Spacer(modifier = Modifier.height(10.dp))
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            if (selectedPeriod == "MONTHLY") {
+                                (1..12).forEach { m ->
+                                    FilterChip(
+                                        selected = selectedMonth == m,
+                                        onClick = { selectedMonth = m },
+                                        label = { Text(PersianDateUtil.getMonthName(m), style = MaterialTheme.typography.labelSmall) }
+                                    )
+                                }
+                            } else {
+                                ((currentJalali.year - 4)..currentJalali.year).forEach { y ->
+                                    FilterChip(
+                                        selected = selectedYear == y,
+                                        onClick = { selectedYear = y },
+                                        label = { Text(PersianDateUtil.toPersianDigits(y.toString()), style = MaterialTheme.typography.labelSmall) }
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         // Income Hero Card
@@ -322,6 +394,141 @@ fun ReportsScreen(
             }
         }
 
+        // Stage 7: monthly breakdown of the whole year (income from REAL payments only)
+        item {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                elevation = CardDefaults.cardElevation(defaultElevation = 1.5.dp)
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text(
+                        text = "درآمد ماه‌های سال ${PersianDateUtil.toPersianDigits(selectedYear.toString())} (وصول واقعی منهای برگشت وجه)",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Spacer(modifier = Modifier.height(10.dp))
+                    incomeReport.monthly.forEach { m ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 4.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(m.monthName, style = MaterialTheme.typography.bodyMedium)
+                            Text(
+                                text = buildString {
+                                    append(PersianDateUtil.formatCurrency(m.net))
+                                    if (m.refunds > 0) append(" (برگشت: ${PersianDateUtil.formatCurrency(m.refunds)})")
+                                },
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = if (m.net > 0) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        // Stage 7: breakdown by course
+        if (incomeReport.byCourse.isNotEmpty()) {
+            item {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(16.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                    elevation = CardDefaults.cardElevation(defaultElevation = 1.5.dp)
+                ) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Text(
+                            text = "تفکیک درآمد بر اساس دوره",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        incomeReport.byCourse.take(12).forEach { entry ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 4.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text("${entry.name} (${PersianDateUtil.toPersianDigits(entry.count.toString())} تراکنش)", style = MaterialTheme.typography.bodyMedium)
+                                Text(PersianDateUtil.formatCurrency(entry.amount), fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodyMedium)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Stage 7: breakdown by student
+        if (incomeReport.byStudent.isNotEmpty()) {
+            item {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(16.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                    elevation = CardDefaults.cardElevation(defaultElevation = 1.5.dp)
+                ) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Text(
+                            text = "تفکیک درآمد بر اساس هنرجو",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        incomeReport.byStudent.take(12).forEach { entry ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(vertical = 4.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Text(entry.name, style = MaterialTheme.typography.bodyMedium)
+                                Text(PersianDateUtil.formatCurrency(entry.amount), fontWeight = FontWeight.Bold, style = MaterialTheme.typography.bodyMedium)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Stage 7: tuition vs collected vs debt vs overdue (reported separately)
+        item {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(16.dp),
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                elevation = CardDefaults.cardElevation(defaultElevation = 1.5.dp)
+            ) {
+                Column(modifier = Modifier.padding(16.dp)) {
+                    Text(
+                        text = "وضعیت شهریه، بدهی و اقساط معوق",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Spacer(modifier = Modifier.height(10.dp))
+                    MethodBreakdownRow(title = "شهریهٔ کل برنامه‌ها", amount = incomeReport.totalTuition, icon = Icons.Default.Assessment)
+                    HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp), thickness = 0.5.dp)
+                    MethodBreakdownRow(title = "درآمد واقعاً وصول‌شده (کل زمان‌ها)", amount = incomeReport.collected, icon = Icons.Default.TrendingUp)
+                    HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp), thickness = 0.5.dp)
+                    MethodBreakdownRow(title = "بدهی باقی‌مانده", amount = incomeReport.remainingDebt, icon = Icons.Default.AccountBalance)
+                    HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp), thickness = 0.5.dp)
+                    MethodBreakdownRow(title = "مبلغ اقساط معوق", amount = incomeReport.overdueAmount, icon = Icons.Default.DateRange)
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(
+                        text = "تعداد اقساط معوق: ${PersianDateUtil.toPersianDigits(incomeReport.overdueCount.toString())} · اقساط پرداخت‌نشده: ${PersianDateUtil.toPersianDigits(incomeReport.unpaidInstallmentsCount.toString())}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (incomeReport.overdueCount > 0) StatusWarning else MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
+
         // Action Buttons (Share & Copy Report)
         item {
             Row(
@@ -358,6 +565,94 @@ fun ReportsScreen(
                 }
             }
         }
+
+        // Stage 7: free Excel-compatible CSV export via the existing FileProvider
+        item {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                OutlinedButton(
+                    onClick = {
+                        try {
+                            val csv = com.example.data.util.ReportCalculator.toCsv(incomeReport)
+                            val dir = context.cacheDir.resolve("reports").apply { mkdirs() }
+                            val file = java.io.File(dir, "income-report-${selectedYear}${if (selectedPeriod == "MONTHLY") "-" + "%02d".format(selectedMonth) else ""}.csv")
+                            file.writeText(csv, Charsets.UTF_8)
+                            val uri = androidx.core.content.FileProvider.getUriForFile(
+                                context, "${context.packageName}.fileprovider", file
+                            )
+                            val intent = Intent(Intent.ACTION_SEND).apply {
+                                type = "text/csv"
+                                putExtra(Intent.EXTRA_STREAM, uri)
+                                putExtra(Intent.EXTRA_SUBJECT, "گزارش درآمد ${selectedYear}")
+                                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                            }
+                            context.startActivity(Intent.createChooser(intent, "خروجی CSV (قابل باز کردن در Excel)"))
+                        } catch (e: Exception) {
+                            Toast.makeText(context, "خروجی CSV ناموفق بود: ${e.message}", Toast.LENGTH_LONG).show()
+                        }
+                    },
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Icon(Icons.Default.Summarize, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("خروجی CSV (Excel)")
+                }
+
+                OutlinedButton(
+                    onClick = {
+                        val health = com.example.data.util.FinanceHealthChecker.check(
+                            payments = payments,
+                            installments = installments,
+                            refunds = refunds
+                        )
+                        healthSummary = buildString {
+                            appendLine(if (health.ok) "✅ ناسازگاری بحرانی پیدا نشد." else "⚠️ ${PersianDateUtil.toPersianDigits(health.errors.size.toString())} ناسازگاری مهم یافت شد.")
+                            if (health.warnings.isNotEmpty()) {
+                                appendLine("هشدارها: ${PersianDateUtil.toPersianDigits(health.warnings.size.toString())} مورد")
+                            }
+                            appendLine()
+                            appendLine("پرداخت‌های بررسی‌شده: ${PersianDateUtil.toPersianDigits(health.checkedPayments.toString())}")
+                            appendLine("اقساط بررسی‌شده: ${PersianDateUtil.toPersianDigits(health.checkedInstallments.toString())}")
+                            appendLine("مجموع وصول‌شده: ${PersianDateUtil.formatCurrency(health.totalCollected)}")
+                            appendLine("مجموع برگشت وجه: ${PersianDateUtil.formatCurrency(health.totalRefunds)}")
+                            appendLine("بدهی باقی‌مانده: ${PersianDateUtil.formatCurrency(health.totalRemainingDebt)}")
+                            appendLine()
+                            (health.errors + health.warnings).take(8).forEach { appendLine("• ${it.message}") }
+                            appendLine()
+                            appendLine("این بررسی فقط گزارش می‌دهد؛ بدون تأیید شما هیچ دادهٔ مالی تغییر نمی‌کند.")
+                        }
+                        showHealthDialog = true
+                    },
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Icon(Icons.Default.QueryStats, contentDescription = null, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text("بررسی سلامت مالی")
+                }
+            }
+        }
+    }
+
+    // Stage 7: read-only financial health result dialog
+    if (showHealthDialog) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { showHealthDialog = false },
+            confirmButton = {
+                TextButton(onClick = { showHealthDialog = false }) { Text("متوجه شدم") }
+            },
+            title = {
+                Text("نتیجهٔ بررسی سلامت مالی", fontWeight = FontWeight.Bold)
+            },
+            text = {
+                Text(
+                    healthSummary,
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.verticalScroll(rememberScrollState())
+                )
+            }
+        )
     }
 }
 

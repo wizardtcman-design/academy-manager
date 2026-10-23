@@ -415,7 +415,7 @@ class BotCloudBridge(private val context: Context) {
     suspend fun pushServerMessagingConfig(payload: JSONObject): Pair<Boolean, String> = withContext(Dispatchers.IO) {
         val settings = AppDatabase.getDatabase(context).settingsDao().getSettingsDirect()
         if (!isWorkerConfigured(settings)) return@withContext Pair(false, "اتصال به سرور پیکربندی نشده است.")
-        putJson(settings!!, "/api/messaging/config", payload)
+        requestJson(settings!!, "PUT", "/api/messaging/config", payload)
     }
 
     /** POST /api/messaging/preview — sample-data render; NEVER sends anything. */
@@ -483,25 +483,56 @@ class BotCloudBridge(private val context: Context) {
         postJson(settings!!, "/api/messaging/reminders/resume", JSONObject().put("installmentId", installmentId))
     }
 
-    /** PUT transport (the existing postJson/getJson are POST/GET only). */
-    private fun putJson(settings: AcademySettings, path: String, payload: JSONObject): Pair<Boolean, String> {
+    // ==================================================================
+    // Stage 7: server-side backup control (metadata only; the snapshot
+    // payload itself never leaves the Worker's D1).
+    // ==================================================================
+
+    /** GET /api/backup/status -> (ok, raw body for BackupApi parsing). */
+    suspend fun fetchBackupStatus(settings: AcademySettings): Pair<Boolean, String> =
+        withContext(Dispatchers.IO) { requestJson(settings, "GET", "/api/backup/status", null) }
+
+    /** POST /api/backup/run -> manual/retry run of the verified backup. */
+    suspend fun runServerBackup(settings: AcademySettings): Pair<Boolean, String> =
+        withContext(Dispatchers.IO) { requestJson(settings, "POST", "/api/backup/run", JSONObject()) }
+
+    /** GET /api/finance/health -> server-side consistency report (read-only). */
+    suspend fun fetchFinanceHealth(settings: AcademySettings): Pair<Boolean, String> =
+        withContext(Dispatchers.IO) { requestJson(settings, "GET", "/api/finance/health", null) }
+
+    /**
+     * Generalized JSON transport (GET/POST/PUT) shared by the stage 6
+     * messaging config PUT and the stage 7 backup/finance GET/POST calls.
+     */
+    private fun requestJson(
+        settings: AcademySettings,
+        method: String,
+        path: String,
+        payload: JSONObject?
+    ): Pair<Boolean, String> {
         return try {
             val base = settings.telegramWorkerUrl.trim().removeSuffix("/")
-            val request = Request.Builder()
+            val builder = Request.Builder()
                 .url(base + path)
                 .addHeader("Authorization", "Bearer ${settings.telegramApiSecret.trim()}")
                 .addHeader("X-Academy-Id", WorkerBotApi.ACADEMY_ID)
-                .put(payload.toString().toRequestBody("application/json; charset=utf-8".toMediaType()))
-                .build()
-
-            httpClient.newCall(request).execute().use { response ->
+            when (method) {
+                "GET" -> builder.get()
+                "PUT" -> builder.put(
+                    (payload ?: JSONObject()).toString().toRequestBody("application/json; charset=utf-8".toMediaType())
+                )
+                else -> builder.post(
+                    (payload ?: JSONObject()).toString().toRequestBody("application/json; charset=utf-8".toMediaType())
+                )
+            }
+            httpClient.newCall(builder.build()).execute().use { response ->
                 val body = response.body?.string() ?: ""
                 val json = runCatching { JSONObject(body) }.getOrNull()
                 val success = response.isSuccessful && json?.optBoolean("success", false) == true
                 Pair(success, body)
             }
         } catch (e: Exception) {
-            Log.w(tag, "PUT $path failed: ${e.message}")
+            Log.w(tag, "$method $path failed: ${e.message}")
             Pair(false, e.message ?: "network error")
         }
     }
