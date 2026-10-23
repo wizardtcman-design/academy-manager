@@ -875,9 +875,19 @@ export async function handleApiRequest(
 
     // Manual backup / retry after a failure. Same verify-before-replace
     // path as the daily cron; failure keeps every previous healthy copy.
+    // A PENDING outcome means a run is still in progress (or was refused
+    // because one is) — reported honestly as "not finished", never as a
+    // success and never as a server error.
     if (path === '/api/backup/run' && request.method === 'POST') {
         try {
             const outcome = await runBackup(env, academyId, 'MANUAL');
+            if (outcome.status === 'PENDING') {
+                return jsonResponse({
+                    success: false,
+                    message: outcome.error,
+                    data: outcome
+                }, 200);
+            }
             return jsonResponse({
                 success: outcome.ok,
                 message: outcome.ok

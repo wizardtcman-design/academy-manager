@@ -77,7 +77,11 @@ export async function maybeDailyBackup(env: Env, academyId: string): Promise<voi
     if (outcome.ok) {
         // Mark the day as done only after a VERIFIED healthy snapshot exists.
         await db.setSetting(dayKey, tehranDay);
-        console.log(`[Cron] Daily backup for "${academyId}" stored (${outcome.storedBytes} bytes compressed).`);
+        console.log(`[Cron] Daily backup for "${academyId}" stored (${outcome.storedBytes} bytes compressed${outcome.resumed ? ', resumed' : ''}).`);
+    } else if (outcome.status === 'PENDING') {
+        // Interrupted run being continued — never an error, the next cron
+        // minute picks the SAME snapshot up (no day marker yet, by design).
+        console.log(`[Cron] Daily backup for "${academyId}" in progress (phase ${outcome.phase ?? 'COLLECT'}); continuing on the next minute.`);
     } else {
         // No day marker: the next cron minute retries automatically, and the
         // failure stays visible in /api/backup/status for the manager.

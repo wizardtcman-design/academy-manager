@@ -50,7 +50,8 @@
 ## ۳) برنامهٔ پشتیبان‌گیری (قبل از هر تغییر — فقط خواندن)
 
 ### گام ۰ — ثبت نقطهٔ بازیابی ابری (Time Travel)
-D1 به‌صورت پیش‌فرض ۳۰ روز Time Travel دارد. دستور زیر فقط گزارش می‌دهد:
+D1 به‌صورت پیش‌فرض Time Travel دارد — سقف رسمی: **۷ روز روی Free / ۳۰ روز روی Paid**
+(منبع: `developers.cloudflare.com/d1/platform/limits/`، استعلام ۲۰۲۶-۱۰-۲۳). دستور زیر فقط گزارش می‌دهد:
 ```bash
 npx wrangler d1 time-travel info academy-contracts-dev --remote
 ```

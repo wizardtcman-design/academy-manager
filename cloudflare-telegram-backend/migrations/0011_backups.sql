@@ -9,13 +9,15 @@
 -- WHY INSIDE D1 (and not R2 / another service):
 --   * R2 is not enabled on this Cloudflare account (API 10042) and
 --     activating a new paid/paid-capable service is forbidden for
---     this stage. D1 storage is already provisioned and free tier
---     covers 5 GB; a 7-day retention of the current ~21 MB database
---     needs well under 200 MB.
+--     this stage. D1 free storage is 500 MB PER DATABASE (5 GB per
+--     ACCOUNT) per the official limits page (developers.cloudflare.com/
+--     d1/platform/limits/, verified 2026-10-23); a 7-day retention of
+--     the current ~21 MB database needs well under 200 MB.
 --   * Disaster recovery for a TOTAL D1 loss stays Cloudflare's own
---     Time Travel (free, 30-day point-in-time restore). This table
---     protects against LOGICAL damage: accidental deletes, bad
---     writes, corrupted rows.
+--     Time Travel (free plan: 7-day point-in-time restore; 30 days on
+--     Paid). A backup stored inside the same D1 is NOT an independent
+--     copy against total database loss — it protects against LOGICAL
+--     damage: accidental deletes, bad writes, corrupted rows.
 --
 -- SAFETY RULES (enforced in src/backup.ts):
 --   * A new snapshot is fully verified (sha256 + gunzip + JSON parse
