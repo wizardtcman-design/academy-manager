@@ -131,6 +131,17 @@ async function seedFinancialLedger(db: D1Shim, academyId: string): Promise<void>
          VALUES (?, ?, ?, ?, 500000, 'PENDING', 'none', '', 'h2', 'https://pay.test/2', ?, ?, 0, '', 0, '', ?, ?)`,
         `${academyId}-order-2`, academyId, stu0, inst00, NOW, NOW + DAY_MS, NOW, NOW
     );
+    // A FAILED attempt keeps its gateway ref and verification failure audit;
+    // it must survive restore with the same final status (mandate: تراکنش ناموفق).
+    db.run(
+        `INSERT INTO payment_transactions (id, academy_id, student_id, installment_id, amount, status,
+             provider, provider_ref, link_token_hash, redirect_url, link_created_at_epoch, expires_at_epoch,
+             paid_amount, verified_payload, verified_at_epoch, receipt_id, created_at_epoch, updated_at_epoch)
+         VALUES (?, ?, ?, ?, 700000, 'FAILED', 'zarinpal', 'AUTH-FAIL', 'h3', 'https://pay.test/3', ?, ?,
+                 0, '{"code":-30,"message":"rejected by gateway"}', ?, '', ?, ?)`,
+        `${academyId}-order-3`, academyId, stu0, inst00,
+        NOW - 2 * DAY_MS, NOW - DAY_MS, NOW - 2 * DAY_MS + 600_000, NOW - 2 * DAY_MS + 600_000, NOW
+    );
 
     // --- payment_link_tokens: the RAW capability token of the paid order ---
     db.run(
@@ -235,7 +246,7 @@ describe('stage 7 financial coverage: snapshot contents', () => {
         expect(outcome.status).toBe('HEALTHY');
 
         expect(outcome.tableCounts['payment_receipts']).toBe(4);
-        expect(outcome.tableCounts['payment_transactions']).toBe(2);
+        expect(outcome.tableCounts['payment_transactions']).toBe(3);
         expect(outcome.tableCounts['payment_link_tokens']).toBe(1);
         expect(outcome.tableCounts['payment_claims']).toBe(3);
         expect(outcome.tableCounts['payment_events']).toBe(6);
@@ -270,6 +281,12 @@ describe('stage 7 financial coverage: snapshot contents', () => {
         expect(txns.find((t) => t.id === `${ACADEMY_A}-order-1`).receipt_id).toBe(`${ACADEMY_A}-pay-2`);
         expect(JSON.parse(txns.find((t) => t.id === `${ACADEMY_A}-order-1`).verified_payload).code).toBe(100);
         expect(txns.find((t) => t.id === `${ACADEMY_A}-order-2`).status).toBe('PENDING');
+        // The FAILED attempt keeps its gateway failure audit and stays linkless.
+        const failedTxn = txns.find((t) => t.id === `${ACADEMY_A}-order-3`);
+        expect(failedTxn.status).toBe('FAILED');
+        expect(failedTxn.receipt_id).toBe('');
+        expect(failedTxn.paid_amount).toBe(0);
+        expect(JSON.parse(failedTxn.verified_payload).code).toBe(-30);
 
         // The raw link token (needed so reminders can re-send the SAME link).
         expect((bundle.tables['payment_link_tokens'] as any[])[0].order_id).toBe(`${ACADEMY_A}-order-1`);
@@ -332,22 +349,22 @@ describe('stage 7 financial coverage: recovery equality', () => {
         }
 
         // --- status distributions (final statuses of every transaction) ---
+        const statusCase = (col: string, alias: string) =>
+            `COALESCE(SUM(CASE WHEN ${col} = '${alias}' THEN 1 ELSE 0 END),0) AS ${alias.toLowerCase()}`;
         for (const [table, col] of [['payment_transactions', 'status'], ['payment_claims', 'status'], ['payment_receipts', 'send_status']] as const) {
+            const select = ['PAID', 'PENDING', 'FAILED', 'REJECTED', 'APPROVED'].map((s) => statusCase(col, s)).join(',\n                        ');
             const live = db.get(
-                `SELECT COALESCE(SUM(CASE WHEN ${col} = 'PAID' THEN 1 ELSE 0 END),0) paid,
-                        COALESCE(SUM(CASE WHEN ${col} = 'PENDING' THEN 1 ELSE 0 END),0) pending,
-                        COALESCE(SUM(CASE WHEN ${col} = 'REJECTED' THEN 1 ELSE 0 END),0) rejected,
-                        COALESCE(SUM(CASE WHEN ${col} = 'APPROVED' THEN 1 ELSE 0 END),0) approved
-                 FROM ${table} WHERE academy_id = ?`, ACADEMY_A) as any;
+                `SELECT ${select} FROM ${table} WHERE academy_id = ?`, ACADEMY_A
+            ) as any;
             const back = fresh.get(
-                `SELECT COALESCE(SUM(CASE WHEN ${col} = 'PAID' THEN 1 ELSE 0 END),0) paid,
-                        COALESCE(SUM(CASE WHEN ${col} = 'PENDING' THEN 1 ELSE 0 END),0) pending,
-                        COALESCE(SUM(CASE WHEN ${col} = 'REJECTED' THEN 1 ELSE 0 END),0) rejected,
-                        COALESCE(SUM(CASE WHEN ${col} = 'APPROVED' THEN 1 ELSE 0 END),0) approved
-                 FROM ${table} WHERE academy_id = ?`, ACADEMY_A) as any;
-            expect([back.paid, back.pending, back.rejected, back.approved])
-                .toEqual([live.paid, live.pending, live.rejected, live.approved]);
+                `SELECT ${select} FROM ${table} WHERE academy_id = ?`, ACADEMY_A
+            ) as any;
+            expect([back.paid, back.pending, back.failed, back.rejected, back.approved])
+                .toEqual([live.paid, live.pending, live.failed, live.rejected, live.approved]);
         }
+        // The FAILED transaction must really exist on both sides (not vacuously equal).
+        expect(fresh.get(`SELECT COUNT(*) n FROM payment_transactions WHERE status = 'FAILED' AND academy_id = ?`, ACADEMY_A) as any)
+            .toMatchObject({ n: 1 });
 
         // --- UNIQUE ids: COUNT(*) == COUNT(DISTINCT id) in every ledger table ---
         for (const table of ['payment_receipts', 'payment_transactions', 'payment_claims', 'payment_events']) {
@@ -485,5 +502,12 @@ describe('stage 7 financial coverage: verification of the new sums', () => {
         const v3 = verifyBundleAgainstLive(tampered3, ACADEMY_A, liveCounts, bundle.financialChecks);
         expect(v3.ok).toBe(false);
         expect(v3.error).toContain('رویداد');
+
+        // Tamper the FAILED-transaction count -> verification must fail.
+        const tampered4: BackupBundle = JSON.parse(JSON.stringify(bundle));
+        (tampered4.financialChecks as FinancialChecks).failedTransactionCount += 1;
+        const v4 = verifyBundleAgainstLive(tampered4, ACADEMY_A, liveCounts, bundle.financialChecks);
+        expect(v4.ok).toBe(false);
+        expect(v4.error).toContain('ناموفق');
     });
 });

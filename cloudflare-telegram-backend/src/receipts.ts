@@ -24,6 +24,7 @@
 import { Env, PaymentReceiptRecord } from './types';
 import { AcademyDatabase } from './db';
 import { TelegramBotClient } from './telegram';
+import { ContractStore } from './contracts-store';
 import { composeReceiptPdf, ReceiptPdfData } from './receipt-pdf';
 import { MessagingConfig, MsgEventKey, renderEvent, getMessagingConfig, escapeHtml, MSG_EVENTS, renderMsgTemplate } from './messaging';
 
@@ -363,7 +364,33 @@ export function composeReceiptPdfFor(r: ReceiptRow, academyName: string, academy
 // ============================================================
 // Delivery (cron-driven, per academy, own bot only)
 // ============================================================
-export interface DispatchOutcome { sent: number; failed: number; notices: number; skippedAuto: number }
+export interface DispatchOutcome { sent: number; failed: number; notices: number; skippedAuto: number; duplicates: number; inFlight: number }
+
+
+/**
+ * Claim-before-send gate for the receipt pipeline (shared by receipts and
+ * reversal notices — each with its own ledger key). Returns true when THIS
+ * run may send; false when the ledger says someone else already did, is
+ * doing it, or the stale window has not passed yet (and counts the skip).
+ */
+async function claimOrSkip(
+    store: ContractStore, academyId: string, ledgerKey: string, out: DispatchOutcome
+): Promise<boolean> {
+    const claimed = await store.claimDelivery(academyId, ledgerKey, 'telegram');
+    if (claimed) return true;
+    const prev = await store.getDeliveryRow(academyId, ledgerKey, 'telegram');
+    const prevStatus = prev?.status || '';
+    const prevAge = Date.now() - (prev?.updated_at_epoch || 0);
+    if (prevStatus === 'SENT' || prevStatus === 'SKIPPED') { out.duplicates++; return false; }
+    // FAILED = the previous attempt never delivered anything, so the very
+    // next tick may retry immediately (bounded by MAX_RECEIPT_ATTEMPTS) —
+    // an immediate reclaim cannot duplicate a message that was never sent.
+    const reclaimable = prevStatus === 'PENDING' ? prevAge > 10 * 60_000 : true;
+    if (!reclaimable) { out.inFlight++; return false; }
+    const reClaimed = await store.reclaimDelivery(academyId, ledgerKey, 'telegram');
+    if (!reClaimed) { out.inFlight++; return false; }
+    return true;
+}
 
 /**
  * Sends every QUEUED receipt whose eligibility time has passed, and every
@@ -378,21 +405,29 @@ export async function dispatchReceipts(
     academyId: string,
     now = Date.now()
 ): Promise<DispatchOutcome> {
-    const out: DispatchOutcome = { sent: 0, failed: 0, notices: 0, skippedAuto: 0 };
+    const out: DispatchOutcome = { sent: 0, failed: 0, notices: 0, skippedAuto: 0, duplicates: 0, inFlight: 0 };
     const academyName = await db.getSetting('academy_name', 'آموزشگاه');
     const currency = await db.getSetting('currency_unit', 'تومان');
     // Stage 6: per-event auto-send policy (receipts / reversal notices).
     const cfg = await getMessagingConfig(db);
+    // Delivery ledger: claim BEFORE send so overlapping cron runs and
+    // re-delivered minutes can never double-send the same receipt.
+    const store = new ContractStore(env);
 
     const due = await db.listDuePaymentReceipts(academyId, now, DISPATCH_LIMIT);
     for (const r of due) {
         // Reversal notices ride the same pipeline.
         if (r.send_status === 'REVERSAL_QUEUED') {
-            // Stage 6: auto-send policy gate — the row stays queued.
+            // Stage 6: auto-send policy gates — the row stays queued.
             if (cfg.events.REVERSAL_NOTICE.auto === false) { out.skippedAuto++; continue; }
+            if (cfg.events.REVERSAL_NOTICE.channel === 'sms') { out.skippedAuto++; continue; }
             const student = await db.getStudentById(r.student_id, academyId);
             const chat = student?.telegram_chat_id;
             if (!chat) continue; // stays queued until the student connects
+            // Claim the notice slot first (own ledger key: a receipt that was
+            // already delivered carries its own SENT row under receipt:<id>).
+            const noticeGate = await claimOrSkip(store, academyId, `notice:${r.id}`, out);
+            if (!noticeGate) continue;
             let res: Awaited<ReturnType<TelegramBotClient['sendMessage']>>;
             try {
                 res = await bot.sendMessage({
@@ -409,12 +444,14 @@ export async function dispatchReceipts(
                     send_status: 'REVERSED_NOTIFIED', telegram_message_id: String((res.result as any)?.message_id || ''),
                     last_attempt_epoch: Date.now(), updated_at_epoch: Date.now()
                 });
+                await store.finishDelivery(academyId, `notice:${r.id}`, 'telegram', 'SENT', '', String((res.result as any)?.message_id || ''));
                 out.notices++;
             } else {
                 await db.updatePaymentReceipt(r.id, academyId, {
                     attempts: r.attempts + 1, last_attempt_epoch: Date.now(),
                     last_error: (res as any).description || 'send failed', updated_at_epoch: Date.now()
                 });
+                await store.finishDelivery(academyId, `notice:${r.id}`, 'telegram', 'FAILED', (res as any).description || 'send failed');
                 out.failed++;
             }
             continue;
@@ -430,9 +467,12 @@ export async function dispatchReceipts(
             continue; // stays QUEUED: delivered the moment the student connects
         }
 
-        // Stage 6: auto-send policy gate — the receipt stays QUEUED and is
+        // Stage 6: auto-send policy gates — the receipt stays QUEUED and is
         // delivered whenever the manager re-enables this event type.
         if (cfg.events.PAYMENT_RECEIPT.auto === false) { out.skippedAuto++; continue; }
+        if (cfg.events.PAYMENT_RECEIPT.channel === 'sms') { out.skippedAuto++; continue; }
+        const receiptGate = await claimOrSkip(store, academyId, `receipt:${r.id}`, out);
+        if (!receiptGate) continue;
 
         let res: Awaited<ReturnType<TelegramBotClient['sendMessage']>>;
         try {
@@ -453,6 +493,7 @@ export async function dispatchReceipts(
                 telegram_message_id: String((res.result as any)?.message_id || ''),
                 last_attempt_epoch: Date.now(), last_error: '', updated_at_epoch: Date.now()
             });
+            await store.finishDelivery(academyId, `receipt:${r.id}`, 'telegram', 'SENT', '', String((res.result as any)?.message_id || ''));
             await db.logMessage({
                 id: crypto.randomUUID(),
                 student_id: r.student_id,
@@ -476,6 +517,7 @@ export async function dispatchReceipts(
                 last_error: (res as any).description || 'send failed',
                 updated_at_epoch: Date.now()
             });
+            await store.finishDelivery(academyId, `receipt:${r.id}`, 'telegram', 'FAILED', (res as any).description || 'send failed');
             out.failed++;
         }
     }

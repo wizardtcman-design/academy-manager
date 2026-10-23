@@ -44,6 +44,9 @@ export function makeEnv(
         ACADEMY_IDS: `${ACADEMY_A},${ACADEMY_B}`,
         API_SECRET_KEY: API_KEY,
         TELEGRAM_BOT_TOKEN: '12345:fake-test-token',
+        // Webhook secrets are REQUIRED (fail-closed verification) since the
+        // stage-8 hardening: forged updates must be refused, never trusted.
+        WEBHOOK_SECRET: 'test-webhook-secret',
         PUBLIC_BASE_URL: 'https://worker.test',
         ENVIRONMENT: 'test',
         ...overrides

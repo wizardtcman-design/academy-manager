@@ -104,8 +104,8 @@ async function processAcademy(env: Env, academyId: string): Promise<void> {
     // SENT receipts are never touched again, so cron retries cannot duplicate.
     try {
         const receipts = await dispatchReceipts(env, db, bot, academyId, now);
-        if (receipts.sent || receipts.notices || receipts.failed) {
-            console.log(`[Cron] Receipts for "${academyId}": sent=${receipts.sent} notices=${receipts.notices} failed=${receipts.failed}`);
+        if (receipts.sent || receipts.notices || receipts.failed || receipts.duplicates || receipts.inFlight) {
+            console.log(`[Cron] Receipts for "${academyId}": sent=${receipts.sent} notices=${receipts.notices} failed=${receipts.failed} dup=${receipts.duplicates} busy=${receipts.inFlight}`);
         }
     } catch (e) {
         console.error(`[Cron] Receipt dispatch failed for "${academyId}":`, e);
@@ -116,8 +116,8 @@ async function processAcademy(env: Env, academyId: string): Promise<void> {
     // dispatchDueReminders so webhook- and cron-triggered runs behave alike.
     try {
         const rem = await dispatchDueReminders(env, db, bot, academyId, now);
-        if (rem.sent || rem.retried || rem.failed || rem.cancelledPaid || rem.superseded || rem.skippedAuto) {
-            console.log(`[Cron] Reminders for "${academyId}": sent=${rem.sent} retry=${rem.retried} failed=${rem.failed} paidCancel=${rem.cancelledPaid} superseded=${rem.superseded} autoOff=${rem.skippedAuto}`);
+        if (rem.sent || rem.retried || rem.failed || rem.cancelledPaid || rem.superseded || rem.skippedAuto || rem.duplicates || rem.inFlight) {
+            console.log(`[Cron] Reminders for "${academyId}": sent=${rem.sent} retry=${rem.retried} failed=${rem.failed} paidCancel=${rem.cancelledPaid} superseded=${rem.superseded} autoOff=${rem.skippedAuto} dup=${rem.duplicates} busy=${rem.inFlight}`);
         }
     } catch (e) {
         console.error(`[Cron] Reminder dispatch failed for "${academyId}":`, e);

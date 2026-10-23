@@ -435,6 +435,8 @@ describe('online payment links, verification and reminder integration', () => {
         const body2 = await again.json() as any;
         expect(body2.data.reused).toBe(true);
         expect(body2.data.orderId).toBe(body.data.orderId);   // the SAME link, no new orders
+        // stage 8: the reuse path returns a FULL URL too — never the bare token
+        expect(body2.data.url).toMatch(/^https:\/\/worker\.test\/pay\/[A-Za-z0-9_-]{20,64}$/);
 
         const txn = db.get(`SELECT status, amount, provider FROM payment_transactions WHERE id = ?`, body.data.orderId) as any;
         expect(txn.status).toBe('PENDING');

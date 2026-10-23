@@ -390,7 +390,7 @@ export async function syncInstallmentReminders(
 // Dual-channel dispatch (cron-driven, per academy, own bot only)
 // ============================================================
 
-export interface ReminderDispatchResult { sent: number; retried: number; failed: number; cancelledPaid: number; superseded: number; skippedAuto: number }
+export interface ReminderDispatchResult { sent: number; retried: number; failed: number; cancelledPaid: number; superseded: number; skippedAuto: number; duplicates: number; inFlight: number }
 
 /** The messaging event a reminder row belongs to (policy gating).
  *  Overdue rows (+1 nob and the daily chain day>=2) all belong to the
@@ -426,7 +426,7 @@ export async function dispatchDueReminders(
     now = Date.now(),
     limit = 50
 ): Promise<ReminderDispatchResult> {
-    const res: ReminderDispatchResult = { sent: 0, retried: 0, failed: 0, cancelledPaid: 0, superseded: 0, skippedAuto: 0 };
+    const res: ReminderDispatchResult = { sent: 0, retried: 0, failed: 0, cancelledPaid: 0, superseded: 0, skippedAuto: 0, duplicates: 0, inFlight: 0 };
     const due = await db.getDueReminders(now, limit * 3, academyId);
     if (due.length === 0) return res;
     const store = new ContractStore(env);
@@ -491,6 +491,13 @@ export async function dispatchDueReminders(
             res.skippedAuto++;
             continue;
         }
+        if (eventKey && cfg.events[eventKey].channel === 'sms') {
+            // Manager chose SMS-ONLY for this event type: Telegram must stay
+            // silent. (SMS itself remains honestly DISABLED until a provider
+            // exists — the row stays SCHEDULED, nothing is lost or faked.)
+            res.skippedAuto++;
+            continue;
+        }
         if (reminder.installment_id && stops[reminder.installment_id]) {
             // Manager-stopped installment: cancel the pending rows (the stop
             // itself was already audited when it was placed).
@@ -505,6 +512,35 @@ export async function dispatchDueReminders(
         let tgMessageId = '';
         let sendText = reminder.message_text;
         if (reminder.chat_id) {
+            // Claim the delivery slot BEFORE sending: an overlapping cron run
+            // (or a re-delivered minute) must never double-send the same
+            // reminder. The unique ledger row decides who may send.
+            const claimed = await store.claimDelivery(academyId, reminder.id, 'telegram');
+            if (!claimed) {
+                const prev = await store.getDeliveryRow(academyId, reminder.id, 'telegram');
+                const prevStatus = prev?.status || '';
+                const prevAge = Date.now() - (prev?.updated_at_epoch || 0);
+                if (prevStatus === 'SENT') {
+                    // Already delivered by another run: reconcile the reminder
+                    // state (the other run may have crashed after the ledger
+                    // write but before the reminder status write) and skip.
+                    await db.updateReminderStatus(reminder.id, 'SENT');
+                    res.duplicates++;
+                    continue;
+                }
+                if (prevStatus === 'SKIPPED') { res.duplicates++; continue; }
+                // PENDING = another run is sending right now (or crashed
+                // mid-send): retryable only after the 10-minute crash window.
+                // FAILED = the previous attempt never delivered anything, so
+                // the moment the reminder is due again (retryReminder spaces
+                // real retries +5 min) the slot may be re-claimed immediately
+                // — that is a retry, never a duplicate.
+                const reclaimable = prevStatus === 'PENDING' ? prevAge > 10 * 60_000 : true;
+                const reClaimed = reclaimable
+                    ? await store.reclaimDelivery(academyId, reminder.id, 'telegram')
+                    : false;
+                if (!reClaimed) { res.inFlight++; continue; }
+            }
             // ONLINE installment → attach THIS installment's dedicated link
             // (same student + exact remaining). Without a REAL connected
             // gateway no link is produced and nothing appears "active".
@@ -512,16 +548,21 @@ export async function dispatchDueReminders(
                 if (reminder.installment_id) {
                     const inst = await db.getInstallmentById(reminder.installment_id, academyId);
                     const method = ((inst as any)?.payment_method || '').toUpperCase();
-                    if (inst && inst.is_paid !== 1 && method === 'ONLINE' && (inst.remaining_amount || 0) > 0) {
+                    // Cron has no request context: a usable link needs a REAL
+                    // configured public base. Without it a link is omitted
+                    // (a bare path in a Telegram message is not clickable).
+                    const base = env.PUBLIC_BASE_URL || '';
+                    if (inst && inst.is_paid !== 1 && method === 'ONLINE' && (inst.remaining_amount || 0) > 0 && base) {
                         const link = await createInstallmentPaymentLink(
-                            env, db, academyId, reminder.student_id, reminder.installment_id,
-                            env.PUBLIC_BASE_URL || ''
+                            env, db, academyId, reminder.student_id, reminder.installment_id, base
                         );
                         if (link.ok) {
                             sendText += `\n\n💳 پرداخت آنلاین این قسط (مبلغ ${link.amount.toLocaleString()} ${currency}):\n${link.url}`;
                         } else if (link.reason) {
                             sendText += `\n\nℹ️ ${link.reason}`;
                         }
+                    } else if (inst && inst.is_paid !== 1 && method === 'ONLINE' && (inst.remaining_amount || 0) > 0 && !base) {
+                        console.warn('[Reminders] PUBLIC_BASE_URL unset: online payment link omitted from reminders.');
                     }
                 }
             } catch (e) {

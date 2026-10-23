@@ -559,3 +559,37 @@ describe('manual send, stop/resume, channels and security', () => {
         expect(textsTo(STUDENT_CHAT).filter((t) => t?.includes('🚨 قسط معوق شده')).length).toBe(0);
     });
 });
+
+// ============================================================
+// Stage 8 hardening: {daysLate} resolves in manager-written texts
+// ============================================================
+describe('stage 8 hardening: manual send variables', () => {
+    let env: Env; let db: D1Shim;
+
+    beforeAll(async () => {
+        ({ env, db } = makeEnv());
+        connectAcademyBot(db, ACADEMY_A, TOKEN_A);
+        await seedStudent(env, ACADEMY_A, 'stu-dl', 'دلارام نوری', STUDENT_CHAT);
+        await api(env, 'POST', '/api/sync/settings', { academy_name: 'آکادمی آوا', currency_unit: 'تومان' }, auth(ACADEMY_A));
+        await pushInstallment(env, ACADEMY_A, [installment({
+            id: 'ins-dl', student_id: 'stu-dl',
+            due_date_shamsi: epochToShamsi(Date.now() - 3 * DAY), due_date_epoch: Date.now() - 3 * DAY
+        })]);
+    });
+
+    it('a manager-written OVERDUE_DAILY text with {daysLate} sends with the REAL overdue days', async () => {
+        tgCalls.length = 0;
+        const res = await api(env, 'POST', '/api/messaging/send', {
+            studentId: 'stu-dl', installmentId: 'ins-dl', eventType: 'OVERDUE_DAILY',
+            channel: 'telegram', clientMsgId: 'dl-1',
+            text: 'هنرجوی عزیز، قسط شما {daysLate} روز گذشته است. لطفاً تسویه کنید.'
+        }, auth(ACADEMY_A));
+        const body = await res.json() as any;
+        expect(res.status).toBe(200);
+        expect(body.success).toBe(true);
+        const sent = textsTo(STUDENT_CHAT)[0] || '';
+        // digits follow the established variable convention (en-US, like {amount})
+        expect(sent).toContain('3 روز گذشته است');
+        expect(sent).not.toContain('{daysLate}');
+    });
+});

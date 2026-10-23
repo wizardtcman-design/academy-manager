@@ -399,6 +399,33 @@ export class ContractStore {
         return out;
     }
 
+    /** One delivery-ledger row (status + last update time) or null. */
+    async getDeliveryRow(
+        academyId: string, reminderId: string, channel: string
+    ): Promise<{ status: string; updated_at_epoch: number } | null> {
+        const row = await this.env.DB!.prepare(
+            `SELECT status, updated_at_epoch FROM deliveries
+             WHERE academy_id = ? AND reminder_id = ? AND channel = ?`
+        ).bind(academyId, reminderId, channel).first<{ status: string; updated_at_epoch: number }>();
+        return row ?? null;
+    }
+
+    /** Re-claims a ledger slot left by an earlier crashed/failed attempt:
+     *  a PENDING slot older than the crash window or a FAILED slot older than
+     *  the retry spacing becomes PENDING again. FINISHED slots (SENT/SKIPPED)
+     *  can never be reclaimed — the unique ledger stays the dedup truth. */
+    async reclaimDelivery(
+        academyId: string, reminderId: string, channel: string,
+        allowedStatuses: Array<'PENDING' | 'FAILED'> = ['PENDING', 'FAILED']
+    ): Promise<boolean> {
+        const placeholders = allowedStatuses.map(() => '?').join(',');
+        const res = await this.env.DB!.prepare(
+            `UPDATE deliveries SET status = 'PENDING', attempts = attempts + 1, updated_at_epoch = ?
+             WHERE academy_id = ? AND reminder_id = ? AND channel = ? AND status IN (${placeholders})`
+        ).bind(Date.now(), academyId, reminderId, channel, ...allowedStatuses).run();
+        return (res.meta?.changes ?? 0) > 0;
+    }
+
     async updateSmsStatus(academyId: string, reminderId: string, status: string, error = ''): Promise<void> {
         await this.env.DB!.prepare(
             `UPDATE reminders SET sms_status = ?, sms_error = ?, sms_attempts = sms_attempts + 1,

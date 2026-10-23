@@ -6,13 +6,20 @@
 // always derived from the actual payment timestamp.
 // ============================================================
 
+/** Tehran display offset (+03:30) — mirrors tz.ts; kept local so this
+ *  module stays dependency-free (single source of truth documented here). */
+const TEHRAN_DISPLAY_OFFSET_MS = 12600_000;
+
 /**
  * Gregorian → Jalali (Khayyam/Birashk-free integer algorithm, widely
  * validated; leap years follow the 33-year cycle used by Iranian
  * calendars). Returns e.g. "۱۴۰۴/۰۵/۱۲" with Persian digits.
  */
 export function epochToShamsi(epochMs: number): string {
-    const d = new Date(epochMs);
+    // Tehran calendar day (+03:30, DST abolished 2022): an online payment at
+    // 00:30 Tehran is 21:00 UTC the PREVIOUS day — the UTC parts would print
+    // the wrong official date. Shifting first keeps the algorithm unchanged.
+    const d = new Date(epochMs + TEHRAN_DISPLAY_OFFSET_MS);
     const gy = d.getUTCFullYear();
     const gm = d.getUTCMonth() + 1;
     const gd = d.getUTCDate();

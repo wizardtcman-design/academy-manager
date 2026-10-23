@@ -967,3 +967,124 @@ describe('delivery retries never duplicate payments or receipts', () => {
         expect(receipts.n).toBe(1);
     });
 });
+
+// ============================================================
+// Stage 8 hardening: delivery-ledger gate + channel policy
+// ============================================================
+describe('stage 8 hardening: ledger gate and channel policy', () => {
+    let env: Env; let db: D1Shim;
+
+    beforeAll(async () => {
+        ({ env, db } = makeEnv(new D1Shim(), { TELEGRAM_BOT_TOKEN: '' }));
+        connectAcademyBot(db, ACADEMY_A, TOKEN_A);
+        await api(env, 'POST', '/api/sync/students-batch', {
+            students: [{ id: 'stu-h', fullName: 'هنرجو سختگیر', studentCode: 'SC-H', phone: '۰۹۱۲۰۰۰۰۰۰۰' }]
+        }, auth(ACADEMY_A));
+        await linkChat(env, db, ACADEMY_A, 'stu-h', STUDENT_CHAT);
+    });
+
+    it('a ledger-SENT reminder is reconciled, never re-sent (crash-after-send window)', async () => {
+        // One installment + ONE manually scheduled reminder row (no nob ties):
+        // exactly the state right after a successful send whose status write
+        // was lost (crash between the ledger write and the status write).
+        const now = Date.now();
+        db.run(
+            `INSERT INTO installments (id, student_id, installment_number, total_installments, course_title,
+                 amount, paid_amount, remaining_amount, due_date_shamsi, due_date_epoch, is_paid,
+                 paid_date_shamsi, updated_at_epoch, academy_id, payment_method)
+             VALUES ('ins-ledger', 'stu-h', 1, 2, 'دوره', 1000000, 0, 1000000, '۱۴۰۴/۰۸/۰۱', ?,
+                 0, '', ?, ?, '')`,
+            now + 24 * 3600_000, now, ACADEMY_A
+        );
+        db.run(
+            `INSERT INTO reminders (id, student_id, student_name, chat_id, installment_id, reminder_type,
+                 message_text, scheduled_epoch, status, retry_count, academy_id, created_at_epoch)
+             VALUES ('rem-ledger', 'stu-h', 'هنرجو سختگیر', ?, 'ins-ledger', 'INSTALLMENT_DUE',
+                 'یادآوری: قسط 1 فراموش نشود', ?, 'SCHEDULED', 0, ?, ?)`,
+            String(STUDENT_CHAT), now - 1000, ACADEMY_A, now
+        );
+        tgCalls.length = 0;
+        await cron(env);
+        expect(textsTo(STUDENT_CHAT).filter((t) => t.includes('قسط 1')).length).toBe(1);
+        expect(db.get(`SELECT status FROM deliveries WHERE reminder_id='rem-ledger' AND channel='telegram'`) as any)
+            .toEqual(expect.objectContaining({ status: 'SENT' }));
+
+        // Simulate the crash window: the send succeeded (ledger SENT) but the
+        // reminder status write was lost — the row is SCHEDULED and due again.
+        db.run(`UPDATE reminders SET status='SCHEDULED', scheduled_epoch = ? WHERE id='rem-ledger'`, Date.now() - 1000);
+        tgCalls.length = 0;
+        await cron(env);
+        // reconciled to SENT by the ledger gate, ZERO duplicate messages
+        expect(textsTo(STUDENT_CHAT).filter((t) => t.includes('قسط 1')).length).toBe(0);
+        expect(db.get(`SELECT status FROM reminders WHERE id='rem-ledger'`) as any)
+            .toEqual(expect.objectContaining({ status: 'SENT' }));
+    });
+
+    it('a stale PENDING ledger slot (crashed mid-send) is re-claimed after the window', async () => {
+        await syncInstallments(env, ACADEMY_A, [installment({
+            id: 'ins-stale', student_id: 'stu-h', installment_number: 2, due_date_epoch: Date.now() + 24 * 3600_000
+        })]);
+        // Forge the crash: reminder due, ledger row stuck PENDING 11 min old
+        db.run(`UPDATE reminders SET scheduled_epoch = ? WHERE installment_id='ins-stale' AND trigger_offset=0`, Date.now() - 1000);
+        db.run(
+            `INSERT OR IGNORE INTO deliveries (id, academy_id, reminder_id, channel, status, attempts, created_at_epoch, updated_at_epoch)
+             VALUES ('dlg-stale', ?, 'auto:ins-stale:0', 'telegram', 'PENDING', 1, ?, ?)`,
+            ACADEMY_A, Date.now() - 11 * 60_000, Date.now() - 11 * 60_000
+        );
+        tgCalls.length = 0;
+        await cron(env);
+        expect(textsTo(STUDENT_CHAT).filter((t) => t.includes('قسط 2')).length).toBe(1);
+        expect(db.get(`SELECT status FROM deliveries WHERE reminder_id='auto:ins-stale:0' AND channel='telegram'`) as any)
+            .toEqual(expect.objectContaining({ status: 'SENT' }));
+    });
+
+    it('an SMS-only channel policy keeps Telegram silent and the row SCHEDULED', async () => {
+        const put = await api(env, 'PUT', '/api/messaging/config', {
+            events: { INSTALLMENT_REMINDER: { channel: 'sms' } }
+        }, auth(ACADEMY_A));
+        expect(put.status).toBe(200);
+        await syncInstallments(env, ACADEMY_A, [installment({
+            id: 'ins-sms-only', student_id: 'stu-h', installment_number: 3, due_date_epoch: Date.now() + 24 * 3600_000
+        })]);
+        db.run(`UPDATE reminders SET scheduled_epoch = ? WHERE installment_id='ins-sms-only' AND trigger_offset=0`, Date.now() - 1000);
+        tgCalls.length = 0;
+        await cron(env);
+        expect(textsTo(STUDENT_CHAT).filter((t) => t.includes('قسط 3')).length).toBe(0);
+        expect(db.get(`SELECT status FROM reminders WHERE installment_id='ins-sms-only' AND trigger_offset=0`) as any)
+            .toEqual(expect.objectContaining({ status: 'SCHEDULED' }));
+        // restore the default policy, the SAME row is delivered (nothing lost)
+        await api(env, 'PUT', '/api/messaging/config', {
+            events: { INSTALLMENT_REMINDER: { channel: 'telegram' } }
+        }, auth(ACADEMY_A));
+        tgCalls.length = 0;
+        await cron(env);
+        expect(textsTo(STUDENT_CHAT).filter((t) => t.includes('قسط 3')).length).toBe(1);
+    });
+
+    it('PAYMENT_RECEIPT.channel = sms keeps the receipt QUEUED with no Telegram send', async () => {
+        await api(env, 'PUT', '/api/messaging/config', {
+            events: { PAYMENT_RECEIPT: { channel: 'sms' } }
+        }, auth(ACADEMY_A));
+        const now = Date.now();
+        db.run(
+            `INSERT INTO payment_receipts (id, academy_id, student_id, installment_id, installment_number,
+                 course_title, amount, student_name, payment_method, source, receipt_json, send_status, send_reason,
+                 eligible_at_epoch, attempts, created_at_epoch, updated_at_epoch)
+             VALUES ('pay-sms-only', ?, 'stu-h', 'ins-sms-only', 3, 'دوره', 100000, 'هنرجو سختگیر', 'CASH', 'manual',
+                 '{}', 'QUEUED', 'payment', ?, 0, ?, ?)`,
+            ACADEMY_A, now - 1000, now, now
+        );
+        tgCalls.length = 0;
+        await cron(env);
+        expect(textsTo(STUDENT_CHAT).filter((t) => t.includes('رسید پرداخت شهریه')).length).toBe(0);
+        expect(db.get(`SELECT send_status FROM payment_receipts WHERE id='pay-sms-only'`) as any)
+            .toEqual(expect.objectContaining({ send_status: 'QUEUED' }));
+        // restore: delivered on the next tick
+        await api(env, 'PUT', '/api/messaging/config', {
+            events: { PAYMENT_RECEIPT: { channel: 'telegram' } }
+        }, auth(ACADEMY_A));
+        tgCalls.length = 0;
+        await cron(env);
+        expect(textsTo(STUDENT_CHAT).filter((t) => t.includes('رسید پرداخت شهریه')).length).toBe(1);
+    });
+});

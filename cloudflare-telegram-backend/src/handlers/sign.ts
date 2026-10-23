@@ -158,26 +158,31 @@ export async function handleSignRoute(request: Request, env: Env, url: URL): Pro
                 await store.event(row.academy_id, row.id, { type: 'OPENED', ip, userAgent: ua });
             }
             const info = JSON.parse(row.enrollment_json || '{}');
+            // Every string field is escaped server-side (XSS: the page injects
+            // these values via innerHTML; enrollment_json is app-controlled).
+            const escInstallments = (info.installments || []).map((it: any) =>
+                Object.fromEntries(Object.entries(it || {}).map(([k, v]) => [k, typeof v === 'string' ? escDisplay(v) : v]))
+            );
             return api({
                 success: true,
                 data: {
-                    contractNumber: info.contractNumber || row.id.slice(0, 8),
-                    academyName: info.academyName || 'آموزشگاه',
-                    studentName: row.student_name,
-                    courseTitle: row.course_title,
-                    startDate: info.startDate || '',
-                    endDate: info.endDate || '',
+                    contractNumber: escDisplay(info.contractNumber || row.id.slice(0, 8)),
+                    academyName: escDisplay(info.academyName || 'آموزشگاه'),
+                    studentName: escDisplay(row.student_name),
+                    courseTitle: escDisplay(row.course_title),
+                    startDate: escDisplay(info.startDate || ''),
+                    endDate: escDisplay(info.endDate || ''),
                     totalFee: info.totalFee || 0,
                     discount: info.discount || 0,
                     finalFee: info.finalFee || 0,
-                    currency: info.currency || 'تومان',
+                    currency: escDisplay(info.currency || 'تومان'),
                     installmentCount: info.installmentCount || 0,
-                    installments: info.installments || [],
-                    phoneMask: row.phone_mask,
-                    nationalMask: row.national_mask,
+                    installments: escInstallments,
+                    phoneMask: escDisplay(row.phone_mask),
+                    nationalMask: escDisplay(row.national_mask),
                     status,
                     expiresAtEpoch: row.expires_at_epoch,
-                    signedAtShamsi: row.signed_at_shamsi,
+                    signedAtShamsi: escDisplay(row.signed_at_shamsi),
                     // Final acceptance method is a product decision: when the owner
                     // turns on SMS OTP the app sends requiresOtp and the server only
                     // accepts a code it produced. Today it stays false.
@@ -372,7 +377,15 @@ export async function handleSignRoute(request: Request, env: Env, url: URL): Pro
             return page(410, CLOSED_MARKUP('err', 'مهلت لینک تمام شده', 'برای دریافت لینک جدید با آموزشگاه تماس بگیرید.'));
         }
         // The token is injected as a JSON string literal inside the page script.
-        const html = SIGN_PAGE_HTML.replace('__SIGN_TOKEN__', token.replace(/[^A-Za-z0-9_-]/g, ''));
+        // The template holds the token slot as a QUOTED string literal:
+        //   var TOKEN = '__SIGN_TOKEN__';
+        // JSON.stringify produces a safely quoted literal (the sanitizer has
+        // already stripped everything but [A-Za-z0-9_-], so no escaping is
+        // ever needed — stringify is belt-and-braces).
+        const html = SIGN_PAGE_HTML.replace(
+            "'__SIGN_TOKEN__'",
+            JSON.stringify(token.replace(/[^A-Za-z0-9_-]/g, ''))
+        );
         return page(200, html);
     }
 
@@ -407,6 +420,19 @@ function imageSize(bytes: Uint8Array): { width: number; height: number } {
 }
 
 import SIGN_PAGE_TEMPLATE from '../templates/sign.html';
+
+/** HTML-escapes a display string BEFORE it reaches the sign page. The page
+ *  renders the /open payload into innerHTML without further escaping and the
+ *  payload echoes app-controlled enrollment_json, so every string field is
+ *  escaped server-side (numbers stay numbers, layout is unaffected). */
+function escDisplay(s: unknown): string {
+    return String(s ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+}
+
 const SIGN_PAGE_HTML = SIGN_PAGE_TEMPLATE;
 
 // ============================================================

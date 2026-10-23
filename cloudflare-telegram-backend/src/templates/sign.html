@@ -73,7 +73,7 @@ a{color:#1d4ed8}
 </main>
 <script>
 (function () {
-  var TOKEN = window.__SIGN_TOKEN__ || '';
+  var TOKEN = '__SIGN_TOKEN__';
   function $(id) { return document.getElementById(id); }
   function fmt(n) { try { return new Intl.NumberFormat('fa-IR').format(n || 0); } catch (e) { return String(n || 0); } }
   var pad = $('pad'), ctx = pad.getContext('2d'), drawing = false, dirty = false, data = null;

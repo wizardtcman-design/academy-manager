@@ -209,6 +209,7 @@ export class AcademyDatabase {
                         updated_at_epoch = excluded.updated_at_epoch,
                         telegram_link_hash = excluded.telegram_link_hash,
                         telegram_link_expires = excluded.telegram_link_expires
+                    WHERE academy_id = excluded.academy_id
                 `).bind(
                     record.id, this.academyId, record.student_code, record.full_name, record.phone, record.national_code,
                     record.telegram_chat_id, record.telegram_username, record.is_telegram_connected,
@@ -369,6 +370,7 @@ export class AcademyDatabase {
                         paid_date_shamsi = excluded.paid_date_shamsi,
                         payment_method = excluded.payment_method,
                         updated_at_epoch = ?
+                    WHERE academy_id = excluded.academy_id
                 `).bind(
                     inst.id, this.academyId, inst.student_id, inst.installment_number, inst.total_installments, inst.course_title,
                     inst.amount, inst.paid_amount, inst.remaining_amount, inst.due_date_shamsi, inst.due_date_epoch,
@@ -414,6 +416,7 @@ export class AcademyDatabase {
                         courses_summary = excluded.courses_summary,
                         settlement_status = excluded.settlement_status,
                         updated_at_epoch = excluded.updated_at_epoch
+                    WHERE academy_id = excluded.academy_id
                 `).bind(
                     summary.student_id, this.academyId, summary.total_tuition, summary.total_paid, summary.remaining_debt,
                     summary.active_courses_count, summary.courses_summary, summary.settlement_status, now
@@ -914,6 +917,35 @@ export class AcademyDatabase {
         }
     }
 
+    /** CAS status transition for gateway verification: the row moves to
+     *  `patch.status` ONLY from `fromStatus`. Returns false when another
+     *  concurrent verifier won the race (no partial double-apply). */
+    async transitionPaymentTransaction(
+        id: string, academyId: string, fromStatus: string, patch: Partial<PaymentTxnRecord>
+    ): Promise<boolean> {
+        const sets: string[] = [];
+        const vals: unknown[] = [];
+        for (const [k, v] of Object.entries(patch)) {
+            sets.push(`${k} = ?`);
+            vals.push(v);
+        }
+        if (!sets.length) return false;
+        sets.push('updated_at_epoch = ?');
+        vals.push(Date.now(), id, academyId, fromStatus);
+        if (this.db) {
+            try {
+                const res = await this.db.prepare(
+                    `UPDATE payment_transactions SET ${sets.join(', ')} WHERE id = ? AND academy_id = ? AND status = ?`
+                ).bind(...(vals as never[])).run();
+                return (res.meta?.changes ?? 0) > 0;
+            } catch (e) {
+                console.warn('[DB] D1 transitionPaymentTransaction failed:', e);
+                return false;
+            }
+        }
+        return false;
+    }
+
     async findActiveTxnForInstallment(academyId: string, installmentId: string, now: number): Promise<PaymentTxnRecord | null> {
         if (this.db) {
             try {
@@ -1323,9 +1355,11 @@ export class AcademyDatabase {
         if (this.db) {
             try {
                 const { results } = await this.db.prepare(`
-                    SELECT * FROM payment_claims
-                    WHERE academy_id = ? AND status = 'APPROVED' AND decided_at_epoch > ?
-                    ORDER BY decided_at_epoch ASC LIMIT ?
+                    SELECT pc.*, COALESCE(r.amount, pc.claimed_amount) AS applied_amount
+                    FROM payment_claims pc
+                    LEFT JOIN payment_receipts r ON r.id = pc.payment_id
+                    WHERE pc.academy_id = ? AND pc.status = 'APPROVED' AND pc.decided_at_epoch > ?
+                    ORDER BY pc.decided_at_epoch ASC LIMIT ?
                 `).bind(academyId, since, limit).all<PaymentClaimRecord>();
                 return results || [];
             } catch (e) {

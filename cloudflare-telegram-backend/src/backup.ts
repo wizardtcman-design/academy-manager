@@ -171,6 +171,7 @@ export interface FinancialChecks {
     transactionCount: number;
     sumTransactionPaidAmount: number;
     paidTransactionCount: number;
+    failedTransactionCount: number;
     linkTokenCount: number;
     claimCount: number;
     sumClaimAmount: number;
@@ -287,7 +288,8 @@ function countStatements(academyId: string): Array<{ sql: string; bind: string[]
                        COALESCE(SUM(CASE WHEN is_reversed = 1 THEN 1 ELSE 0 END),0) AS reversed_n
                 FROM payment_receipts WHERE academy_id = ?`, bind: [academyId] },
         { sql: `SELECT COUNT(*) AS n, COALESCE(SUM(paid_amount),0) AS paid_sum,
-                       COALESCE(SUM(CASE WHEN status = 'PAID' THEN 1 ELSE 0 END),0) AS paid_n
+                       COALESCE(SUM(CASE WHEN status = 'PAID' THEN 1 ELSE 0 END),0) AS paid_n,
+                       COALESCE(SUM(CASE WHEN status = 'FAILED' THEN 1 ELSE 0 END),0) AS failed_n
                 FROM payment_transactions WHERE academy_id = ?`, bind: [academyId] },
         { sql: `SELECT COUNT(*) AS n, COALESCE(SUM(claimed_amount),0) AS amount_sum,
                        COALESCE(SUM(CASE WHEN status = 'PENDING' THEN 1 ELSE 0 END),0) AS pending_n
@@ -324,6 +326,7 @@ function financialChecksFrom(
         transactionCount: tableRows['payment_transactions'] ?? 0,
         sumTransactionPaidAmount: Number(txns.paid_sum ?? 0),
         paidTransactionCount: Number(txns.paid_n ?? 0),
+        failedTransactionCount: Number(txns.failed_n ?? 0),
         linkTokenCount: tableRows['payment_link_tokens'] ?? 0,
         claimCount: tableRows['payment_claims'] ?? 0,
         sumClaimAmount: Number(claims.amount_sum ?? 0),
@@ -523,6 +526,7 @@ export function verifyBundleAgainstLive(
             check('تعداد تراکنش‌های درگاه', fc.transactionCount, liveChecks.transactionCount);
             check('جمع مبلغ پرداخت‌شده تراکنش‌ها', fc.sumTransactionPaidAmount, liveChecks.sumTransactionPaidAmount);
             check('تعداد تراکنش‌های موفق', fc.paidTransactionCount, liveChecks.paidTransactionCount);
+            check('تعداد تراکنش‌های ناموفق', fc.failedTransactionCount, liveChecks.failedTransactionCount);
             check('تعداد توکن‌های لینک پرداخت', fc.linkTokenCount, liveChecks.linkTokenCount);
             check('تعداد ادعاهای پرداخت', fc.claimCount, liveChecks.claimCount);
             check('جمع مبالغ ادعاها', fc.sumClaimAmount, liveChecks.sumClaimAmount);

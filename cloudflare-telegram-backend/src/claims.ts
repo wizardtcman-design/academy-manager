@@ -118,17 +118,27 @@ export async function submitReceiptClaim(
     return { ok: true, claimId: id };
 }
 
+/** HTML-escape for student-controlled strings shown to the MANAGER
+ *  (the claim caption/name arrive from the student's bot session and are
+ *  rendered with parse_mode HTML — malformed tags would kill the message). */
+function escManager(s: unknown): string {
+    return String(s ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+}
+
 /** The caption + photo the manager receives (real data, evidence only). */
 export function renderClaimNotification(c: PaymentClaimRecord, currency: string): string {
     const numStr = c.installment_number > 0 ? `قسط ${c.installment_number}` : 'قسط';
     return `📥 <b>رسید پرداخت دریافتی — در انتظار بررسی</b>\n` +
         `━━━━━━━━━━━━━━━━━━━\n` +
-        `👤 هنرجو: <b>${c.student_name}</b>\n` +
-        `📚 دوره: ${c.course_title || '-'}\n` +
+        `👤 هنرجو: <b>${escManager(c.student_name)}</b>\n` +
+        `📚 دوره: ${escManager(c.course_title) || '-'}\n` +
         `🔹 ${numStr}\n` +
-        `💵 مبلغ ادعاشده: <b>${c.claimed_amount.toLocaleString()} ${currency}</b>\n` +
+        `💵 مبلغ ادعاشده: <b>${c.claimed_amount.toLocaleString()} ${escManager(currency)}</b>\n` +
         `🗓 تاریخ دریافت: <b>${epochToShamsi(c.created_at_epoch)}</b>\n` +
-        (c.note ? `📝 توضیحات هنرجو: ${c.note}\n` : '') +
+        (c.note ? `📝 توضیحات هنرجو: ${escManager(c.note)}\n` : '') +
         `━━━━━━━━━━━━━━━━━━━\n` +
         `⚠️ این رسید صرفاً مدرک بررسی است؛ تا تأیید شما، پرداختی ثبت نمی‌شود.\n` +
         `برای رد با ذکر علت، به همین پیام پاسخ دهید.`;

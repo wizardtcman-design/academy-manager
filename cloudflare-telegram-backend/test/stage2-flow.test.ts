@@ -112,7 +112,10 @@ async function webhook(env: Env, academy: string, text: string, chatId: number):
     return handleTelegramWebhook(
         new Request(`${BASE}/webhook/${academy}`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: {
+                'Content-Type': 'application/json',
+                'X-Telegram-Bot-Api-Secret-Token': 'test-webhook-secret'
+            },
             body: JSON.stringify({
                 update_id: tgCalls.length + 1,
                 message: {
@@ -708,5 +711,91 @@ describe('final PDF composition: seal + manager signature embedded (not just sto
         // the student signature itself is still there
         expect(pdf).toMatch(/\/Sig \d+ 0 R/);
         expect(pdf).toMatch(/\/Sig Do/);
+    });
+});
+
+// ============================================================
+// Stage 8 hardening: fail-closed webhook + sign-page rendering
+// ============================================================
+describe('stage 8 hardening: webhook fails closed, sign page renders', () => {
+    let env: Env; let db: D1Shim;
+
+    beforeAll(async () => {
+        ({ env, db } = makeEnv());
+        connectBot(db, ACADEMY_A, 'academy_hard_bot', '999:HH');
+        insertStudent(db, 'stu-hard', ACADEMY_A, '555000999');
+    });
+
+    function webhookRaw(secretHeader: string | null): Promise<Response> {
+        const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+        if (secretHeader !== null) headers['X-Telegram-Bot-Api-Secret-Token'] = secretHeader;
+        return handleTelegramWebhook(
+            new Request(`${BASE}/webhook/${ACADEMY_A}`, {
+                method: 'POST', headers,
+                body: JSON.stringify({
+                    update_id: 987001,
+                    message: { message_id: 1, chat: { id: 555000999 }, from: { id: 555000999, first_name: 'س' }, text: '/start' }
+                })
+            }),
+            env, URL_(`/webhook/${ACADEMY_A}`)
+        );
+    }
+
+    it('a wrong secret is refused with 401 (before any processing)', async () => {
+        const res = await webhookRaw('totally-wrong-secret');
+        expect(res.status).toBe(401);
+    });
+
+    it('no secret configured anywhere is refused with 403 (fail closed, never fail open)', async () => {
+        const saved = env.WEBHOOK_SECRET;
+        (env as any).WEBHOOK_SECRET = '';
+        try {
+            const res = await webhookRaw(null);
+            expect(res.status).toBe(403);
+        } finally {
+            (env as any).WEBHOOK_SECRET = saved;
+        }
+    });
+
+    it('the correct secret is accepted (200, bot answers)', async () => {
+        const res = await webhookRaw('test-webhook-secret');
+        expect(res.status).toBe(200);
+        await webhook(env, ACADEMY_A, '/start', 555000999);
+        expect(tgCalls.length).toBeGreaterThan(0);
+    });
+
+    it('the sign page injects the token as a usable JS string literal', async () => {
+        const TOKEN = 'stage8-sign-page-token-aaaaaaaaaa';
+        const up = await uploadContract(env, {
+            studentId: 'stu-hard', enrollmentId: 'enr-hard-page',
+            tokenHash: await sha256Hex(TOKEN), token: TOKEN
+        });
+        expect(up.status).toBe(200);
+        const page = await handleSignRoute(
+            new Request(`${BASE}/sign?s=${TOKEN}`), env, URL_(`/sign?s=${TOKEN}`));
+        expect(page.status).toBe(200);
+        const html = await page.text();
+        // the OLD bug produced `window.<token>` (page always broken)
+        expect(html).not.toContain('window.__SIGN_TOKEN__');
+        // injected as a JSON string literal (double quotes)
+        expect(html).toContain(`var TOKEN = "${TOKEN}";`);
+    });
+
+    it('the /open payload escapes app-controlled strings (no XSS via innerHTML)', async () => {
+        const TOKEN = 'stage8-escape-token-bbbbbbbbbb';
+        const up = await uploadContract(env, {
+            studentId: 'stu-hard', enrollmentId: 'enr-hard-esc',
+            tokenHash: await sha256Hex(TOKEN), token: TOKEN
+        });
+        expect(up.status).toBe(200);
+        const open = await handleSignRoute(
+            new Request(`${BASE}/sign/${TOKEN}/open`, { method: 'POST' }),
+            env, URL_(`/sign/${TOKEN}/open`));
+        expect(open.status).toBe(200);
+        const body = await open.json() as any;
+        const serialized = JSON.stringify(body);
+        expect(serialized).not.toContain('<script>');
+        // masks are served as plain display strings
+        expect(typeof body.data.phoneMask).toBe('string');
     });
 });

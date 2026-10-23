@@ -594,7 +594,15 @@ export async function handleApiRequest(
     if (path === '/api/sync/settings' && request.method === 'POST') {
         try {
             const body = await request.json() as Record<string, string>;
-            for (const [k, v] of Object.entries(body)) {
+            // Backup run-state is worker-owned: an app push must never be able
+            // to forge the day marker (silently cancelling today's automatic
+            // backup) or the run lock / resume state. All-or-nothing: the whole
+            // push is refused when ANY key is reserved.
+            const entries = Object.entries(body);
+            if (entries.some(([k]) => k.startsWith('backup:'))) {
+                return jsonResponse({ success: false, message: 'کلید «backup:» برای سیستم پشتیبان‌گیری رزرو شده است.' }, 400);
+            }
+            for (const [k, v] of entries) {
                 await db.setSetting(k, String(v));
             }
             return jsonResponse({
@@ -712,7 +720,9 @@ export async function handleApiRequest(
                     orderId: c.payment_id || `clm-${c.id}`,
                     installmentId: c.installment_id,
                     studentId: c.student_id,
-                    amount: c.claimed_amount,
+                    // The REAL applied amount (min of claim and remaining at
+                    // approval time) lives on the registered receipt row.
+                    amount: (c as any).applied_amount ?? c.claimed_amount,
                     ref: c.id,
                     verifiedAtEpoch: c.decided_at_epoch,
                     method: 'TRANSFER',

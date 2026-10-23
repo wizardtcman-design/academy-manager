@@ -280,6 +280,14 @@ export function validateTemplateText(key: MsgEventKey, text: string): string[] {
             errors.push(`برچسب HTML مجاز نیست: ${m[0].slice(0, 40)}`);
         }
     }
+    // A lone '<' (or a tag-like fragment ANY_TAG_RE cannot match) passes the
+    // allow-list above but Telegram's HTML parser rejects it — every auto
+    // send of this event would fail until the template is fixed. Refuse at
+    // save time instead.
+    const remainder = (text || '').replace(ANY_TAG_RE, '');
+    if (remainder.includes('<')) {
+        errors.push('نویسه «<» بدون برچسب کامل مجاز نیست؛ آن را حذف کنید یا از &lt; استفاده کنید.');
+    }
     if ((text || '').length > 3800) errors.push('متن پیام بیش از حد مجاز طولانی است (حداکثر ۳۸۰۰ نویسه).');
     return [...new Set(errors)];
 }

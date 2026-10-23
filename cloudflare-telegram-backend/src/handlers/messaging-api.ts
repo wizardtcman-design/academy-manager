@@ -264,7 +264,12 @@ export async function handleMessagingApi(
                     amount: ((inst.remaining_amount || 0) > 0 ? inst.remaining_amount : inst.amount).toLocaleString('en-US'),
                     currency,
                     dueDateShamsi: inst.due_date_shamsi,
-                    daysLate: ''
+                    // {daysLate} in a manager-written text resolves to the REAL
+                    // overdue days of THIS installment (empty only for events
+                    // where the variable is not required).
+                    daysLate: eventType === 'OVERDUE_DAILY'
+                        ? String(Math.max(1, Math.floor((Date.now() - (inst.due_date_epoch || 0)) / 86_400_000)))
+                        : ''
                 });
                 if (!rendered.ok) {
                     return fail(`متن پیام معتبر نیست: ${rendered.errors.join('؛ ')}`, 400, { errors: rendered.errors });

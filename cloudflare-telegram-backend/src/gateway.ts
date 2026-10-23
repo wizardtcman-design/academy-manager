@@ -76,7 +76,9 @@ export async function resolveProvider(env: Env, db: AcademyDatabase): Promise<{ 
     const merchantId = await db.getSetting('gateway_merchant_id', '');
     const apiKey = await db.getSetting('gateway_api_key', '');
     if (!factory) {
-        return { provider: null, reason: `درگاه «${id}» هنوز پشتیبانی یا تأیید نشده است.` };
+        // Manager-set value echoed on a PUBLIC page: strip markup characters.
+        const safeId = id.replace(/[<>&"']/g, '');
+        return { provider: null, reason: `درگاه «${safeId}» هنوز پشتیبانی یا تأیید نشده است.` };
     }
     if (!merchantId || !apiKey) {
         return { provider: null, reason: 'کلیدهای درگاه پرداخت تکمیل نشده‌اند؛ مدیر آموزشگاه باید تنظیمات درگاه را کامل کند.' };
@@ -119,9 +121,10 @@ export async function createInstallmentPaymentLink(
     // installment is REUSED, so reminders never mint new orders.
     const active = await db.findActiveTxnForInstallment(academyId, installmentId, now);
     if (active) {
-        const url = await db.getLinkTokenByHash(active.link_token_hash);
-        if (url) {
-            return { ok: true, orderId: active.id, url, amount: active.amount, reused: true };
+        const raw = await db.getLinkTokenByHash(active.link_token_hash);
+        if (raw) {
+            // Same contract as the fresh path: a full URL, never the bare token.
+            return { ok: true, orderId: active.id, url: `${publicBaseUrl}/pay/${raw}`, amount: active.amount, reused: true };
         }
         // Token record lost (should not happen): cancel the orphan and mint fresh.
         await db.updatePaymentTransaction(active.id, academyId, { status: 'CANCELED', updated_at_epoch: now });
@@ -268,13 +271,22 @@ export async function verifyTransaction(
         return { state: 'AMOUNT_MISMATCH', orderId, error: 'مبلغ پرداخت‌شده با مبلغ قسط یکی نیست.' };
     }
 
-    // ---------- transition to PAID ----------
-    await db.updatePaymentTransaction(orderId, academyId, {
+    // ---------- transition to PAID (CAS: only PENDING -> PAID) ----------
+    // Two concurrent verifies (provider redirect + app pull) must never BOTH
+    // credit the installment: the winner is decided by the database itself.
+    const won = await db.transitionPaymentTransaction(orderId, academyId, 'PENDING', {
         status: 'PAID', paid_amount: verified.paidAmount,
         provider_ref: verified.ref || '', verified_payload: verified.raw || '',
         verified_at_epoch: now, updated_at_epoch: now,
         receipt_id: `online-${txn.id}`
     });
+    if (!won) {
+        const fresh = await db.getPaymentTransaction(orderId, academyId);
+        return {
+            state: 'PAID', alreadyPaid: true, orderId,
+            amount: fresh?.paid_amount ?? 0, ref: fresh?.provider_ref || '', receiptSent: true
+        };
+    }
 
     // Auto-update the installment (no manual re-registration anywhere) and
     // queue the online receipt; then attempt an immediate Telegram send.

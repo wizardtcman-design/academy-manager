@@ -13,6 +13,16 @@ import { resolvePayLink, verifyTransaction } from '../gateway';
 import { TelegramBotClient } from '../telegram';
 import { academyBotToken } from '../telegram';
 
+/** Escapes a value echoed into the public pay pages (orderId comes from the
+ *  provider redirect query — never trusted for markup). */
+function escPay(s: unknown): string {
+    return String(s ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+}
+
 function page(title: string, body: string, status = 200): Response {
     const html = `<!DOCTYPE html>
 <html lang="fa" dir="rtl">
@@ -77,7 +87,7 @@ export async function handlePayRoute(request: Request, env: Env, url: URL): Prom
         const bot = token ? new TelegramBotClient(token) : null;
         const res = await verifyTransaction(env, dbA, txn.academy_id, orderId, bot);
         if (res.state === 'PAID') {
-            return page('پرداخت تأیید شد', `__ok__پرداخت شما با موفقیت تأیید شد و رسید آن در تلگرام ارسال گردید.<br><small>کد سفارش: ${orderId.slice(0, 8).toUpperCase()}</small>`);
+            return page('پرداخت تأیید شد', `__ok__پرداخت شما با موفقیت تأیید شد و رسید آن در تلگرام ارسال گردید.<br><small>کد سفارش: ${escPay(orderId.slice(0, 8).toUpperCase())}</small>`);
         }
         if (res.state === 'PENDING') {
             return page('در حال بررسی', `ℹ️ پرداخت شما دریافت شده اما هنوز تأیید نهایی نشده است؛ نتیجه از طریق تلگرام اطلاع داده می‌شود.`);

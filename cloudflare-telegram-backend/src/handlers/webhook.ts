@@ -54,12 +54,16 @@ export async function handleTelegramWebhook(
         webhookSecret = row.webhook_secret || env.WEBHOOK_SECRET;
     }
 
-    // Verify Telegram Webhook Secret Token if configured
-    if (webhookSecret) {
-        const receivedToken = request.headers.get('X-Telegram-Bot-Api-Secret-Token') || '';
-        if (!timingSafeEqual(receivedToken, webhookSecret)) {
-            return new Response('Unauthorized Webhook Source', { status: 401 });
-        }
+    // Verify Telegram Webhook Secret Token — REQUIRED, fail closed.
+    // A webhook without a secret would accept forged updates from anyone,
+    // so an academy (or the legacy global bot) with no secret configured is
+    // refused (403) instead of silently trusting every caller.
+    if (!webhookSecret) {
+        return new Response('Webhook secret not configured', { status: 403 });
+    }
+    const receivedToken = request.headers.get('X-Telegram-Bot-Api-Secret-Token') || '';
+    if (!timingSafeEqual(receivedToken, webhookSecret)) {
+        return new Response('Unauthorized Webhook Source', { status: 401 });
     }
 
     if (!botToken) {
@@ -80,7 +84,7 @@ export async function handleTelegramWebhook(
         // Bounded processing: never let Telegram see a timeout and retry the update,
         // which would send the same reply twice.
         await Promise.race([
-            processUpdate(update, bot, db, env, academyId),
+            processUpdate(update, bot, db, env, academyId, url ? url.origin : ''),
             new Promise<void>((resolve) => setTimeout(resolve, SEND_TIMEOUT_MS))
         ]);
     } catch (err: any) {
@@ -103,7 +107,8 @@ async function processUpdate(
     bot: TelegramBotClient,
     db: AcademyDatabase,
     env: Env,
-    academyOfBot = dbAcademy(env)
+    academyOfBot = dbAcademy(env),
+    requestOrigin = ''
 ): Promise<void> {
     // ============================================================
     // 0. Stage 5: inline-button callbacks (manager approve/reject)
@@ -311,7 +316,7 @@ async function processUpdate(
     if (normalized === '💰 وضعیت مالی' || normalized.includes('وضعیت مالی') || normalized === '/finance') {
         await handleFinancialStatus(bot, db, student, chatId);
     } else if (normalized === '📅 اقساط من' || normalized.includes('اقساط من') || normalized.includes('اقساط') || normalized === '/installments') {
-        await handleInstallments(bot, db, student, chatId, env);
+        await handleInstallments(bot, db, student, chatId, env, requestOrigin);
     } else if (normalized === '🧾 رسیدهای من' || normalized.includes('رسیدهای من') || normalized === '/receipts') {
         await handleReceipts(bot, db, student, chatId);
     } else if (normalized === '📄 قرارداد من' || normalized.includes('قرارداد من') || normalized === '/contract') {
@@ -745,7 +750,7 @@ async function handleFinancialStatus(bot: TelegramBotClient, db: AcademyDatabase
 // paid / near-due / due-today / overdue / receipt-awaiting-review /
 // receipt-rejected / failed-reminder / online-awaiting-confirmation,
 // plus method-specific guidance (card-to-card card info, online link).
-async function handleInstallments(bot: TelegramBotClient, db: AcademyDatabase, student: StudentRecord, chatId: string, env?: Env) {
+async function handleInstallments(bot: TelegramBotClient, db: AcademyDatabase, student: StudentRecord, chatId: string, env?: Env, requestOrigin = '') {
     const installments = await db.getInstallmentsForStudent(student.id);
     const currency = await db.getSetting('currency_unit', 'تومان');
 
@@ -817,9 +822,17 @@ async function handleInstallments(bot: TelegramBotClient, db: AcademyDatabase, s
             } else if (method === 'POS') {
                 res += `   🖥 روش: کارتخوان — در محل آموزشگاه پرداخت کنید.\n`;
             } else if (method === 'ONLINE' && !txn && env) {
-                const link = await createInstallmentPaymentLink(env, db, db.academyId, student.id, inst.id, '');
-                if (link.ok) {
-                    res += `   💳 روش: آنلاین — لینک اختصاصی همین قسط:\n${link.url}\n`;
+                // The base URL must be REAL: a bare path is not a usable link
+                // for the student. Prefer the configured public base, then the
+                // request origin of this webhook call.
+                const base = env.PUBLIC_BASE_URL || requestOrigin;
+                if (base) {
+                    const link = await createInstallmentPaymentLink(env, db, db.academyId, student.id, inst.id, base);
+                    if (link.ok) {
+                        res += `   💳 روش: آنلاین — لینک اختصاصی همین قسط:\n${link.url}\n`;
+                    }
+                } else {
+                    console.warn('[Bot] PUBLIC_BASE_URL unset: online payment link omitted for the installment menu.');
                 }
                 // no gateway configured → no link, no "active" claim (honest default)
             }
