@@ -1,5 +1,5 @@
 -- ============================================================
--- Migration 0009: server-side daily backups (Stage 7)
+-- Migration 0011: server-side daily backups (Stage 7)
 --
 -- Every academy gets one gzip-compressed JSON snapshot per day,
 -- stored back inside the same D1 database in <= 768 KB chunks

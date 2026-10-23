@@ -56,17 +56,19 @@ export async function handleScheduledEvent(
 /**
  * Runs the daily backup once per Tehran calendar day per academy.
  * The last completed day is stored in academy_settings under the
- * tenant-scoped key "<academyId>:backup:last_day", so re-running the
- * cron within the same day never produces a second snapshot (the
- * manual retry button does).
+ * logical key "backup:last_day"; AcademyDatabase scopes it per tenant
+ * ("<academyId>:backup:last_day"), so re-running the cron within the
+ * same day never produces a second snapshot (the manual retry button
+ * does) and academy A's marker never satisfies academy B.
  */
 export async function maybeDailyBackup(env: Env, academyId: string): Promise<void> {
     if (!env.DB) return;
     const db = new AcademyDatabase(env, academyId);
     const now = Date.now();
     const tehranDay = new Date(now + TEHRAN_OFFSET_MS).toISOString().slice(0, 10);
-    // Tenant-scoped marker key: academy A's backup day never satisfies academy B.
-    const dayKey = `${academyId}:backup:last_day`;
+    // Logical key — the db layer adds the per-academy prefix (stage 3
+    // settings scoping). Never pass a pre-scoped key here.
+    const dayKey = 'backup:last_day';
 
     const last = await db.getSetting(dayKey);
     if (last === tehranDay) return;
