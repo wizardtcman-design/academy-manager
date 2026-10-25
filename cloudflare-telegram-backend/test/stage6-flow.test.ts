@@ -511,6 +511,12 @@ describe('manual send, stop/resume, channels and security', () => {
             id: 'ins-m3', student_id: 'stu-m1',
             due_date_shamsi: epochToShamsi(Date.now() - DAY), due_date_epoch: Date.now() - DAY
         })]);
+        // Deterministic dispatch: pull the +1 (overdue) nob's schedule into the
+        // past so the catch-up ALWAYS has it due. Without this the test depends
+        // on the wall clock (between Tehran-midnight and the 10:00 academy send
+        // time the +1 nob is not yet due and the DUE nob is chosen instead).
+        db.run(`UPDATE reminders SET scheduled_epoch = ? WHERE id = 'auto:ins-m3:1' AND academy_id = ?`,
+            Date.now() - 10_000, ACADEMY_A);
         await cron(env);
         const dueTexts = textsTo(STUDENT_CHAT);
         expect(dueTexts.some((t) => t?.includes('🚨 قسط معوق شده'))).toBe(true);

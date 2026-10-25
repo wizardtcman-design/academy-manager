@@ -18,7 +18,7 @@ import { ContractStore } from '../contracts-store';
 import { readContractFileForStudent } from './contracts-api';
 import { timingSafeEqual, sha256Hex, randomToken } from '../crypto';
 import { ingestPayments, PaymentInput } from '../receipts';
-import { createInstallmentPaymentLink, verifyTransaction } from '../gateway';
+import { createInstallmentPaymentLink, verifyTransaction, onlinePaymentsEnabled, GATEWAY_DISABLED_REASON } from '../gateway';
 import { syncInstallmentReminders } from '../reminders';
 import { handleMessagingApi } from './messaging-api';
 import { runBackup, getBackupStatus } from '../backup';
@@ -641,9 +641,13 @@ export async function handleApiRequest(
     }
 
     // A dedicated payment link for ONE installment of ONE student, for the
-    // exact remaining amount. Requires a CONNECTED provider (none is active
-    // until the manager connects one); refuses politely otherwise.
+    // exact remaining amount. Stage 9: the online gateway is COMPLETELY
+    // HIDDEN — this route is safely blocked until the owner's explicit
+    // deploy-time activation (ONLINE_PAYMENTS_ENABLED="true").
     if (path === '/api/payments/link' && request.method === 'POST') {
+        if (!onlinePaymentsEnabled(env)) {
+            return jsonResponse({ success: false, message: GATEWAY_DISABLED_REASON, errorCode: 409 }, 409);
+        }
         try {
             const body = await request.json() as { installmentId?: string; studentId?: string };
             if (!body.installmentId || !body.studentId) {
@@ -664,10 +668,12 @@ export async function handleApiRequest(
         }
     }
 
-    // Server-side verification trigger (app pull or manager action). The user's
-    // claim, the redirect or the opened link NEVER verify — this runs the
-    // gateway's own verification endpoint and applies the state machine.
+    // Server-side verification trigger (app pull or manager action). Stage 9:
+    // blocked while the online gateway is hidden (nothing to verify).
     if (path === '/api/payments/verify' && request.method === 'POST') {
+        if (!onlinePaymentsEnabled(env)) {
+            return jsonResponse({ success: false, message: GATEWAY_DISABLED_REASON, errorCode: 409 }, 409);
+        }
         try {
             const body = await request.json() as { orderId?: string };
             if (!body.orderId) {

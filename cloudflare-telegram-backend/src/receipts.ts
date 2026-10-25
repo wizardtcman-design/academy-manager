@@ -18,7 +18,9 @@
 //     QUEUED / SENT / FAILED / REVERSED / REVERSAL_QUEUED /
 //     REVERSED_NOTIFIED) with attempts + last_error for forensics and
 //     controlled re-delivery;
-//   - receipts are Telegram-only: no SMS is ever queued for a receipt.
+//   - receipts are delivered through Telegram AND (Stage 9) through the
+//     academy's SMS panel when the event's channel policy allows SMS;
+//     the legacy default (no panel configured) stays Telegram-only.
 // ============================================================
 
 import { Env, PaymentReceiptRecord } from './types';
@@ -26,7 +28,8 @@ import { AcademyDatabase } from './db';
 import { TelegramBotClient } from './telegram';
 import { ContractStore } from './contracts-store';
 import { composeReceiptPdf, ReceiptPdfData } from './receipt-pdf';
-import { MessagingConfig, MsgEventKey, renderEvent, getMessagingConfig, escapeHtml, MSG_EVENTS, renderMsgTemplate } from './messaging';
+import { MessagingConfig, MsgEventKey, renderEvent, getMessagingConfig, escapeHtml, MSG_EVENTS, renderMsgTemplate, htmlToPlain } from './messaging';
+import { resolveSmsProvider, sendSmsText, SmsResolveResult } from './sms';
 
 export const MAX_RECEIPT_ATTEMPTS = 5;
 const DISPATCH_LIMIT = 25;
@@ -413,6 +416,30 @@ export async function dispatchReceipts(
     // Delivery ledger: claim BEFORE send so overlapping cron runs and
     // re-delivered minutes can never double-send the same receipt.
     const store = new ContractStore(env);
+    // Stage 9: the SMS provider resolves ONCE per dispatch. When configured,
+    // a receipt/notice whose channel policy allows SMS ('sms' | 'both') also
+    // reaches the student's phone through the common provider layer.
+    const smsProvider: SmsResolveResult = await resolveSmsProvider(env, db);
+    const smsOk = smsProvider.kind === 'ok';
+
+    /** One SMS copy of a receipt/notice (ledger-gated by sendSmsText). */
+    const smsCopy = async (
+        ledgerId: string,
+        r: PaymentReceiptRecord,
+        updateOnSent: () => Promise<void>
+    ): Promise<'SENT' | 'FAILED' | 'OTHER'> => {
+        const student2 = await db.getStudentById(r.student_id, academyId);
+        const phone = student2?.phone || '';
+        if (!phone) return 'OTHER';
+        const text = htmlToPlain(renderReceiptViaConfig(cfg, r as any, academyName, currency));
+        const res = await sendSmsText(env, db, academyId, { to: phone, text, ledgerId });
+        if (res.status === 'SENT') { await updateOnSent(); return 'SENT'; }
+        if (res.status === 'FAILED') {
+            console.warn(`[Receipts] SMS copy failed for ${ledgerId}: ${res.error}`);
+            return 'FAILED';
+        }
+        return 'OTHER';
+    };
 
     const due = await db.listDuePaymentReceipts(academyId, now, DISPATCH_LIMIT);
     for (const r of due) {
@@ -420,7 +447,27 @@ export async function dispatchReceipts(
         if (r.send_status === 'REVERSAL_QUEUED') {
             // Stage 6: auto-send policy gates — the row stays queued.
             if (cfg.events.REVERSAL_NOTICE.auto === false) { out.skippedAuto++; continue; }
-            if (cfg.events.REVERSAL_NOTICE.channel === 'sms') { out.skippedAuto++; continue; }
+            // Stage 9: SMS-ONLY policy now REALLY delivers via the panel.
+            if (cfg.events.REVERSAL_NOTICE.channel === 'sms') {
+                if (!smsOk) { out.skippedAuto++; continue; }
+                const gate = await claimOrSkip(store, academyId, `notice:${r.id}`, out);
+                if (!gate) continue;
+                const outcome = await smsCopy(`notice:${r.id}`, r, async () => {
+                    await db.updatePaymentReceipt(r.id, academyId, {
+                        send_status: 'REVERSED_NOTIFIED',
+                        last_attempt_epoch: Date.now(), updated_at_epoch: Date.now()
+                    });
+                });
+                if (outcome === 'SENT') out.notices++;
+                else if (outcome === 'FAILED') {
+                    await db.updatePaymentReceipt(r.id, academyId, {
+                        attempts: r.attempts + 1, last_attempt_epoch: Date.now(),
+                        last_error: 'sms send failed', updated_at_epoch: Date.now()
+                    });
+                    out.failed++;
+                }
+                continue;
+            }
             const student = await db.getStudentById(r.student_id, academyId);
             const chat = student?.telegram_chat_id;
             if (!chat) continue; // stays queued until the student connects
@@ -446,6 +493,11 @@ export async function dispatchReceipts(
                 });
                 await store.finishDelivery(academyId, `notice:${r.id}`, 'telegram', 'SENT', '', String((res.result as any)?.message_id || ''));
                 out.notices++;
+                // Stage 9: policy 'both' → the SMS copy rides along
+                // (best-effort; a Telegram success is never undone).
+                if (cfg.events.REVERSAL_NOTICE.channel === 'both' && smsOk) {
+                    await smsCopy(`notice:${r.id}`, r, async () => { /* ledger tracks it */ });
+                }
             } else {
                 await db.updatePaymentReceipt(r.id, academyId, {
                     attempts: r.attempts + 1, last_attempt_epoch: Date.now(),
@@ -470,7 +522,31 @@ export async function dispatchReceipts(
         // Stage 6: auto-send policy gates — the receipt stays QUEUED and is
         // delivered whenever the manager re-enables this event type.
         if (cfg.events.PAYMENT_RECEIPT.auto === false) { out.skippedAuto++; continue; }
-        if (cfg.events.PAYMENT_RECEIPT.channel === 'sms') { out.skippedAuto++; continue; }
+        // Stage 9: SMS-ONLY policy now REALLY delivers via the panel — even
+        // for students who never connected Telegram (the phone is enough).
+        if (cfg.events.PAYMENT_RECEIPT.channel === 'sms') {
+            if (!smsOk) { out.skippedAuto++; continue; }
+            const gate = await claimOrSkip(store, academyId, `receipt:${r.id}`, out);
+            if (!gate) continue;
+            const outcome = await smsCopy(`receipt:${r.id}`, r, async () => {
+                await db.updatePaymentReceipt(r.id, academyId, {
+                    send_status: 'SENT',
+                    last_attempt_epoch: Date.now(), last_error: '', updated_at_epoch: Date.now()
+                });
+            });
+            if (outcome === 'SENT') out.sent++;
+            else if (outcome === 'FAILED') {
+                const attempts = r.attempts + 1;
+                const terminal = attempts >= MAX_RECEIPT_ATTEMPTS;
+                await db.updatePaymentReceipt(r.id, academyId, {
+                    send_status: terminal ? 'FAILED' : 'QUEUED',
+                    attempts, last_attempt_epoch: Date.now(),
+                    last_error: 'sms send failed', updated_at_epoch: Date.now()
+                });
+                out.failed++;
+            }
+            continue;
+        }
         const receiptGate = await claimOrSkip(store, academyId, `receipt:${r.id}`, out);
         if (!receiptGate) continue;
 
@@ -507,6 +583,11 @@ export async function dispatchReceipts(
                 timestamp_shamsi: ''
             });
             out.sent++;
+            // Stage 9: policy 'both' → the SMS copy rides along
+            // (best-effort; a Telegram success is never undone).
+            if (cfg.events.PAYMENT_RECEIPT.channel === 'both' && smsOk) {
+                await smsCopy(`receipt:${r.id}`, r, async () => { /* ledger tracks it */ });
+            }
         } else {
             const attempts = r.attempts + 1;
             const terminal = attempts >= MAX_RECEIPT_ATTEMPTS;

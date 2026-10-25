@@ -385,11 +385,63 @@ export async function handleContractsApi(request: Request, env: Env, url: URL): 
             : '';
         const outboxId = `welcome-${studentId}`;
         if (text) {
-            await env.DB!.prepare(
+            // Stage 9: with a configured panel + a policy that allows SMS the
+            // welcome message REALLY goes out through the common provider
+            // layer (ledger-gated, no duplicates). Otherwise the legacy
+            // honest DISABLED row is kept exactly as before.
+            const { resolveSmsProvider, sendSmsText } = await import('../sms');
+            const resolved = await resolveSmsProvider(env, db);
+            const smsAllowed = resolved.kind === 'ok' && cfg.events.WELCOME.channel !== 'telegram';
+            const insertRow = (status: string, error: string) => env.DB!.prepare(
                 `INSERT INTO sms_outbox (id, academy_id, reminder_id, phone, body, status, error, created_at_epoch)
                  VALUES (?,?,?,?,?,?,?,?)`
-            ).bind(outboxId, academyId, 'WELCOME', student.phone || '', text, 'DISABLED',
-                'sms_provider_not_configured', Date.now()).run();
+            ).bind(outboxId, academyId, 'WELCOME', student.phone || '', text, status, error, Date.now()).run();
+
+            if (smsAllowed && (student.phone || '').trim()) {
+                let inserted = false;
+                const outcome = await sendSmsText(env, db, academyId, {
+                    to: student.phone || '',
+                    text: text.replace(/<[^>]+>/g, '').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&'),
+                    ledgerId: outboxId
+                });
+                if (outcome.status === 'SENT' || outcome.status === 'FAILED') {
+                    await insertRow(outcome.status === 'SENT' ? 'SENT' : 'FAILED', outcome.error);
+                    inserted = true;
+                } else if (outcome.status === 'DUPLICATE') {
+                    // An earlier run already delivered it — reconcile honestly.
+                    await insertRow('SENT', '').catch(async () => {
+                        await db.updateSmsOutboxStatus(outboxId, academyId, 'SENT', '');
+                    });
+                    inserted = true;
+                }
+                if (!inserted) {
+                    await insertRow('DISABLED', outcome.error || 'sms_provider_not_configured');
+                }
+                await db.logMessage({
+                    id: crypto.randomUUID(),
+                    student_id: studentId,
+                    student_name: student.full_name || '',
+                    chat_id: '',
+                    message_type: 'WELCOME_SMS',
+                    content: outcome.status === 'SENT' ? 'welcome sms sent via panel' : `welcome sms ${outcome.status}: ${outcome.error}`,
+                    status: outcome.status === 'SENT' ? 'SUCCESS' : 'FAILED',
+                    error_message: outcome.status === 'SENT' ? '' : outcome.error,
+                    timestamp_epoch: Date.now(),
+                    timestamp_shamsi: ''
+                });
+                return ok(outcome.status === 'SENT'
+                    ? 'پیام خوش‌آمد با پیامک ارسال شد.'
+                    : 'پیام خوش‌آمد آماده شد؛ ارسال پیامک ناموفق بود.', {
+                    message: text,
+                    botLink,
+                    tokenExpiresAtEpoch: expiresAt,
+                    sms: outcome.status === 'SENT'
+                        ? { status: 'SENT', reason: '' }
+                        : { status: outcome.status, reason: outcome.error },
+                    deduped: false
+                });
+            }
+            await insertRow('DISABLED', resolved.kind === 'ok' ? 'sms_channel_disabled_by_settings' : 'sms_provider_not_configured');
             await db.logMessage({
                 id: crypto.randomUUID(),
                 student_id: studentId,

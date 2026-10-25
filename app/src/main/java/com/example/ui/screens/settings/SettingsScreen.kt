@@ -1226,53 +1226,21 @@ fun SettingsScreen(
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     Text(
-                        text = "درگاه پرداخت و رسیدها",
+                        text = "رسیدها",
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.primary
                     )
+                // Stage 9: the online payment gateway is COMPLETELY HIDDEN.
+                // The provider/merchant/key inputs are intentionally removed
+                // from the UI; the stored values are kept untouched and saved
+                // back unchanged. Re-activation later happens with the owner's
+                // explicit deploy-time flag + a registered provider — the
+                // card-to-card → manager-approval flow is unaffected.
                 Text(
-                    text = "هیچ درگاهی به‌صورت پیش‌فرض فعال نیست. پس از انتخاب و ثبت‌نام در سرویس پرداخت، نام سرویس و کلیدها را اینجا وارد کنید. کلیدها فقط روی گوشی شما و سرور اختصاصی خودتان ذخیره می‌شوند.",
+                    text = "پرداخت‌ها از طریق کارت‌به‌کارت و تأیید رسید توسط مدیریت ثبت می‌شوند.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Spacer(Modifier.height(10.dp))
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    listOf("" to "غیرفعال (پیش‌فرض)").forEach { (code, label) ->
-                        FilterChip(
-                            selected = gatewayProvider.isBlank() || gatewayProvider == "none",
-                            onClick = { gatewayProvider = "" },
-                            label = { Text(label, style = MaterialTheme.typography.bodySmall) }
-                        )
-                    }
-                }
-                OutlinedTextField(
-                    value = gatewayProvider,
-                    onValueChange = { gatewayProvider = it.trim() },
-                    label = { Text("شناسه سرویس درگاه (بعد از تأیید مدیر)") },
-                    supportingText = { Text("خالی یا none = غیرفعال. تا تأیید شما هیچ درگاهی فعال نمی‌شود.") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-                Spacer(Modifier.height(6.dp))
-                OutlinedTextField(
-                    value = gatewayMerchantId,
-                    onValueChange = { gatewayMerchantId = it.trim() },
-                    label = { Text("شناسه پذیرنده (Merchant ID)") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-                Spacer(Modifier.height(6.dp))
-                OutlinedTextField(
-                    value = gatewayApiKey,
-                    onValueChange = { gatewayApiKey = it.trim() },
-                    label = { Text("کلید API درگاه") },
-                    visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
                 )
                 Spacer(Modifier.height(12.dp))
                 Text("رسید قسط اول (پرداخت همزمان با ثبت‌نام):", style = MaterialTheme.typography.bodyMedium)

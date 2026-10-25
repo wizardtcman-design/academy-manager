@@ -22,9 +22,12 @@
 // reported honestly as `UNCONFIGURED / sms_provider_not_configured`
 // and NO real SMS can ever leave the worker. One channel's failure
 // never erases the other channel's success (per-channel ledger).
+// (Stage 9 update: a REAL provider layer now exists in src/sms.ts —
+// these notes describe the DEFAULT state when no panel is configured.)
 // ============================================================
 
 import { AcademyDatabase } from './db';
+import { smsChannelStatus } from './sms';
 
 // ------------------------------------------------------------
 // Event registry
@@ -557,26 +560,42 @@ export function effectiveTemplate(cfg: MessagingConfig, key: MsgEventKey): strin
 
 export interface ChannelStatus {
     telegram: { configured: boolean; detail: string };
-    sms: { configured: boolean; detail: string };
+    sms: { configured: boolean; detail: string; provider: string };
     gateway: { configured: boolean; detail: string };
 }
 
-export async function channelStatus(db: AcademyDatabase, botToken: string): Promise<ChannelStatus> {
-    const gatewayProvider = (await db.getSetting('gateway_provider', '') || '').trim();
+export async function channelStatus(db: AcademyDatabase, botToken: string, env?: unknown): Promise<ChannelStatus> {
+    // Stage 9: the online gateway is HIDDEN — the manager-facing status must
+    // not advertise a configurable gateway until the owner's explicit
+    // deploy-time activation (ONLINE_PAYMENTS_ENABLED="true").
+    let gatewayConfigured = false;
+    let gatewayDetail = 'درگاه پرداخت آنلاین در این نسخه فعال نیست (مخفی)؛ پرداخت‌ها کارت‌به‌کارت با تأیید مدیریت است.';
+    try {
+        const { onlinePaymentsEnabled } = await import('./gateway');
+        if (env && onlinePaymentsEnabled(env as any)) {
+            const gatewayProvider = ((await db.getSetting('gateway_provider', '')) || '').trim();
+            gatewayConfigured = Boolean(gatewayProvider);
+            gatewayDetail = gatewayProvider
+                ? `درگاه پرداخت پیکربندی شده (${gatewayProvider}).`
+                : 'درگاه پرداخت آنلاین متصل نیست؛ لینک پرداخت صادر نمی‌شود.';
+        }
+    } catch (_) { /* gateway module always available; defensive only */ }
+    // Stage 9: the REAL SMS status — selected provider, completeness and the
+    // honest docs-pending state, with no key or credential ever included.
+    const sms = await smsChannelStatus(db);
     return {
         telegram: {
             configured: Boolean(botToken),
             detail: botToken ? 'ربات تلگرام آموزشگاه متصل است.' : 'ربات تلگرام آموزشگاه متصل نیست؛ پیام‌های تلگرام ارسال نمی‌شوند.'
         },
-        // No SMS panel is chosen or activatable in this stage — the worker can
-        // never send a real SMS and the UI must never claim it can.
         sms: {
-            configured: false,
-            detail: 'پنل پیامکی متصل نیست؛ ارسال پیامک غیرفعال است.'
+            configured: sms.configured,
+            detail: sms.detail,
+            provider: sms.provider
         },
         gateway: {
-            configured: Boolean(gatewayProvider),
-            detail: gatewayProvider ? `درگاه پرداخت پیکربندی شده (${gatewayProvider}).` : 'درگاه پرداخت آنلاین متصل نیست؛ لینک پرداخت صادر نمی‌شود.'
+            configured: gatewayConfigured,
+            detail: gatewayDetail
         }
     };
 }

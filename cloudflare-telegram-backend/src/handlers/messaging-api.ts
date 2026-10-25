@@ -40,6 +40,10 @@ import {
     channelStatus, sampleVars, renderMsgTemplate, renderEvent, htmlToPlain,
     getReminderStops, setReminderStop, logMessagingEvent, PutConfigInput
 } from '../messaging';
+import {
+    SMS_PROVIDERS, SmsProviderDef, getSmsConfig, missingSmsFields,
+    resolveSmsProvider, sendSmsText, testSmsConnection
+} from '../sms';
 
 function json(data: unknown, status = 200): Response {
     return new Response(JSON.stringify(data), {
@@ -91,7 +95,7 @@ export async function handleMessagingApi(
     if (path === '/api/messaging/config' && method === 'GET') {
         const cfg = await getMessagingConfig(db);
         const [status, hour, minute, tz, currency, stops] = await Promise.all([
-            channelStatus(db, botToken),
+            channelStatus(db, botToken, env),
             db.getSetting('reminder_send_hour', '10'),
             db.getSetting('reminder_send_minute', '0'),
             db.getSetting('reminder_timezone', 'Asia/Tehran'),
@@ -143,6 +147,137 @@ export async function handleMessagingApi(
                 + `; overdueDaily: ${res.config.overdueDaily.enabled ? 'on' : 'off'}`
         });
         return ok('تنظیمات پیام‌رسانی با موفقیت ذخیره شد.', { config: res.config });
+    }
+
+    // ------------------------------------------------------------
+    // Stage 9: SMS panel settings (/api/messaging/sms/*)
+    //
+    //   GET  /api/messaging/sms/config          providers + masked config + status
+    //   PUT  /api/messaging/sms/config          select provider + save fields
+    //   POST /api/messaging/sms/test-connection FREE check only (never sends)
+    //
+    // Security: secret values are NEVER returned (only "has value" booleans),
+    // never logged and never included in errors. A blank secret field on PUT
+    // keeps the stored value; switching providers never deletes the other
+    // provider's stored fields nor any message history.
+    // ------------------------------------------------------------
+    if (path === '/api/messaging/sms/config' && method === 'GET') {
+        const cfg = await getSmsConfig(db);
+        const { smsChannelStatus } = await import('../sms');
+        const status = await smsChannelStatus(db);
+        const providers = Object.values(SMS_PROVIDERS).map((def: SmsProviderDef) => {
+            const settings: Record<string, unknown> = {};
+            for (const f of def.fields) {
+                if (f.kind === 'secret') {
+                    // The value itself NEVER leaves the worker.
+                    settings[f.key] = { hasValue: Boolean((cfg.provider === def.id ? cfg.settings[f.key] : '') || '') };
+                } else {
+                    settings[f.key] = cfg.provider === def.id ? (cfg.settings[f.key] || '') : '';
+                }
+            }
+            return {
+                id: def.id,
+                label: def.label,
+                docsUrl: def.docsUrl,
+                docsPending: Boolean(def.docsPending),
+                capabilities: def.capabilities,
+                fields: def.fields,
+                active: cfg.provider === def.id,
+                settings
+            };
+        });
+        return ok('تنظیمات پنل پیامکی دریافت شد.', {
+            activeProvider: cfg.provider,
+            status,
+            providers
+        });
+    }
+
+    if (path === '/api/messaging/sms/config' && method === 'PUT') {
+        const body = await readBody(request);
+        if (!body) return fail('بدنهٔ درخواست معتبر نیست.', 400);
+        const provider = String(body.provider || '').trim().toLowerCase();
+        if (provider && !SMS_PROVIDERS[provider]) {
+            return fail('پنل پیامکی ناشناخته است.', 400);
+        }
+        const errors: string[] = [];
+        if (provider) {
+            const def = SMS_PROVIDERS[provider];
+            const fields = (body.fields && typeof body.fields === 'object') ? body.fields as Record<string, unknown> : {};
+            // Validate shape + completeness (empty secrets keep stored values).
+            for (const f of def.fields) {
+                const v = fields[f.key];
+                if (v === undefined || v === null) continue;
+                if (typeof v !== 'string') {
+                    errors.push(`مقدار «${f.label}» نامعتبر است.`);
+                    continue;
+                }
+                if (f.key === 'line' && v.trim() && !/^\d{1,20}$/.test(v.trim())) {
+                    errors.push(`«${f.label}» باید فقط شماره باشد.`);
+                }
+            }
+            if (!errors.length) {
+                // Stored values of the TARGET provider (not just the currently
+                // active one) — so the owner can switch panels and come back
+                // without re-entering credentials.
+                const storedFor = async (key: string): Promise<string> =>
+                    ((await db.getSetting(`${provider}_${key}`, '')) || '').trim();
+                const merged: Record<string, string> = {};
+                for (const f of def.fields) {
+                    const incoming = typeof fields[f.key] === 'string' ? (fields[f.key] as string).trim() : '';
+                    merged[f.key] = incoming || (await storedFor(f.key));
+                }
+                const missing = missingSmsFields(def, merged);
+                if (missing.length) {
+                    return json({
+                        success: false,
+                        message: `ذخیره نشد؛ این فیلدها برای پنل «${def.label}» الزامی‌اند: ${missing.join('، ')}.`,
+                        errorCode: 400,
+                        errors: missing
+                    }, 400);
+                }
+                await db.setSetting('sms_provider', provider);
+                for (const f of def.fields) {
+                    if (typeof fields[f.key] === 'string' && (fields[f.key] as string).trim()) {
+                        await db.setSetting(`${provider}_${f.key}`, (fields[f.key] as string).trim());
+                    }
+                }
+                await logMessagingEvent(db, academyId, 'SMS_CONFIG_UPDATED', {
+                    actor: 'manager-api',
+                    detail: `provider=${provider}; fields=${Object.keys(fields).filter((k) => typeof fields[k] === 'string' && (fields[k] as string).trim()).join(',') || '-'}`
+                });
+            }
+        } else {
+            // Deactivating keeps every stored field + all history (the owner can
+            // switch back without re-entering anything).
+            await db.setSetting('sms_provider', '');
+            await logMessagingEvent(db, academyId, 'SMS_CONFIG_UPDATED', {
+                actor: 'manager-api', detail: 'provider=none (deactivated; stored fields kept)'
+            });
+        }
+        if (errors.length) {
+            return json({ success: false, message: 'تنظیمات ذخیره نشد؛ خطاهای اعتبارسنجی را برطرف کنید.', errors, errorCode: 400 }, 400);
+        }
+        const { smsChannelStatus } = await import('../sms');
+        return ok('تنظیمات پنل پیامکی ذخیره شد.', { status: await smsChannelStatus(db) });
+    }
+
+    if (path === '/api/messaging/sms/test-connection' && method === 'POST') {
+        // FREE/no-cost check only (SMS.ir /v1/credit). It can NEVER send an
+        // SMS — a real send test stays locked until the owner's explicit
+        // instruction after entering real credentials.
+        const { getSmsConfig } = await import('../sms');
+        const providerId = (await getSmsConfig(db)).provider;
+        const res = await testSmsConnection(env, db);
+        await logMessagingEvent(db, academyId, 'SMS_CONNECTION_TESTED', {
+            actor: 'manager-api',
+            detail: `provider=${providerId || 'none'}; ok=${res.ok}`
+        });
+        return json({
+            success: res.ok,
+            message: res.detail,
+            data: res.ok ? { ok: true, credit: res.credit } : { ok: false, provider: providerId }
+        }, res.ok ? 200 : 409);
     }
 
     // ------------------------------------------------------------
@@ -342,9 +477,37 @@ export async function handleMessagingApi(
             }
         }
 
-        // ---- SMS channel (honest: never configured in this stage) ----
+        // ---- SMS channel (Stage 9: real delivery via the common provider
+        // layer; UNCONFIGURED only when no panel is fully configured) ----
         if (wantSms) {
-            channels.sms = { status: 'UNCONFIGURED', reason: 'پنل پیامکی متصل نیست؛ ارسال پیامک انجام نشد.' };
+            const resolved = await resolveSmsProvider(env, db);
+            if (resolved.kind !== 'ok') {
+                channels.sms = {
+                    status: resolved.kind === 'docs-pending' ? 'BLOCKED' : 'UNCONFIGURED',
+                    reason: resolved.reason
+                };
+            } else if (!student.phone) {
+                channels.sms = { status: 'FAILED', reason: 'این هنرجو شماره موبایل ثبت‌شده ندارد.' };
+                await store.finishDelivery(academyId, `manual:${clientMsgId}`, 'sms', 'FAILED', 'student has no phone');
+            } else {
+                const smsRes = await sendSmsText(env, db, academyId, {
+                    to: student.phone,
+                    text: htmlToPlain(text).replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&'),
+                    ledgerId: `manual:${clientMsgId}`
+                });
+                if (smsRes.status === 'SENT') {
+                    channels.sms = { status: 'SENT', messageId: smsRes.providerMessageId || undefined };
+                    if (overall === 'BLOCKED') overall = 'SENT';
+                } else if (smsRes.status === 'IN_FLIGHT') {
+                    channels.sms = { status: 'PENDING', reason: 'ارسال این پیامک در جریان است.' };
+                } else if (smsRes.status === 'DUPLICATE') {
+                    channels.sms = { status: 'SENT', reason: 'این پیامک قبلاً ارسال شده بود (ارسال تکراری مسدود شد).' };
+                    if (overall === 'BLOCKED') overall = 'SENT';
+                } else {
+                    channels.sms = { status: smsRes.status, reason: smsRes.error };
+                    if (overall !== 'SENT') overall = 'FAILED';
+                }
+            }
         }
 
         // ---- logging (no credentials, no sensitive payload) ----
@@ -370,14 +533,17 @@ export async function handleMessagingApi(
             detail: `${eventType} client=${clientMsgId}`
         });
 
+        const overallFailed = overall === 'FAILED'
+            || (!wantTelegram && wantSms && channels.sms?.status === 'FAILED');
         if (overall === 'BLOCKED' && channels.telegram?.status === 'BLOCKED') {
             return json({ success: false, message: channels.telegram.reason || 'ارسال انجام نشد.', status: 'BLOCKED', channels, errorCode: 409 }, 409);
         }
+        const smsOnly = !wantTelegram && wantSms;
         return json({
             success: true,
             message: overall === 'SENT'
-                ? (channels.sms ? 'پیام تلگرام ارسال شد (پیامک پیکربندی نشده است).' : 'پیام با موفقیت ارسال شد.')
-                : 'ارسال ناموفق بود؛ جزئیات در وضعیت کانال‌ها آمده است.',
+                ? (channels.sms && channels.telegram ? 'پیام از هر دو کانال ارسال شد.' : smsOnly ? 'پیامک با موفقیت ارسال شد.' : 'پیام با موفقیت ارسال شد.')
+                : overallFailed ? 'ارسال ناموفق بود؛ جزئیات در وضعیت کانال‌ها آمده است.' : 'ارسال انجام نشد؛ جزئیات در وضعیت کانال‌ها آمده است.',
             data: { status: overall, channels, logId }
         });
     }

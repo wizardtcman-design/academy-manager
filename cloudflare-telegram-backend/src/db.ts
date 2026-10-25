@@ -1483,4 +1483,16 @@ export class AcademyDatabase {
             }
         }
     }
+
+    /** Stage 9: final status of ONE sms_outbox row (welcome / event copies). */
+    async updateSmsOutboxStatus(id: string, academyId: string, status: string, error = ''): Promise<void> {
+        if (!this.db) return;
+        try {
+            await this.db.prepare(
+                'UPDATE sms_outbox SET status = ?, error = ? WHERE id = ? AND academy_id = ?'
+            ).bind(status, error, id, academyId).run();
+        } catch (e) {
+            console.warn('[DB] D1 updateSmsOutboxStatus failed:', e);
+        }
+    }
 }

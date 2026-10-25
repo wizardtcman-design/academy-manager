@@ -50,8 +50,9 @@ import { AcademyDatabase } from './db';
 import { TelegramBotClient } from './telegram';
 import { ContractStore } from './contracts-store';
 import { shamsiAtAcademyTime, academyTzOffsetMinutes } from './tz';
-import { createInstallmentPaymentLink } from './gateway';
+import { createInstallmentPaymentLink, onlinePaymentsEnabled } from './gateway';
 import { MessagingConfig, MsgEventKey, renderEvent, getMessagingConfig, getReminderStops } from './messaging';
+import { resolveSmsProvider, sendSmsText, SmsResolveResult } from './sms';
 
 export const DEFAULT_OFFSETS = [-7, -4, -1, 0, 1];
 /** Fresh scheduling never lands deeper in the past than this. */
@@ -411,11 +412,71 @@ export function reminderEventKey(reminder: ReminderRecord): MsgEventKey | null {
 }
 
 /**
+ * Stage 9: delivers ONE reminder's SMS copy through the common provider
+ * layer, honoring the per-event channel policy and duplicate protection.
+ *
+ *  - No provider configured  → the legacy honest DISABLED outbox row
+ *    (`sms_provider_not_configured`) exactly as Stage 5/6 left it
+ *    (sending is impossible anyway).
+ *  - Provider configured + policy 'telegram' → NO send; the row is
+ *    marked SKIPPED `sms_channel_disabled_by_settings` (the manager
+ *    turned SMS off for this event type — never a silent override).
+ *  - Provider configured + policy 'sms'/'both' → real send with the
+ *    deliveries ledger claim BEFORE the HTTP call (no duplicates).
+ */
+export interface SmsSendOutcomeLike { status: string; providerMessageId: string; error: string }
+
+export async function deliverSmsForReminder(
+    env: Env,
+    db: AcademyDatabase,
+    store: ContractStore,
+    academyId: string,
+    reminder: ReminderRecord,
+    resolved: SmsResolveResult,
+    wantsSmsByPolicy: boolean,
+    now = Date.now()
+): Promise<SmsSendOutcomeLike> {
+    if (!reminder.student_phone) return { status: 'SKIPPED', providerMessageId: '', error: '' };
+    if (resolved.kind !== 'ok') {
+        // Legacy path: honest DISABLED ledger row, never a send.
+        await queueSmsCopy(store, db, academyId, reminder, now);
+        return { status: 'UNCONFIGURED', providerMessageId: '', error: 'sms_provider_not_configured' };
+    }
+    const ledgerId = `sms-${reminder.id}`;
+    const body = (reminder.message_text || '').replace(/<[^>]+>/g, '');
+    if (!wantsSmsByPolicy) {
+        const claimed = await store.claimDelivery(academyId, ledgerId, 'sms');
+        if (claimed) {
+            await db.insertSmsOutbox(ledgerId, academyId, reminder.id, reminder.student_phone || '', body,
+                'SKIPPED', 'sms_channel_disabled_by_settings', now);
+            await db.updateSmsStatus(academyId, reminder.id, 'SKIPPED', 'sms_channel_disabled_by_settings');
+            await store.finishDelivery(academyId, ledgerId, 'sms', 'SKIPPED', 'sms_channel_disabled_by_settings');
+        }
+        return { status: 'BLOCKED', providerMessageId: '', error: 'sms_channel_disabled_by_settings' };
+    }
+    return sendSmsText(env, db, academyId, {
+        to: reminder.student_phone || '',
+        text: body,
+        ledgerId,
+        onOutbox: (r) => {
+            // Fire-and-forget ledger updates — the send outcome is already
+            // decided by the deliveries row; these only enrich the views.
+            db.insertSmsOutbox(ledgerId, academyId, reminder.id, reminder.student_phone || '', body,
+                r.status === 'SENT' ? 'SENT' : r.status === 'FAILED' ? 'FAILED' : r.status,
+                r.error, now).catch(() => { /* non-blocking */ });
+            db.updateSmsStatus(academyId, reminder.id, r.status, r.error).catch(() => { /* non-blocking */ });
+        }
+    });
+}
+
+/**
  * Sends every due reminder through BOTH channels with independent status:
  *  - Telegram: through THIS academy's own bot (retry bounded, tracked);
- *  - SMS: queued in sms_outbox with status DISABLED until a real panel is
- *    connected (the infrastructure + integration point are ready; sending
- *    real SMS without a panel is impossible by construction).
+ *  - SMS: through the academy's selected panel via the common provider
+ *    layer (src/sms.ts) when one is configured AND the event's channel
+ *    policy allows SMS — otherwise the honest DISABLED/SKIPPED ledger
+ *    row is kept (real SMS without a panel or against the policy is
+ *    impossible by construction).
  * A channel failure never duplicates or blocks the other channel.
  */
 export async function dispatchDueReminders(
@@ -433,6 +494,10 @@ export async function dispatchDueReminders(
     const currency = await db.getSetting('currency_unit', 'تومان');
     // Stage 6: per-event auto-send policy + the manager stop list.
     const [cfg, stops] = await Promise.all([getMessagingConfig(db), getReminderStops(db)]);
+    // Stage 9: the SMS provider resolves ONCE per dispatch — a missing or
+    // incomplete config keeps the legacy DISABLED ledger rows, a configured
+    // panel really delivers (policy-gated per event).
+    const smsProvider = await resolveSmsProvider(env, db);
 
     // Controlled catch-up: one nob per (student, installment) per tick.
     // getDueReminders returns rows oldest-first; walking BACKWARDS keeps the
@@ -491,18 +556,58 @@ export async function dispatchDueReminders(
             res.skippedAuto++;
             continue;
         }
-        if (eventKey && cfg.events[eventKey].channel === 'sms') {
-            // Manager chose SMS-ONLY for this event type: Telegram must stay
-            // silent. (SMS itself remains honestly DISABLED until a provider
-            // exists — the row stays SCHEDULED, nothing is lost or faked.)
-            res.skippedAuto++;
-            continue;
-        }
+        // Stage 9: channel policy per event. With no provider configured the
+        // legacy DISABLED rows are still written (honest ledger), but a REAL
+        // send happens only when the policy allows SMS.
+        const wantsTelegram = !(eventKey && cfg.events[eventKey].channel === 'sms');
+        const wantsSmsByPolicy = !eventKey || cfg.events[eventKey].channel !== 'telegram';
         if (reminder.installment_id && stops[reminder.installment_id]) {
             // Manager-stopped installment: cancel the pending rows (the stop
             // itself was already audited when it was placed).
             await db.updateReminderStatus(reminder.id, 'CANCELLED', 'stopped by manager');
             res.superseded++;
+            continue;
+        }
+
+        // ---- SMS channel (independent status; policy-gated, provider-gated) ----
+        // Delivered BEFORE the Telegram branch so an SMS-ONLY event can still
+        // reach the student's phone; a Telegram failure never blocks it.
+        const smsOutcome = await deliverSmsForReminder(
+            env, db, store, academyId, reminder, smsProvider, wantsSmsByPolicy, now
+        );
+
+        if (!wantsTelegram) {
+            // Manager chose SMS-ONLY for this event type: Telegram must stay
+            // silent and the reminder's status reflects the SMS truth.
+            if (smsOutcome.status === 'SENT') {
+                await db.updateReminderStatus(reminder.id, 'SENT');
+                await db.logMessage({
+                    id: crypto.randomUUID(),
+                    student_id: reminder.student_id,
+                    student_name: reminder.student_name,
+                    chat_id: reminder.chat_id,
+                    message_type: `AUTO_${reminder.reminder_type}`,
+                    content: reminder.message_text,
+                    status: 'SUCCESS',
+                    error_message: '',
+                    timestamp_epoch: Date.now(),
+                    timestamp_shamsi: ''
+                });
+                res.sent++;
+            } else if (smsOutcome.status === 'FAILED') {
+                const attempts = (reminder.retry_count || 0) + 1;
+                if (attempts < 3) {
+                    await db.retryReminder(reminder.id, now + 5 * 60_000, `${smsOutcome.error} (sms attempt ${attempts})`);
+                    res.retried++;
+                } else {
+                    await db.updateReminderStatus(reminder.id, 'FAILED', smsOutcome.error);
+                    res.failed++;
+                }
+            } else {
+                // UNCONFIGURED / IN_FLIGHT / DUPLICATE / BLOCKED: nothing to
+                // do this tick — the row stays SCHEDULED for the next tick.
+                res.skippedAuto++;
+            }
             continue;
         }
 
@@ -542,10 +647,12 @@ export async function dispatchDueReminders(
                 if (!reClaimed) { res.inFlight++; continue; }
             }
             // ONLINE installment → attach THIS installment's dedicated link
-            // (same student + exact remaining). Without a REAL connected
-            // gateway no link is produced and nothing appears "active".
+            // (same student + exact remaining). Stage 9: the online gateway is
+            // COMPLETELY HIDDEN while the deploy-time kill-switch is off — no
+            // link is minted and NO online-payment hint may appear in any
+            // student-facing message.
             try {
-                if (reminder.installment_id) {
+                if (reminder.installment_id && onlinePaymentsEnabled(env)) {
                     const inst = await db.getInstallmentById(reminder.installment_id, academyId);
                     const method = ((inst as any)?.payment_method || '').toUpperCase();
                     // Cron has no request context: a usable link needs a REAL
@@ -644,14 +751,10 @@ export async function dispatchDueReminders(
             }
         }
 
-        // ---- SMS channel (independent status; sending DISABLED by design) ----
-        // The outbox row is the integration point for the future panel: its
-        // status/error are tracked separately from Telegram (own deliveries
-        // ledger row + reminders.sms_status + sms_outbox), and a Telegram
-        // failure neither blocks it nor re-queues it.
-        if (reminder.student_phone) {
-            await queueSmsCopy(store, db, academyId, reminder, now);
-        }
+        // ---- SMS channel moved BEFORE the Telegram branch (Stage 9): the
+        // delivery + policy decision now lives in deliverSmsForReminder so an
+        // SMS-ONLY event reaches the student's phone and a Telegram failure
+        // never blocks or re-queues the SMS channel.
     }
     return res;
 }

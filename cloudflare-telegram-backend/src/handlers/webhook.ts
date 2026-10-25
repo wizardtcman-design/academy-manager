@@ -13,8 +13,9 @@ import {
     isManager, CLAIM_PHOTO_MAX_BYTES
 } from '../claims';
 import { dueStatusFa } from '../reminders';
-import { createInstallmentPaymentLink } from '../gateway';
+import { createInstallmentPaymentLink, onlinePaymentsEnabled } from '../gateway';
 import { getMessagingConfig, renderEvent } from '../messaging';
+import { sendEventSmsCopy } from '../sms';
 
 /** Telegram stops retrying an update after ~1 minute; finish sending before then. */
 const SEND_TIMEOUT_MS = 25_000;
@@ -141,7 +142,7 @@ async function processUpdate(
                 await bot.editMessageText(chatId, message.reply_to_message.message_id,
                     renderClaimSettled('REJECTED', claim.claimed_amount, reason));
                 await bot.sendMessage({ chatId, text: `❌ رسید هنرجو ${claim.student_name} رد شد.${reason ? `\nعلت: ${reason}` : ''}\nپرداختی ثبت نشد و وضعیت قسط بدون تغییر ماند.`, parseMode: 'HTML' });
-                await notifyStudentOfRejection(db, bot, claim.student_id, db.academyId, claim.installment_number, reason);
+                await notifyStudentOfRejection(env, db, bot, claim.student_id, db.academyId, claim.installment_number, reason, claim.id);
             } else if (out.state === 'FORBIDDEN') {
                 await bot.sendMessage({ chatId, text: '⛔️ شما مجاز به بررسی رسیدهای این آموزشگاه نیستید.', parseMode: 'HTML' });
             } else if (out.state === 'ALREADY_DECIDED') {
@@ -252,6 +253,17 @@ async function processUpdate(
                         parseMode: 'HTML',
                         replyMarkup: TelegramBotClient.getStudentReplyKeyboard()
                     });
+                    // Stage 9: SMS copy of the connection welcome when the
+                    // channel policy allows SMS.
+                    try {
+                        const cfgW = await getMessagingConfig(db);
+                        await sendEventSmsCopy(env, db, db.academyId, 'CONNECT_WELCOME', {
+                            channel: cfgW.events.CONNECT_WELCOME.channel,
+                            studentId: tokenStudent.id,
+                            ledgerKey: tokenStudent.id,
+                            html: welcomeRender
+                        });
+                    } catch (_) { /* best-effort */ }
                 }
 
                 await db.logMessage({
@@ -436,12 +448,12 @@ function renderClaimSettled(state: 'APPROVED' | 'REJECTED', amount: number, reas
 }
 
 async function notifyStudentOfRejection(
-    db: AcademyDatabase, bot: TelegramBotClient,
-    studentId: string, academyId: string, installmentNumber: number, reason: string
+    env: Env, db: AcademyDatabase, bot: TelegramBotClient,
+    studentId: string, academyId: string, installmentNumber: number, reason: string,
+    ledgerKey = ''
 ): Promise<void> {
     try {
         const student = await db.getStudentById(studentId, academyId);
-        if (!student?.telegram_chat_id) return; // not connected: nothing to notify
         // Stage 6: RECEIPT_REJECTED is a configurable template (default = the
         // original wording); auto=false silences the notice, nothing is sent.
         const cfg = await getMessagingConfig(db);
@@ -451,12 +463,24 @@ async function notifyStudentOfRejection(
             installmentNumber: String(installmentNumber),
             reasonLine: reason ? `\nعلت: ${reason}` : ''
         }, legacy).text;
-        await bot.sendMessage({
-            chatId: student.telegram_chat_id,
-            text,
-            parseMode: 'HTML',
-            replyMarkup: TelegramBotClient.getStudentReplyKeyboard()
-        });
+        if (student?.telegram_chat_id) {
+            await bot.sendMessage({
+                chatId: student.telegram_chat_id,
+                text,
+                parseMode: 'HTML',
+                replyMarkup: TelegramBotClient.getStudentReplyKeyboard()
+            });
+        }
+        // Stage 9: the SMS copy rides the SAME template when the event's
+        // channel policy allows SMS (also for not-yet-connected students).
+        try {
+            await sendEventSmsCopy(env, db, academyId, 'RECEIPT_REJECTED', {
+                channel: cfg.events.RECEIPT_REJECTED.channel,
+                studentId,
+                ledgerKey: ledgerKey || `${installmentNumber}`,
+                html: text
+            });
+        } catch (_) { /* best-effort */ }
     } catch (_) { /* notification must never break the decision */ }
 }
 
@@ -534,6 +558,15 @@ async function handleReceiptPhoto(
                 parseMode: 'HTML',
                 replyMarkup: TelegramBotClient.getStudentReplyKeyboard()
             });
+            // Stage 9: SMS copy when the channel policy allows SMS.
+            try {
+                await sendEventSmsCopy(env, db, academyId, 'CLAIM_ACK', {
+                    channel: cfg.events.CLAIM_ACK.channel,
+                    studentId: student.id,
+                    ledgerKey: res.claimId,
+                    html: ackText
+                });
+            } catch (_) { /* best-effort */ }
         }
     } catch (_) { /* the claim itself is already stored; ack is best-effort */ }
 }
@@ -821,7 +854,10 @@ async function handleInstallments(bot: TelegramBotClient, db: AcademyDatabase, s
                 res += `   📤 پس از واریز، تصویر رسید را با کپشن «قسط ${inst.installment_number}» از دکمهٔ «ارسال رسید پرداخت» بفرستید.\n`;
             } else if (method === 'POS') {
                 res += `   🖥 روش: کارتخوان — در محل آموزشگاه پرداخت کنید.\n`;
-            } else if (method === 'ONLINE' && !txn && env) {
+            } else if (method === 'ONLINE' && !txn && env && onlinePaymentsEnabled(env)) {
+                // Stage 9: the online gateway is COMPLETELY HIDDEN while the
+                // deploy-time kill-switch is off — no link, no "online" hint,
+                // nothing online-payment related reaches the student.
                 // The base URL must be REAL: a bare path is not a usable link
                 // for the student. Prefer the configured public base, then the
                 // request origin of this webhook call.
@@ -1000,6 +1036,17 @@ async function handleContract(bot: TelegramBotClient, env: Env, student: Student
                     parseMode: 'HTML',
                     replyMarkup: TelegramBotClient.getStudentReplyKeyboard()
                 });
+                // Stage 9: SMS copy of the contract-delivered notice.
+                try {
+                    const dbD = new AcademyDatabase(env, academyId);
+                    const cfgD = await getMessagingConfig(dbD);
+                    await sendEventSmsCopy(env, dbD, academyId, 'CONTRACT_DELIVERED', {
+                        channel: cfgD.events.CONTRACT_DELIVERED.channel,
+                        studentId: signed.student_id,
+                        ledgerKey: signed.id,
+                        html: followUp
+                    });
+                } catch (_) { /* best-effort */ }
             }
             return;
         }

@@ -538,7 +538,9 @@ describe('payment links stay honest without a gateway', () => {
         await cron(env);
         const text = textsTo(STUDENT_CHAT)[0] || '';
         expect(text).not.toMatch(/pay\//);               // no fabricated link
-        expect(text).toContain('درگاه پرداخت آنلاین هنوز متصل نشده'); // honest note
+        // Stage 9: the online gateway is COMPLETELY HIDDEN — the reminder must
+        // not even MENTION online payment (stronger than the old honest note).
+        expect(text).not.toContain('درگاه پرداخت');
         const txns = (db as any).db.prepare(`SELECT COUNT(*) AS n FROM payment_transactions`).get() as any;
         expect(txns.n).toBe(0);                          // no order minted either
     });

@@ -346,4 +346,113 @@ object WorkerMessaging {
         "IN_FLIGHT" -> "در جریان"
         else -> status.ifBlank { "نامشخص" }
     }
+
+    // ------------------------------------------------------------
+    // Stage 9 — SMS panel settings (GET/PUT /api/messaging/sms/config,
+    // POST /api/messaging/sms/test-connection)
+    //
+    // Security: secret field values NEVER leave the worker — the GET
+    // returns only { hasValue: Boolean } per secret; the PUT sends a
+    // value only when the manager typed one (blank = keep stored).
+    // ------------------------------------------------------------
+
+    data class SmsFieldDef(
+        val key: String,
+        val label: String,
+        val kind: String,        // secret | text | line
+        val required: Boolean,
+        val hint: String
+    )
+
+    data class SmsProviderInfo(
+        val id: String,
+        val label: String,
+        val docsUrl: String,
+        val docsPending: Boolean,
+        val creditCheck: Boolean,
+        val fields: List<SmsFieldDef>,
+        val active: Boolean,
+        /** secret -> hasValue ; non-secret -> the stored value */
+        val settings: Map<String, String> // secret keys carry "1"/"0" for hasValue
+    )
+
+    data class SmsPanelConfig(
+        val activeProvider: String,
+        val statusConfigured: Boolean,
+        val statusProvider: String,
+        val statusDetail: String,
+        val providers: List<SmsProviderInfo>
+    )
+
+    data class SmsConnectionTest(
+        val ok: Boolean,
+        val message: String,
+        val credit: String
+    )
+
+    fun parseSmsPanelConfig(body: String): SmsPanelConfig? = runCatching {
+        val json = JSONObject(body)
+        if (!json.optBoolean("success", false)) return null
+        val data = json.optJSONObject("data") ?: return null
+        val status = data.optJSONObject("status") ?: JSONObject()
+        val providersJson = data.optJSONArray("providers") ?: JSONArray()
+        val providers = mutableListOf<SmsProviderInfo>()
+        for (i in 0 until providersJson.length()) {
+            val p = providersJson.optJSONObject(i) ?: continue
+            val fieldsJson = p.optJSONArray("fields") ?: JSONArray()
+            val fields = mutableListOf<SmsFieldDef>()
+            for (j in 0 until fieldsJson.length()) {
+                val f = fieldsJson.optJSONObject(j) ?: continue
+                fields.add(
+                    SmsFieldDef(
+                        key = f.optString("key"),
+                        label = f.optString("label"),
+                        kind = f.optString("kind", "text"),
+                        required = f.optBoolean("required", false),
+                        hint = f.optString("hint", "")
+                    )
+                )
+            }
+            val caps = p.optJSONObject("capabilities") ?: JSONObject()
+            val settingsJson = p.optJSONObject("settings") ?: JSONObject()
+            val settings = mutableMapOf<String, String>()
+            for (key in settingsJson.keys()) {
+                val v = settingsJson.opt(key)
+                settings[key] = when (v) {
+                    is JSONObject -> if (v.optBoolean("hasValue", false)) "1" else "0"
+                    else -> String.valueOf(v)
+                }
+            }
+            providers.add(
+                SmsProviderInfo(
+                    id = p.optString("id"),
+                    label = p.optString("label"),
+                    docsUrl = p.optString("docsUrl", ""),
+                    docsPending = p.optBoolean("docsPending", false),
+                    creditCheck = caps.optBoolean("creditCheck", false),
+                    fields = fields,
+                    active = p.optBoolean("active", false),
+                    settings = settings
+                )
+            )
+        }
+        SmsPanelConfig(
+            activeProvider = data.optString("activeProvider", ""),
+            statusConfigured = status.optBoolean("configured", false),
+            statusProvider = status.optString("provider", ""),
+            statusDetail = status.optString("detail", ""),
+            providers = providers
+        )
+    }.getOrNull()
+
+    fun parseSmsConnectionTest(body: String): SmsConnectionTest = runCatching {
+        val json = JSONObject(body)
+        val ok = json.optBoolean("success", false)
+        val data = json.optJSONObject("data") ?: JSONObject()
+        SmsConnectionTest(
+            ok = ok,
+            message = json.optString("message", ""),
+            credit = data.optString("credit", "")
+        )
+    }.getOrDefault(SmsConnectionTest(ok = false, message = "پاسخ سرور نامعتبر بود.", credit = ""))
 }

@@ -14,6 +14,13 @@ ACADEMY_IDS = "default"
 PUBLIC_BASE_URL = "https://academy-manager1.wizard-tcman.workers.dev"
 # Empty means SMS sending is disabled (a provider has not been chosen yet).
 SMS_PROVIDER = ""
+# Stage 9: the online payment gateway is COMPLETELY HIDDEN until you set
+# this to "true" at deploy time. Any other value (or absence) keeps every
+# /pay route, /api/payments/link, /api/payments/verify and all student-facing
+# online hints safely blocked. Card-to-card + manager receipt approval are
+# unaffected. Activation later ALSO requires a registered provider factory
+# in code AND the manager's stored credentials.
+ONLINE_PAYMENTS_ENABLED = "false"
 
 # Stage 7 (server-side daily backup). All optional; free-tier safe defaults.
 # How many VERIFIED healthy snapshots to keep per academy.

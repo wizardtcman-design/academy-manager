@@ -476,6 +476,47 @@ class BotCloudBridge(private val context: Context) {
         postJson(settings!!, "/api/messaging/reminders/stop", payload)
     }
 
+    // ------------------------------------------------------------
+    // Stage 9 — SMS panel settings (/api/messaging/sms/*)
+    //
+    // Secret values are sent ONLY when the manager actually typed one;
+    // a blank field keeps the server-stored value (never cleared, never
+    // echoed back). The provider selection can change without touching
+    // the message history or the other panel's stored fields.
+    // ------------------------------------------------------------
+
+    /** GET /api/messaging/sms/config — masked config; null when unreachable. */
+    suspend fun pullSmsPanelConfig(): Pair<Boolean, String> = withContext(Dispatchers.IO) {
+        val settings = AppDatabase.getDatabase(context).settingsDao().getSettingsDirect()
+        if (!isWorkerConfigured(settings)) return@withContext Pair(false, "اتصال به سرور پیکربندی نشده است.")
+        getJson(settings!!, "/api/messaging/sms/config")
+    }
+
+    /**
+     * PUT /api/messaging/sms/config — select the active provider and save its
+     * fields. Only non-blank values are sent; blank secrets keep the stored
+     * value on the server. provider "" (or "none") deactivates SMS sending
+     * while keeping every stored field and all message history.
+     */
+    suspend fun pushSmsPanelConfig(provider: String, fields: Map<String, String>): Pair<Boolean, String> = withContext(Dispatchers.IO) {
+        val settings = AppDatabase.getDatabase(context).settingsDao().getSettingsDirect()
+        if (!isWorkerConfigured(settings)) return@withContext Pair(false, "اتصال به سرور پیکربندی نشده است.")
+        val payload = JSONObject().put("provider", provider)
+        if (fields.isNotEmpty()) {
+            val f = JSONObject()
+            for ((k, v) in fields) if (v.isNotBlank()) f.put(k, v)
+            if (f.length() > 0) payload.put("fields", f)
+        }
+        requestJson(settings!!, "PUT", "/api/messaging/sms/config", payload)
+    }
+
+    /** POST /api/messaging/sms/test-connection — FREE check only; never sends an SMS. */
+    suspend fun testSmsPanelConnection(): Pair<Boolean, String> = withContext(Dispatchers.IO) {
+        val settings = AppDatabase.getDatabase(context).settingsDao().getSettingsDirect()
+        if (!isWorkerConfigured(settings)) return@withContext Pair(false, "اتصال به سرور پیکربندی نشده است.")
+        postJson(settings!!, "/api/messaging/sms/test-connection", JSONObject())
+    }
+
     /** POST /api/messaging/reminders/resume — rebuilds the schedule of ONE installment. */
     suspend fun resumeInstallmentReminders(installmentId: String): Pair<Boolean, String> = withContext(Dispatchers.IO) {
         val settings = AppDatabase.getDatabase(context).settingsDao().getSettingsDirect()

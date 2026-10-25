@@ -16,6 +16,23 @@ export interface Env {
     /** Set once a real SMS provider is chosen; sending stays disabled while empty. */
     SMS_PROVIDER?: string;
 
+    // Stage 9 — SMS panel + online-gateway kill-switch:
+    /**
+     * THE online-payment master switch. Defaults to DISABLED: without this
+     * deploy-time flag every /pay route, /api/payments/link,
+     * /api/payments/verify and all student-facing online hints are blocked
+     * (the gateway is completely hidden). Activation later = this flag +
+     * a registered provider factory + the manager's stored credentials.
+     */
+    ONLINE_PAYMENTS_ENABLED?: string;
+    /**
+     * Optional Cloudflare Secret override for the SMS.ir API key (takes
+     * precedence over the per-academy setting). Set with:
+     *   wrangler secret put SMSIR_API_KEY
+     * Never logged, never echoed by any endpoint.
+     */
+    SMSIR_API_KEY?: string;
+
     // Stage 7 backup knobs (all optional, all free-tier safe):
     /** How many verified healthy snapshots to keep per academy (default 7). */
     BACKUP_RETENTION_DAYS?: string;

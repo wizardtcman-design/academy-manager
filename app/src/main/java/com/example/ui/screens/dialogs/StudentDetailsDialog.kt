@@ -666,14 +666,15 @@ private fun InstallmentsTab(
 
                         if (inst.status != "PAID") {
                             Spacer(modifier = Modifier.height(8.dp))
-                            // Stage 4: the manager chooses HOW this installment is
-                            // paid — online (payment link in reminders) / card-to-card / POS.
+                            // Stage 9: the online gateway is COMPLETELY HIDDEN —
+                            // «آنلاین» is no longer selectable anywhere in the UI.
+                            // Card-to-card and POS remain the official methods; a
+                            // historical ONLINE row still renders its label below.
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
                                 horizontalArrangement = Arrangement.spacedBy(6.dp)
                             ) {
                                 listOf(
-                                    "ONLINE" to "آنلاین",
                                     "TRANSFER" to "کارت‌به‌کارت",
                                     "POS" to "کارتخوان"
                                 ).forEach { (code, label) ->

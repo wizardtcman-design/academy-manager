@@ -32,6 +32,7 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.RemoveRedEye
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.Send
+import androidx.compose.material.icons.filled.Sms
 import androidx.compose.material.icons.filled.WarningAmber
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -206,6 +207,16 @@ fun MessageSettingsSection(
                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                             Icon(Icons.Default.CloudSync, contentDescription = null, modifier = Modifier.size(16.dp))
                             Text("ج) تنظیمات سرور ربات", fontWeight = FontWeight.Bold)
+                        }
+                    }
+                )
+                Tab(
+                    selected = selectedTab == 3,
+                    onClick = { onSelectedTabChange(3) },
+                    text = {
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Icon(Icons.Default.Sms, contentDescription = null, modifier = Modifier.size(16.dp))
+                            Text("د) پنل پیامکی", fontWeight = FontWeight.Bold)
                         }
                     }
                 )
@@ -423,6 +434,16 @@ fun MessageSettingsSection(
                     students = viewModel.students.collectAsState().value,
                     installments = viewModel.installments.collectAsState().value
                 )
+            }
+
+            if (selectedTab == 3) {
+                // ==========================================
+                // SUB-SECTION D: پنل پیامکی (Stage 9)
+                // Provider selection + per-provider credentials + FREE
+                // connection test; sending obeys the per-event channel
+                // policy and stays impossible without real credentials.
+                // ==========================================
+                SmsPanelSection()
             }
         }
     }

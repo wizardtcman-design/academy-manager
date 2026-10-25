@@ -27,6 +27,16 @@
 //   3. the manager enters gateway_provider / gateway_merchant_id /
 //      gateway_api_key in the app settings — stored per academy in D1,
 //      never returned by any endpoint, never logged.
+//
+// Stage 9 — the gateway is COMPLETELY HIDDEN until an explicit owner
+// activation. onlinePaymentsEnabled() is the single kill-switch: every
+// online-payment entry point (API routes, /pay pages, reminder/bot link
+// enrichment, channel status) consults it, and it defaults to OFF.
+// Activation therefore requires ALL THREE: the env flag
+// ONLINE_PAYMENTS_ENABLED="true" set at deploy time, a provider factory
+// registered in code, and the manager's stored credentials — none of
+// which exist today. No UI, menu, reminder or API response may even
+// mention online payment while the switch is off.
 // ============================================================
 
 import { Env, PaymentTxnRecord, InstallmentRecord } from './types';
@@ -37,6 +47,19 @@ import { dispatchReceipts } from './receipts';
 import { TelegramBotClient } from './telegram';
 
 export const LINK_TTL_MS = 72 * 3600_000;
+
+/**
+ * THE online-payment kill-switch (Stage 9). Defaults to DISABLED: without
+ * the explicit deploy-time flag nothing online-payment related can run,
+ * mint a link or be mentioned to a student. The card-to-card → receipt →
+ * manager-approval flow is completely unaffected.
+ */
+export function onlinePaymentsEnabled(env: Env): boolean {
+    return String((env as any)?.ONLINE_PAYMENTS_ENABLED || '').trim().toLowerCase() === 'true';
+}
+
+/** The one honest reason every blocked path returns while disabled. */
+export const GATEWAY_DISABLED_REASON = 'پرداخت آنلاین در این نسخه فعال نیست؛ روش پرداخت، کارت‌به‌کارت با تأیید رسید توسط مدیریت است.';
 
 export type TxnRow = PaymentTxnRecord;
 
@@ -68,6 +91,11 @@ export function registerProviderFactory(id: string, factory: (merchantId: string
 }
 
 export async function resolveProvider(env: Env, db: AcademyDatabase): Promise<{ provider: GatewayProvider | null; reason: string }> {
+    // Kill-switch FIRST: even a fully configured provider can never be
+    // resolved while the deploy-time flag is absent (Stage 9 hiding).
+    if (!onlinePaymentsEnabled(env)) {
+        return { provider: null, reason: GATEWAY_DISABLED_REASON };
+    }
     const id = ((await db.getSetting('gateway_provider', '')) || '').trim().toLowerCase();
     if (!id || id === 'none') {
         return { provider: null, reason: 'درگاه پرداخت آنلاین هنوز متصل نشده است. لطفاً از روش کارت‌به‌کارت یا کارتخوان استفاده کنید یا با آموزشگاه هماهنگ شوید.' };

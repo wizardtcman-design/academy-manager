@@ -378,7 +378,11 @@ describe('online payment links, verification and reminder integration', () => {
     let verifyBehavior: 'ok' | 'mismatch' | 'canceled' | 'throw';
 
     beforeAll(async () => {
-        ({ env, db } = makeEnv(new D1Shim(), { TELEGRAM_BOT_TOKEN: '' }));
+        // Stage 9: this block tests the gateway ARCHITECTURE exactly as it
+        // behaves AFTER the owner's explicit activation (the env flag) with a
+        // mock provider. Production stays hidden by default (no flag) — that
+        // hidden state has its own dedicated tests (gateway-hidden.test.ts).
+        ({ env, db } = makeEnv(new D1Shim(), { TELEGRAM_BOT_TOKEN: '', ONLINE_PAYMENTS_ENABLED: 'true' }));
         connectAcademyBot(db, ACADEMY_A, TOKEN_A);
         await api(env, 'POST', '/api/sync/students-batch', {
             students: [{ id: 'stu-on', fullName: 'نیما کریمی', studentCode: 'SC-3', phone: '۰۹۳۵۰۰۰۰۰۰۰' }]

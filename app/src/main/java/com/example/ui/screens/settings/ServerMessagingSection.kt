@@ -192,7 +192,7 @@ fun ServerMessagingSection(
                 Text("وضعیت واقعی کانال‌ها", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
                 ChannelStatusRow("تلگرام", cfg.channelStatus.telegramConfigured, cfg.channelStatus.telegramDetail)
                 ChannelStatusRow("پیامک", cfg.channelStatus.smsConfigured, cfg.channelStatus.smsDetail)
-                ChannelStatusRow("درگاه پرداخت (برای لینک پرداخت)", cfg.channelStatus.gatewayConfigured, cfg.channelStatus.gatewayDetail)
+                ChannelStatusRow("درگاه پرداخت آنلاین (مخفی)", cfg.channelStatus.gatewayConfigured, cfg.channelStatus.gatewayDetail)
             }
         }
 

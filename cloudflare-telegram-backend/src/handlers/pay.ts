@@ -9,7 +9,7 @@
 
 import { Env } from '../types';
 import { AcademyDatabase } from '../db';
-import { resolvePayLink, verifyTransaction } from '../gateway';
+import { resolvePayLink, verifyTransaction, onlinePaymentsEnabled, GATEWAY_DISABLED_REASON } from '../gateway';
 import { TelegramBotClient } from '../telegram';
 import { academyBotToken } from '../telegram';
 
@@ -50,6 +50,14 @@ function page(title: string, body: string, status = 200): Response {
 
 export async function handlePayRoute(request: Request, env: Env, url: URL): Promise<Response> {
     const path = url.pathname;
+
+    // ---------- Stage 9 kill-switch: the gateway is COMPLETELY HIDDEN ----------
+    // Until the owner explicitly sets ONLINE_PAYMENTS_ENABLED="true" at deploy
+    // time, both /pay entry and provider callbacks return one neutral page:
+    // no token probing, no DB reads, no state disclosure.
+    if (!onlinePaymentsEnabled(env)) {
+        return page('پرداخت آنلاین غیرفعال است', `__fail__${GATEWAY_DISABLED_REASON}`);
+    }
 
     // ---------- entry: /pay/<token> ----------
     if (request.method === 'GET' && path.startsWith('/pay/') && !path.startsWith('/pay/callback/')) {
