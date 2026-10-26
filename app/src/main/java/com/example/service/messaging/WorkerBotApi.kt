@@ -69,7 +69,8 @@ object WorkerBotApi {
         val webhookConfirmed: Boolean,
         val pendingUpdates: Int,
         val lastError: String,
-        val tokenMasked: String
+        val tokenMasked: String,
+        val problems: List<String> = emptyList() // no_token | token_rejected | webhook_not_set | webhook_mismatch
     ) {
         val connected: Boolean get() = configured && username.isNotBlank()
     }
@@ -87,7 +88,10 @@ object WorkerBotApi {
             webhookConfirmed = data.optBoolean("webhookConfirmed", false),
             pendingUpdates = if (data.isNull("pendingUpdates")) -1 else data.optInt("pendingUpdates", -1),
             lastError = data.optString("lastError", "").trim(),
-            tokenMasked = data.optString("tokenMasked", "").trim()
+            tokenMasked = data.optString("tokenMasked", "").trim(),
+            problems = data.optJSONArray("problems")?.let { arr ->
+                (0 until arr.length()).mapNotNull { arr.optString(it, "").takeIf(String::isNotBlank) }
+            } ?: emptyList()
         )
     }
 
@@ -100,6 +104,67 @@ object WorkerBotApi {
         append("ربات @${status.username} متصل است")
         append(if (status.webhookConfirmed) " و وبهوک سالم است ✅" else " اما وبهوک ثبت نشده است ⚠️")
         if (status.lastError.isNotBlank()) append("\nآخرین خطای تلگرام: ${status.lastError}")
+    }
+
+    // ------------------------------------------------------------------
+    // Beginner-friendly diagnosis: what state is the connection in and
+    // what exactly should the manager do next (cause + solution in Persian).
+    // Pure function over the parsed status so it is unit-testable.
+    // ------------------------------------------------------------------
+
+    data class Diagnosis(
+        val ok: Boolean,
+        val title: String,
+        val cause: String,
+        val solution: String
+    )
+
+    fun diagnose(status: WorkerBotStatus?): Diagnosis {
+        if (status == null) {
+            return Diagnosis(
+                ok = false,
+                title = "وضعیت اتصال نامشخص است",
+                cause = "پاسخ وضعیت از سرور Cloudflare دریافت یا خوانده نشد.",
+                solution = "آدرس کامل Worker (workers.dev) و کلید API را بررسی کنید و دوباره «آزمایش اتصال» را بزنید."
+            )
+        }
+        if (!status.configured) {
+            return if (status.problems.contains("token_rejected")) {
+                Diagnosis(
+                    ok = false,
+                    title = "تلگرام توکن ربات را نپذیرفت",
+                    cause = status.lastError.ifBlank { "توکن ذخیره‌شده توسط تلگرام رد شده است (ممکن است باطل شده باشد)." },
+                    solution = "در @BotFather با دستور /mybots توکن را بررسی کنید؛ اگر باطل شده، توکن جدید بگیرید و در همین صفحه دکمهٔ «اتصال ربات» را بزنید."
+                )
+            } else {
+                Diagnosis(
+                    ok = false,
+                    title = "ربات هنوز متصل نیست",
+                    cause = "هنوز توکن رباتی برای این آموزشگاه روی سرور ثبت نشده است.",
+                    solution = "توکن را از @BotFather کپی کنید، در فیلد «توکن ربات تلگرام» بگذارید و دکمهٔ «اتصال ربات» را بزنید."
+                )
+            }
+        }
+        return when {
+            status.problems.contains("webhook_mismatch") -> Diagnosis(
+                ok = false,
+                title = "وبهوک به آدرس دیگری اشاره می‌کند",
+                cause = "تلگرام در حال ارسال پیام‌ها به «${status.webhook}» است، اما این سرور انتظار «${status.expectedWebhook}» را دارد.",
+                solution = "دکمهٔ «بازیابی وبهوک» را بزنید تا آدرس درست دوباره ثبت شود."
+            )
+            status.problems.contains("webhook_not_set") -> Diagnosis(
+                ok = false,
+                title = "وبهوک هنوز ثبت نشده است",
+                cause = "توکن ربات معتبر است، اما تلگرام نمی‌داند پیام‌ها را به کدام سرور بفرستد.",
+                solution = "دکمهٔ «بازیابی وبهوک» را بزنید؛ اگر تکرار نشد، دکمهٔ «اتصال ربات» را یک‌بار دیگر بزنید."
+            )
+            else -> Diagnosis(
+                ok = true,
+                title = "اتصال سالم است ✅",
+                cause = "ربات @${status.username} فعال است و وبهوک روی آدرس درست سرور ثبت شده است.",
+                solution = "چیزی لازم نیست؛ یادآوری‌ها و پیام‌ها از مسیر Cloudflare Worker ارسال می‌شوند، حتی وقتی برنامه بسته است."
+            )
+        }
     }
 
     // ------------------------------------------------------------------

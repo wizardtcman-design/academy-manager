@@ -80,7 +80,8 @@ async function describe(request: Request, env: Env, academy: string, row: Academ
             source: 'none',
             username: '',
             webhook: '',
-            expectedWebhook: expected
+            expectedWebhook: expected,
+            problems: ['no_token']
         };
     }
     const bot = new TelegramBotClient(token);
@@ -94,6 +95,16 @@ async function describe(request: Request, env: Env, academy: string, row: Academ
         const info = await bot.getWebhookInfo();
         hook = info.ok ? info.result : null;
     } catch (_) {}
+    // Machine-readable diagnosis so the app can show the exact cause + fix
+    // (the list is ordered: a rejected token makes the webhook checks moot).
+    const problems: string[] = [];
+    if (!me) {
+        problems.push('token_rejected');
+    } else if (!hook?.url) {
+        problems.push('webhook_not_set');
+    } else if ((hook?.url || '') !== expected) {
+        problems.push('webhook_mismatch');
+    }
     return {
         configured: Boolean(me),
         ok: Boolean(me),
@@ -105,7 +116,8 @@ async function describe(request: Request, env: Env, academy: string, row: Academ
         expectedWebhook: expected,
         webhookConfirmed: (hook?.url || '') === expected,
         pendingUpdates: hook?.pending_update_count ?? null,
-        lastError: me ? (hook?.last_error_message || '') : 'token rejected by Telegram'
+        lastError: me ? (hook?.last_error_message || '') : 'token rejected by Telegram',
+        problems
     };
 }
 

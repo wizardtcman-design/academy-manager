@@ -2,6 +2,7 @@ package com.example.ui.screens.bot
 
 import android.widget.Toast
 import com.example.service.messaging.WorkerBotApi
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -13,6 +14,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CloudUpload
@@ -46,6 +48,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -54,16 +57,19 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.data.model.AcademySettings
+import com.example.ui.screens.settings.FieldGuide
 import com.example.ui.theme.AmberTertiary
 import com.example.ui.theme.IndigoPrimary
 import com.example.ui.theme.StatusError
@@ -84,7 +90,9 @@ fun BotSettingsSection(
     var telegramEnabled by remember(settings?.telegramEnabled) { mutableStateOf(settings?.telegramEnabled ?: false) }
     var telegramWorkerUrl by remember(settings?.telegramWorkerUrl) { mutableStateOf(settings?.telegramWorkerUrl ?: "") }
     var telegramApiSecret by remember(settings?.telegramApiSecret) { mutableStateOf(settings?.telegramApiSecret ?: "") }
-    var telegramUseWorker by remember(settings?.telegramUseWorker) { mutableStateOf(settings?.telegramUseWorker ?: false) }
+    // Fresh installs start in the secure Cloud-Worker mode. Academies that
+    // explicitly saved the legacy direct mode keep their saved choice.
+    var telegramUseWorker by remember(settings?.telegramUseWorker) { mutableStateOf(settings?.telegramUseWorker ?: true) }
     var showToken by remember { mutableStateOf(false) }
     var showSecret by remember { mutableStateOf(false) }
 
@@ -100,6 +108,52 @@ fun BotSettingsSection(
     // Live connection status from the Worker (/api/bot/status)
     var workerStatus by remember { mutableStateOf<WorkerBotApi.WorkerBotStatus?>(null) }
     var statusMessage by remember { mutableStateOf<String?>(null) }
+
+    // ---- Beginner-friendly connection state (banner on the Worker card) ----
+    // incomplete → checking → connected | failed (cause + exact fix in Persian)
+    var connState by remember { mutableStateOf<WorkerBotApi.Diagnosis?>(null) }
+    var connChecking by remember { mutableStateOf(false) }
+    var showLegacyDirect by remember { mutableStateOf(false) }
+
+    fun missingConnectionFields(): List<String> = buildList {
+        if (telegramWorkerUrl.isBlank()) add("آدرس سرور Cloudflare")
+        if (telegramApiSecret.isBlank()) add("کلید API سرور")
+        if (botToken.isBlank() && workerStatus?.configured != true) add("توکن ربات (یک‌بار وارد می‌شود)")
+    }
+
+    // REAL check: the Worker is asked, the Worker asks Telegram itself.
+    // Success is NEVER reported just because settings were saved.
+    val runConnectionCheck: () -> Unit = {
+        val checkUrl = telegramWorkerUrl.trim().removeSuffix("/")
+        val checkSecret = telegramApiSecret.trim()
+        if (checkUrl.isBlank() || checkSecret.isBlank()) {
+            connState = WorkerBotApi.Diagnosis(
+                ok = false,
+                title = "تنظیمات ناقص است",
+                cause = "برای بررسی واقعی اتصال، آدرس سرور و کلید API هر دو لازم‌اند.",
+                solution = "این موارد را کامل کنید: " + missingConnectionFields().joinToString("، ")
+            )
+        } else {
+            connChecking = true
+            val provider = com.example.service.messaging.TelegramProvider(context, settings)
+            coroutineScope.launch {
+                val (st, summary) = provider.fetchBotStatusFromWorker(checkUrl, checkSecret)
+                connChecking = false
+                workerStatus = st
+                statusMessage = summary
+                connState = WorkerBotApi.diagnose(st)
+            }
+        }
+    }
+
+    // Auto-check once the page opens (or the mode flips) with fields present;
+    // 800 ms debounce so typing does not spam the server.
+    LaunchedEffect(telegramUseWorker, telegramWorkerUrl, telegramApiSecret) {
+        if (telegramUseWorker && telegramWorkerUrl.isNotBlank() && telegramApiSecret.isNotBlank() && !connChecking) {
+            kotlinx.coroutines.delay(800)
+            runConnectionCheck()
+        }
+    }
 
     Column(
         modifier = Modifier
@@ -148,7 +202,7 @@ fun BotSettingsSection(
                                 color = MaterialTheme.colorScheme.onSurface
                             )
                             Text(
-                                text = "تنظیمات اتصال اختصاصی به API تلگرام",
+                                text = "ربات تلگرام آموزشگاه — نام ربات خودکار شناسایی می‌شود",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -164,12 +218,14 @@ fun BotSettingsSection(
 
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
 
-                // Bot Username
+                // Bot Username — read-only on purpose: the REAL username always
+                // comes from Telegram itself (direct getMe or the Worker flow).
                 OutlinedTextField(
                     value = botUsername,
-                    onValueChange = { botUsername = it.removePrefix("@").trim() },
-                    label = { Text("نام کاربری ربات (بدون @)") },
-                    placeholder = { Text("مثال: MyAcademyBot") },
+                    onValueChange = { },
+                    readOnly = true,
+                    label = { Text("نام کاربری ربات (خودکار)") },
+                    placeholder = { Text("پس از اتصال، خودکار پر می‌شود") },
                     leadingIcon = {
                         Text(
                             text = "@",
@@ -184,10 +240,56 @@ fun BotSettingsSection(
                     shape = RoundedCornerShape(12.dp),
                     singleLine = true
                 )
+                Text(
+                    text = "نیازی به تایپ نیست؛ نام واقعی ربات پس از اتصال از تلگرام شناسایی و ذخیره می‌شود.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontSize = 11.sp
+                )
+
+                // Legacy DIRECT mode (token inside the app): still works for
+                // academies that rely on it, but demoted behind an expander so
+                // beginners never land here by accident.
+                if (!telegramUseWorker) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(10.dp))
+                            .clickable { showLegacyDirect = !showLegacyDirect }
+                            .padding(vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            Icons.Default.Settings,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = if (showLegacyDirect) "حالت مستقیم قدیمی (بدون سرور ابری) — بستن" else "حالت مستقیم قدیمی (بدون سرور ابری) — باز کردن",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+
+                    if (showLegacyDirect) {
+                        Surface(
+                            shape = RoundedCornerShape(10.dp),
+                            color = AmberTertiary.copy(alpha = 0.10f),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(
+                                text = "⚠️ در این حالت توکن روی خود گوشی ذخیره می‌شود، وبهوکی ثبت نمی‌شود و یادآوری‌ها فقط وقتی برنامه باز است کار می‌کنند. حالت پیشنهادی، «معماری سرور Cloudflare Worker» در کارت بعدی است.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                fontSize = 11.sp,
+                                modifier = Modifier.padding(10.dp)
+                            )
+                        }
 
                 // Bot Token (Direct Mode)
-                if (!telegramUseWorker) {
-                    OutlinedTextField(
+                OutlinedTextField(
                         value = botToken,
                         onValueChange = { botToken = it.trim() },
                         label = { Text("توکن احراز هویت ربات (Bot Token)") },
@@ -250,7 +352,8 @@ fun BotSettingsSection(
                             Text("تست اتصال به سرور تلگرام")
                         }
                     }
-                }
+                    } // if (showLegacyDirect)
+                } // if (!telegramUseWorker) — legacy expander block
             }
         }
 
@@ -322,20 +425,108 @@ fun BotSettingsSection(
                         fontSize = 12.sp
                     )
 
+                    // ---- Connection state banner (always visible, 4 states) ----
+                    // تنظیمات ناقص / در حال بررسی / اتصال موفق / اتصال ناموفق + راه‌حل
+                    Surface(
+                        shape = RoundedCornerShape(12.dp),
+                        color = when {
+                            connChecking -> AmberTertiary.copy(alpha = 0.12f)
+                            connState?.ok == true -> StatusSuccess.copy(alpha = 0.12f)
+                            connState != null -> StatusError.copy(alpha = 0.10f)
+                            else -> MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("bot_connection_state_banner")
+                    ) {
+                        Column(modifier = Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            when {
+                                connChecking -> {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp, color = AmberTertiary)
+                                        Spacer(modifier = Modifier.width(8.dp))
+                                        Text(
+                                            text = "در حال بررسی اتصال… (سرور و تلگرام واقعاً پرسیده می‌شوند)",
+                                            style = MaterialTheme.typography.bodyMedium,
+                                            fontWeight = FontWeight.Bold
+                                        )
+                                    }
+                                }
+                                connState != null -> {
+                                    val d = connState!!
+                                    Text(
+                                        text = d.title,
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        fontWeight = FontWeight.Bold,
+                                        color = if (d.ok) StatusSuccess else StatusError
+                                    )
+                                    if (d.cause.isNotBlank()) {
+                                        Text(
+                                            text = "علت: ${d.cause}",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            fontSize = 11.sp
+                                        )
+                                    }
+                                    if (d.solution.isNotBlank()) {
+                                        Text(
+                                            text = "راه‌حل: ${d.solution}",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = if (d.ok) StatusSuccess else StatusError,
+                                            fontSize = 11.sp
+                                        )
+                                    }
+                                }
+                                missingConnectionFields().isNotEmpty() -> {
+                                    Text(
+                                        text = "تنظیمات ناقص است",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                    Text(
+                                        text = "این موارد را کامل کنید: " + missingConnectionFields().joinToString("، "),
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        fontSize = 11.sp
+                                    )
+                                }
+                                else -> {
+                                    Text(
+                                        text = "برای دیدن وضعیت واقعی، دکمهٔ «آزمایش اتصال» را بزنید.",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        fontSize = 11.sp
+                                    )
+                                }
+                            }
+                        }
+                    }
+
                     // Worker URL Input
                     OutlinedTextField(
                         value = telegramWorkerUrl,
                         onValueChange = { telegramWorkerUrl = it.trim() },
-                        label = { Text("آدرس Cloudflare Worker (HTTPS Endpoint)") },
-                        placeholder = { Text("https://academy-telegram-worker.yourname.workers.dev") },
+                        label = { Text("آدرس سرور Cloudflare Worker") },
+                        placeholder = { Text("https://academy-manager1.yourname.workers.dev") },
                         leadingIcon = {
                             Icon(Icons.Default.Send, contentDescription = null, tint = TealSecondary)
                         },
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
                         modifier = Modifier
                             .fillMaxWidth()
                             .testTag("bot_worker_url_input"),
                         shape = RoundedCornerShape(12.dp),
                         singleLine = true
+                    )
+                    FieldGuide(
+                        title = "راهنمای این فیلد — آدرس سرور",
+                        accent = TealSecondary,
+                        lines = listOf(
+                            "• چیست؟ نشانی سرور ابری خودِ آموزشگاه شما روی Cloudflare (همان جایی که ربات و یادآوری‌ها روی آن اجرا می‌شوند).",
+                            "• از کجا؟ هنگام نصب/استقرار سرور ساخته می‌شود و به شکل https://نام-Worker.نام-شما.workers.dev است. اگر ندارید، از کسی که سرور را ساخته بپرسید.",
+                            "• چرا لازم است؟ بدون این نشانی، اپ نمی‌داند ربات و یادآوری‌ها به کدام سرور وصل شوند.",
+                            "• فقط یک‌بار وارد می‌شود و همان‌جا ذخیره می‌ماند."
+                        )
                     )
 
                     // Worker API Secret Key
@@ -361,6 +552,17 @@ fun BotSettingsSection(
                             .testTag("bot_worker_secret_input"),
                         shape = RoundedCornerShape(12.dp),
                         singleLine = true
+                    )
+                    FieldGuide(
+                        title = "راهنمای این فیلد — کلید API سرور",
+                        accent = TealSecondary,
+                        lines = listOf(
+                            "• چیست؟ یک عبارت رمز که فقط سرور شما و این اپ می‌دانند و به‌عنوان «گذر واژهٔ اپ به سرور» استفاده می‌شود.",
+                            "• از کجا؟ همان مقداری که هنگام استقرار سرور روی Worker با نام API_SECRET_KEY تنظیم شده است — از سازندهٔ سرور بگیرید یا خودتان تعیین کرده‌اید.",
+                            "• ⚠️ این «API Key پنل Cloudflare» یا «Account ID» نیست! شناسه حساب و توکن پنل Cloudflare هرگز در این اپ وارد نمی‌شوند و فقط در محیط امن استقرار (مثل wrangler یا GitHub Actions) استفاده می‌شوند.",
+                            "• چرا لازم است؟ بدون آن هر کسی می‌توانست با سرور شما حرف بزند؛ این کلید جلوی دسترسی غریبه‌ها را می‌گیرد.",
+                            "• فقط یک‌بار وارد می‌شود؛ در پاسخ‌های سرور فقط ۴ رقم آخر نمایش داده می‌شود."
+                        )
                     )
 
                     // Bot Token (Worker mode): the token is sent ONCE over HTTPS
@@ -394,6 +596,17 @@ fun BotSettingsSection(
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         fontSize = 11.sp
+                    )
+                    FieldGuide(
+                        title = "راهنمای این فیلد — توکن ربات",
+                        accent = TealSecondary,
+                        lines = listOf(
+                            "• چیست؟ رمز اختصاصی ربات تلگرام آموزشگاه شما.",
+                            "• از کجا؟ در تلگرام به @BotFather پیام دهید ← /mybots ← ربات خود را انتخاب کنید ← توکن را کامل کپی کنید.",
+                            "• چرا لازم است؟ ربات شما فقط با همین توکن شناسایی می‌شود؛ هر آموزشگاه ربات جداگانه خودش را دارد و یک ربات فقط به یک آموزشگاه وصل می‌شود.",
+                            "• فقط یک‌بار وارد می‌شود؛ بعد از زدن «اتصال ربات»، وبهوک و رمز امن به‌صورت خودکار ساخته و ثبت می‌شوند و دیگر نیازی به تایپ نیست.",
+                            "• توکن هرگز در گزارش‌ها، لاگ‌ها یا پاسخ سرور نمایش داده نمی‌شود — فقط ۴ رقم آخر آن دیده می‌شود."
+                        )
                     )
 
                     // Security prerequisites for a REAL connection — entering the
@@ -449,6 +662,15 @@ fun BotSettingsSection(
                                     val (st, summary) = provider.fetchBotStatusFromWorker(cleanUrl, telegramApiSecret)
                                     workerStatus = st
                                     statusMessage = summary
+                                    connState = WorkerBotApi.diagnose(st)
+                                } else if (!result.ok) {
+                                    // The banner shows the failed state with a fix too
+                                    connState = WorkerBotApi.Diagnosis(
+                                        ok = false,
+                                        title = "اتصال ربات ناموفق بود",
+                                        cause = result.message,
+                                        solution = "پیام بالا را بررسی کنید؛ اگر کلید API اشتباه بود، فیلد کلید را اصلاح و دوباره تلاش کنید."
+                                    )
                                 }
                                 testResultDialogText = Pair(result.ok, result.message)
                             }
@@ -505,7 +727,6 @@ fun BotSettingsSection(
                     }
 
                     // ---- Real connection status (/api/bot/status) ----
-                    var isCheckingStatus by remember { mutableStateOf(false) }
                     var isRepairing by remember { mutableStateOf(false) }
 
                     Row(
@@ -519,27 +740,20 @@ fun BotSettingsSection(
                                     Toast.makeText(context, "ابتدا آدرس سرور را وارد کنید.", Toast.LENGTH_SHORT).show()
                                     return@OutlinedButton
                                 }
-                                isCheckingStatus = true
-                                val provider = com.example.service.messaging.TelegramProvider(context, settings)
-                                coroutineScope.launch {
-                                    val (st, summary) = provider.fetchBotStatusFromWorker(cleanUrl, telegramApiSecret)
-                                    isCheckingStatus = false
-                                    workerStatus = st
-                                    statusMessage = summary
-                                }
+                                runConnectionCheck()
                             },
-                            enabled = !isCheckingStatus && telegramWorkerUrl.isNotBlank(),
+                            enabled = !connChecking && telegramWorkerUrl.isNotBlank(),
                             modifier = Modifier
                                 .weight(1f)
                                 .testTag("bot_status_check_btn"),
                             shape = RoundedCornerShape(10.dp)
                         ) {
-                            if (isCheckingStatus) {
+                            if (connChecking) {
                                 CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
                             } else {
                                 Icon(Icons.Default.Info, contentDescription = null, modifier = Modifier.size(15.dp))
                                 Spacer(modifier = Modifier.width(4.dp))
-                                Text("بررسی وضعیت اتصال", maxLines = 1)
+                                Text("آزمایش اتصال", maxLines = 1)
                             }
                         }
 
@@ -561,6 +775,7 @@ fun BotSettingsSection(
                                         val (st, summary) = provider.fetchBotStatusFromWorker(cleanUrl, telegramApiSecret)
                                         workerStatus = st
                                         statusMessage = summary
+                                        connState = WorkerBotApi.diagnose(st)
                                     }
                                 }
                             },

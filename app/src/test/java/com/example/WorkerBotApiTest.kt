@@ -107,6 +107,83 @@ class WorkerBotApiTest {
         assertNull(WorkerBotApi.parseStatusResponse("""{"success":true}"""))
     }
 
+    // ---------- problems diagnostics (server cause codes → Persian fix) ----------
+
+    @Test
+    fun statusParsesTheProblemsListFromTheServer() {
+        val body = """
+            {"success":true,"data":{"configured":true,"ok":false,"source":"academy",
+                "username":"","webhook":"","expectedWebhook":"https://worker.test/webhook/default",
+                "webhookConfirmed":false,"lastError":"token rejected by Telegram",
+                "problems":["token_rejected"]}}
+        """.trimIndent()
+        val status = WorkerBotApi.parseStatusResponse(body)!!
+        assertEquals(listOf("token_rejected"), status.problems)
+        // an older Worker without the field still parses (backward compatible)
+        val legacy = WorkerBotApi.parseStatusResponse(
+            """{"success":true,"data":{"configured":false,"ok":false,"source":"none"}}"""
+        )!!
+        assertTrue(legacy.problems.isEmpty())
+    }
+
+    @Test
+    fun diagnosisMapsEveryServerProblemToCauseAndSolution() {
+        val noToken = WorkerBotApi.diagnose(
+            WorkerBotApi.parseStatusResponse(
+                """{"success":true,"data":{"configured":false,"ok":false,"source":"none","problems":["no_token"]}}"""
+            )
+        )
+        assertFalse(noToken.ok)
+        assertTrue(noToken.solution.contains("@BotFather"))
+
+        val rejected = WorkerBotApi.diagnose(
+            WorkerBotApi.parseStatusResponse(
+                """{"success":true,"data":{"configured":false,"ok":false,"source":"academy",
+                    "lastError":"token rejected by Telegram","problems":["token_rejected"]}}"""
+            )
+        )
+        assertFalse(rejected.ok)
+        assertTrue(rejected.title.contains("نپذیرفت"))
+        assertTrue(rejected.solution.contains("/mybots"))
+
+        val noHook = WorkerBotApi.diagnose(
+            WorkerBotApi.parseStatusResponse(
+                """{"success":true,"data":{"configured":true,"ok":true,"source":"academy","username":"diag_bot",
+                    "problems":["webhook_not_set"]}}"""
+            )
+        )
+        assertFalse(noHook.ok)
+        assertTrue(noHook.solution.contains("بازیابی وبهوک"))
+
+        val mismatch = WorkerBotApi.diagnose(
+            WorkerBotApi.parseStatusResponse(
+                """{"success":true,"data":{"configured":true,"ok":true,"source":"academy","username":"diag_bot",
+                    "webhook":"https://other.example/webhook/default",
+                    "expectedWebhook":"https://worker.test/webhook/default",
+                    "webhookConfirmed":false,"problems":["webhook_mismatch"]}}"""
+            )
+        )
+        assertFalse(mismatch.ok)
+        assertTrue(mismatch.cause.contains("https://other.example"))
+
+        val healthy = WorkerBotApi.diagnose(
+            WorkerBotApi.parseStatusResponse(
+                """{"success":true,"data":{"configured":true,"ok":true,"source":"academy","username":"diag_bot",
+                    "webhook":"https://worker.test/webhook/default",
+                    "expectedWebhook":"https://worker.test/webhook/default",
+                    "webhookConfirmed":true,"problems":[]}}"""
+            )
+        )
+        assertTrue(healthy.ok)
+    }
+
+    @Test
+    fun diagnosisOfUnparseableStatusPointsAtUrlAndKey() {
+        val d = WorkerBotApi.diagnose(null)
+        assertFalse(d.ok)
+        assertTrue(d.solution.contains("آزمایش اتصال"))
+    }
+
     // ---------- Persian error mapping ----------
 
     @Test

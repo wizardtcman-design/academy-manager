@@ -142,13 +142,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 messagingManager.updateSettings(s)
             }
         }
-        // Background polling for real Telegram student connections (/start)
+        // Background polling for real Telegram student connections (/start).
+        // ONLY in the legacy direct mode: when the bot is connected through the
+        // Cloudflare Worker (telegramUseWorker) the webhook owns update
+        // delivery and calling getUpdates from the phone would be refused by
+        // Telegram (409) every cycle — webhook and polling must never both be
+        // active for the same bot.
         viewModelScope.launch {
             while (true) {
                 kotlinx.coroutines.delay(4000)
                 try {
                     val currentSettings = settings.value
-                    if (currentSettings?.telegramEnabled == true && !currentSettings.telegramBotToken.isNullOrBlank()) {
+                    if (currentSettings?.telegramEnabled == true &&
+                        currentSettings.telegramUseWorker != true &&
+                        !currentSettings.telegramBotToken.isNullOrBlank()
+                    ) {
                         val pollResult = messagingManager.telegramProvider.fetchAndProcessUpdates(academyRepository)
                         if (pollResult.newConnectionsCount > 0) {
                             showMessage("${pollResult.newConnectionsCount} هنرجوی جدید با موفقیت به ربات تلگرام متصل شدند.")

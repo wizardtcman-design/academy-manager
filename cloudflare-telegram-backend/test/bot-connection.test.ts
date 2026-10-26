@@ -401,6 +401,74 @@ describe('bot connect / status lifecycle', () => {
 });
 
 // ============================================================
+// 4.b /api/bot/status problems diagnostics (machine-readable cause
+//     codes so the app can show the exact Persian fix per state)
+// ============================================================
+describe('status problems diagnostics', () => {
+    let env: Env; let db: D1Shim;
+    const DIAG_TOKEN = '888888:DDD_diag_bot_token_abcdefghijklmnopqrstuv';
+
+    beforeAll(() => {
+        ({ env, db } = makeEnv(undefined, { TELEGRAM_BOT_TOKEN: '' }));
+    });
+
+    it('reports no_token for an academy that has no bot at all', async () => {
+        const res = await handleTelegramConnect(
+            new Request(`${BASE}/api/bot/status`, { method: 'GET', headers: auth(ACADEMY_B) }),
+            env, URL_('/api/bot/status'));
+        const body = await res.json() as any;
+        expect(body.data.configured).toBe(false);
+        expect(body.data.problems).toEqual(['no_token']);
+    });
+
+    it('reports token_rejected when Telegram refuses the token', async () => {
+        getMeResult = { ok: false, description: 'Unauthorized', error_code: 401 };
+        connectAcademyBot(db, ACADEMY_B, 'diag_bot', DIAG_TOKEN);
+        const res = await handleTelegramConnect(
+            new Request(`${BASE}/api/bot/status`, { method: 'GET', headers: auth(ACADEMY_B) }),
+            env, URL_('/api/bot/status'));
+        const body = await res.json() as any;
+        expect(body.data.configured).toBe(false);
+        expect(body.data.problems).toEqual(['token_rejected']);
+        expect(body.data.lastError).toContain('token rejected');
+    });
+
+    it('reports webhook_not_set when the bot is valid but Telegram has no hook', async () => {
+        getMeResult = { ok: true, result: { id: 888, username: 'diag_bot', first_name: 'Diag' } };
+        webhookRegistered = null; // getWebhookInfo mock now returns an empty url
+        const res = await handleTelegramConnect(
+            new Request(`${BASE}/api/bot/status`, { method: 'GET', headers: auth(ACADEMY_B) }),
+            env, URL_('/api/bot/status'));
+        const body = await res.json() as any;
+        expect(body.data.configured).toBe(true);
+        expect(body.data.webhook).toBe('');
+        expect(body.data.problems).toEqual(['webhook_not_set']);
+    });
+
+    it('reports webhook_mismatch when the hook points somewhere else', async () => {
+        webhookRegistered = { url: 'https://someone-else.workers.dev/webhook/other', secret: 'x' };
+        const res = await handleTelegramConnect(
+            new Request(`${BASE}/api/bot/status`, { method: 'GET', headers: auth(ACADEMY_B) }),
+            env, URL_('/api/bot/status'));
+        const body = await res.json() as any;
+        expect(body.data.configured).toBe(true);
+        expect(body.data.webhookConfirmed).toBe(false);
+        expect(body.data.problems).toEqual(['webhook_mismatch']);
+    });
+
+    it('a healthy academy reports an empty problems list', async () => {
+        webhookRegistered = { url: `${BASE}/webhook/${ACADEMY_B}`, secret: 'x' };
+        const res = await handleTelegramConnect(
+            new Request(`${BASE}/api/bot/status`, { method: 'GET', headers: auth(ACADEMY_B) }),
+            env, URL_('/api/bot/status'));
+        const body = await res.json() as any;
+        expect(body.data.webhookConfirmed).toBe(true);
+        expect(body.data.problems).toEqual([]);
+        expect(JSON.stringify(body)).not.toContain(DIAG_TOKEN);
+    });
+});
+
+// ============================================================
 // 5. Cron dispatches per academy with its own bot
 // ============================================================
 describe('cron per-academy reminders', () => {
