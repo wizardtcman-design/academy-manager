@@ -573,7 +573,9 @@ private fun StudentDropdown(
             modifier = Modifier.fillMaxWidth().menuAnchor(),
             textStyle = MaterialTheme.typography.bodyMedium.copy(textDirection = TextDirection.Rtl)
         )
-        androidx.compose.material3.ExposedDropdownMenu(
+        // ExposedDropdownMenu is a member of ExposedDropdownMenuBoxScope —
+        // it must be called on the implicit receiver, not fully qualified.
+        ExposedDropdownMenu(
             expanded = expanded,
             onDismissRequest = { expanded = false }
         ) {

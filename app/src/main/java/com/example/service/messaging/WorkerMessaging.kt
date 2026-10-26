@@ -420,7 +420,7 @@ object WorkerMessaging {
                 val v = settingsJson.opt(key)
                 settings[key] = when (v) {
                     is JSONObject -> if (v.optBoolean("hasValue", false)) "1" else "0"
-                    else -> String.valueOf(v)
+                    else -> v?.toString() ?: "null"
                 }
             }
             providers.add(
