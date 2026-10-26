@@ -1,0 +1,95 @@
+name: Deploy Worker (production) — manual only
+
+# هر استقرار روی Worker تولیدی فقط با کلیک دستی «Run workflow» انجام می‌شود؛
+# همین کلیک، تأیید جداگانهٔ انسان برای هر بار استقرار است.
+# توکن Cloudflare فقط در Secretهای مخزن زندگی می‌کند (CLOUDFLARE_API_TOKEN)،
+# هرگز در چت، کد، لاگ یا APK.
+#
+# Fail-safe sequence:
+#   1) Preflight: wrangler.toml must not silently change production vars;
+#      D1 binding is pinned to the live production database.
+#   2) D1 backup exported and stored as a workflow artifact (rollback asset).
+#   3) D1 migrations applied (on failure the deploy stops BEFORE code ships).
+#   4) wrangler deploy.
+#   5) Public smoke checks (no secrets in logs).
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-worker-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: cloudflare-telegram-backend
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Preflight — production must match wrangler.toml (fail-safe)
+        run: |
+          curl -sSf -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts/academy-manager1/settings" \
+            > "$RUNNER_TEMP/prod-settings.json"
+          node scripts/preflight-bindings.mjs wrangler.toml "$RUNNER_TEMP/prod-settings.json" | tee "$RUNNER_TEMP/preflight.log"
+          PROD_DB_ID="$(sed -n 's/^PROD_DB_ID=//p' "$RUNNER_TEMP/preflight.log" | head -1)"
+          if [ -z "$PROD_DB_ID" ]; then echo "FAIL: PROD_DB_ID خوانده نشد"; exit 1; fi
+          echo "PROD_DB_ID=$PROD_DB_ID" >> "$GITHUB_ENV"
+
+      - name: Resolve production D1 database name
+        run: |
+          RESP="$(curl -sSf -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/d1/database/$PROD_DB_ID")"
+          PROD_DB_NAME="$(printf '%s' "$RESP" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{try{console.log(JSON.parse(d).result.name)}catch(e){process.exit(1)}})')"
+          if [ -z "$PROD_DB_NAME" ]; then echo "FAIL: نام دیتابیس تولیدی خوانده نشد"; exit 1; fi
+          echo "PROD_DB_NAME=$PROD_DB_NAME" >> "$GITHUB_ENV"
+
+      - name: Pin wrangler.toml to the production D1 (never rebind)
+        run: node scripts/pin-d1-to-prod.mjs wrangler.toml "$PROD_DB_ID" "$PROD_DB_NAME"
+
+      - name: Backup D1 before any change (rollback asset)
+        run: |
+          npx wrangler d1 export "$PROD_DB_NAME" --output="$RUNNER_TEMP/d1-pre-deploy-backup.sql"
+          ls -l "$RUNNER_TEMP/d1-pre-deploy-backup.sql"
+
+      - name: Upload D1 backup artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: d1-pre-deploy-backup-${{ github.run_number }}
+          path: ${{ runner.temp }}/d1-pre-deploy-backup.sql
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Apply D1 migrations (stops deploy on failure, before code ships)
+        run: npx wrangler d1 migrations apply "$PROD_DB_NAME" --remote
+
+      - name: Deploy Worker
+        run: npx wrangler deploy
+
+      - name: Post-deploy smoke checks (public, read-only)
+        run: |
+          BASE="https://academy-manager1.wizard-tcman.workers.dev"
+          C1="$(curl -s -o /dev/null -w '%{http_code}' "$BASE/")"
+          C2="$(curl -s -o /dev/null -w '%{http_code}' "$BASE/api/bot/status")"
+          C3="$(curl -s -o /dev/null -w '%{http_code}' "$BASE/api/test-connection")"
+          echo "smoke: /=$C1 /api/bot/status=$C2 /api/test-connection=$C3"
+          [ "$C1" = "200" ] || { echo "FAIL: / پاسخ 200 نداد"; exit 1; }
+          [ "$C2" = "401" ] || { echo "FAIL: /api/bot/status بدون احراز هویت باید 401 بدهد"; exit 1; }
+          [ "$C3" = "401" ] || { echo "FAIL: /api/test-connection بدون احراز هویت باید 401 بدهد"; exit 1; }
+          echo "OK: Worker زنده است و مسیرهای /api/bot/* پاسخ امن می‌دهند."
