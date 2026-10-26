@@ -70,12 +70,12 @@ class ReportCalculatorTest {
     private val installments = listOf(
         installment("i1", "s1", "c1", "سنتور", 1_000_000, 1_000_000, dueEpoch = 5L, status = "PAID"),
         installment("i2", "s1", "c1", "سنتور", 1_000_000, 400_000, dueEpoch = 1L), // overdue
-        installment("i3", "s2", "c2", "تار", 500_000, 0, dueEpoch = 99L, status = "PENDING")
+        installment("i3", "s2", "c2", "تار", 500_000, 0, dueEpoch = 1_800_100_000_000L, status = "PENDING") // due in the future
     )
 
     private val payments = listOf(
-        payment("p1", "s1", "علی رضایی", "i1", 500_000, "1404/01/12", "CASH"),
-        payment("p2", "s1", "علی رضایی", "i1", 500_000, "1404/01/20", "POS"),
+        payment("p1", "s1", "علی رضایی", "i1", 500_000, "1404/01/12", "POS"),
+        payment("p2", "s1", "علی رضایی", "i1", 500_000, "1404/01/20", "TRANSFER"),
         payment("p3", "s1", "علی رضایی", "i2", 400_000, "1404/02/05", "TRANSFER"),
         payment("p4", "s2", "مریم کریمی", "i3", 100_000, "1404/02/10", "CASH"),
         payment("p5", "s2", "مریم کریمی", "i3", 50_000, "1403/12/28", "CASH"), // previous year
@@ -87,7 +87,7 @@ class ReportCalculatorTest {
         Refund(id = "r2", studentId = "s2", studentName = "مریم کریمی", courseTitle = "تار", amount = 5_000, dateShamsi = "1403/12/20")
     )
 
-    private val nowEpoch = 10_000_000L
+    private val nowEpoch = 1_800_000_000_000L // realistic 'now' so Tehran day math is meaningful
 
     // ---------- month report ----------
 

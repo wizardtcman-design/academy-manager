@@ -249,7 +249,10 @@ object WorkerMessaging {
         val json = JSONObject(body)
         val ok = json.optBoolean("success", false)
         val data = json.optJSONObject("data")
-        val status = data?.optString("status", "") ?: ""
+        // BLOCKED/error responses carry the overall status at TOP level
+        // (messaging-api.ts), success responses carry it inside data.
+        val status = data?.optString("status", "")?.takeIf { it.isNotBlank() }
+            ?: json.optString("status", "")
         val idempotent = data?.optBoolean("idempotent", false) ?: false
         val channelsJson = data?.optJSONObject("channels")
             ?: json.optJSONObject("channels")
@@ -330,7 +333,9 @@ object WorkerMessaging {
             -1 -> "۱ روز قبل"
             0 -> "روز سررسید"
             1 -> "۱ روز پس از سررسید"
-            else -> if (row.triggerOffset > 1) "${row.triggerOffset} روز پس از سررسید" else row.type
+            else -> if (row.triggerOffset > 1)
+                "${com.example.data.util.PersianDateUtil.toPersianDigits(row.triggerOffset.toString())} روز پس از سررسید"
+            else row.type
         }
         return "$typeLabel — ${row.scheduledTimeStr}"
     }
