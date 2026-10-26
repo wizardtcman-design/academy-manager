@@ -1,7 +1,8 @@
-package com.example.data.util
+package com.example
 
 import com.example.data.model.Installment
 import com.example.data.model.Payment
+import com.example.data.util.PaymentSyncPayloads
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
