@@ -399,14 +399,14 @@ export class ContractStore {
         return out;
     }
 
-    /** One delivery-ledger row (status + last update time) or null. */
+    /** One delivery-ledger row (status + tracking id + last update) or null. */
     async getDeliveryRow(
         academyId: string, reminderId: string, channel: string
-    ): Promise<{ status: string; updated_at_epoch: number } | null> {
+    ): Promise<{ status: string; updated_at_epoch: number; provider_message_id: string } | null> {
         const row = await this.env.DB!.prepare(
-            `SELECT status, updated_at_epoch FROM deliveries
+            `SELECT status, updated_at_epoch, provider_message_id FROM deliveries
              WHERE academy_id = ? AND reminder_id = ? AND channel = ?`
-        ).bind(academyId, reminderId, channel).first<{ status: string; updated_at_epoch: number }>();
+        ).bind(academyId, reminderId, channel).first<{ status: string; updated_at_epoch: number; provider_message_id: string }>();
         return row ?? null;
     }
 

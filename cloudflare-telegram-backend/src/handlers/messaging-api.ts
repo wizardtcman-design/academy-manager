@@ -42,7 +42,8 @@ import {
 } from '../messaging';
 import {
     SMS_PROVIDERS, SmsProviderDef, getSmsConfig, missingSmsFields,
-    resolveSmsProvider, sendSmsText, testSmsConnection
+    resolveSmsProvider, sendSmsText, sendSmsTemplate, querySmsDeliveryStatus, testSmsConnection,
+    normalizeIranMobile
 } from '../sms';
 
 function json(data: unknown, status = 200): Response {
@@ -278,6 +279,102 @@ export async function handleMessagingApi(
             message: res.detail,
             data: res.ok ? { ok: true, credit: res.credit } : { ok: false, provider: providerId }
         }, res.ok ? 200 : 409);
+    }
+
+    // ------------------------------------------------------------
+    // POST /api/messaging/sms/send-template — manager manual TEMPLATE
+    // (service-line) send through the SAME duplicate-protected provider
+    // layer. Provider-agnostic: only offered when the ACTIVE provider's
+    // official API documents a template send (SMS.ir /v1/send/verify).
+    //   - never registers a payment, never touches financial records;
+    //   - idempotent by clientMsgId (deliveries ledger, channel 'sms');
+    //   - the recipient is either a stored student's phone or an explicit
+    //     Iranian mobile — normalized BEFORE any panel call;
+    //   - no key/secret is ever echoed or logged.
+    // ------------------------------------------------------------
+    if (path === '/api/messaging/sms/send-template' && method === 'POST') {
+        const body = await readBody(request);
+        if (!body) return fail('بدنهٔ درخواست معتبر نیست.', 400);
+        const templateId = String(body.templateId || '').trim();
+        if (!templateId || !/^[A-Za-z0-9_-]{1,32}$/.test(templateId)) {
+            return fail('شناسه قالب نامعتبر است.', 400);
+        }
+        const rawParams = body.parameters;
+        if (!Array.isArray(rawParams) || rawParams.length > 10) {
+            return fail('پارامترهای قالب نامعتبر است (حداکثر ۱۰ مورد).', 400);
+        }
+        const parameters: Array<{ name: string; value: string }> = [];
+        for (const p of rawParams) {
+            const name = String(p?.name || '').trim();
+            const value = String(p?.value ?? '').trim();
+            if (!name || name.length > 64 || value.length > 512) {
+                return fail('نام یا مقدار پارامتر قالب نامعتبر است.', 400);
+            }
+            parameters.push({ name, value });
+        }
+        let to = String(body.to || '').trim();
+        if (body.studentId) {
+            const student = await db.getStudentById(String(body.studentId), academyId);
+            if (!student) return fail('هنرجو پیدا نشد.', 404);
+            to = student.phone || to;
+        }
+        if (!normalizeIranMobile(to)) {
+            return fail('شماره موبایل گیرنده معتبر نیست.', 400);
+        }
+        const clientMsgId = String(body.clientMsgId || '').trim();
+        if (!clientMsgId || clientMsgId.length > 80) {
+            return fail('شناسه پیام (clientMsgId) الزامی است.', 400);
+        }
+        const res = await sendSmsTemplate(env, db, academyId, {
+            to,
+            templateId,
+            parameters,
+            ledgerId: `manual-tpl:${clientMsgId}`
+        });
+        await logMessagingEvent(db, academyId, 'SMS_TEMPLATE_SEND', {
+            actor: 'manager-api',
+            detail: `provider=${res.provider || 'none'}; status=${res.status}; ledger=manual-tpl:${clientMsgId}`
+        });
+        // DUPLICATE is reported as already-sent (idempotent retry), mirroring
+        // the manual text send; anything else reports the honest outcome.
+        const sentLike = res.status === 'SENT' || res.status === 'DUPLICATE';
+        return json({
+            success: sentLike,
+            message: res.error || (res.status === 'DUPLICATE' ? 'این پیامک قبلاً ارسال شده بود.' : 'پیامک قالبی ارسال شد.'),
+            data: {
+                status: res.status,
+                code: res.code || undefined,
+                providerMessageId: res.providerMessageId || undefined,
+                provider: res.provider || undefined
+            }
+        }, sentLike ? 200 : 409);
+    }
+
+    // ------------------------------------------------------------
+    // GET /api/messaging/sms/delivery?ledgerId=... — delivery report of
+    // ONE previously sent message (contract capability; raw provider
+    // state only, never interpreted — the official docs publish no legend).
+    // ------------------------------------------------------------
+    if (path === '/api/messaging/sms/delivery' && method === 'GET') {
+        const ledgerId = String(url.searchParams.get('ledgerId') || '').trim();
+        if (!ledgerId || ledgerId.length > 160) {
+            return fail('شناسه دفتر تحویل (ledgerId) الزامی است.', 400);
+        }
+        const lookup = await querySmsDeliveryStatus(env, db, academyId, ledgerId);
+        if (lookup.kind === 'ok') {
+            return ok('وضعیت دلیوری دریافت شد.', {
+                kind: 'ok', provider: lookup.provider,
+                deliveryState: lookup.deliveryState || null,
+                deliveredAtEpoch: lookup.deliveredAtEpoch || null,
+                detail: lookup.detail
+            });
+        }
+        const statusFor: Record<string, number> = { 'unsupported': 409, 'unknown-ledger': 404, 'error': 409 };
+        return json({
+            success: false,
+            message: lookup.detail,
+            data: { kind: lookup.kind, provider: (lookup as any).provider || undefined, code: (lookup as any).code || undefined }
+        }, statusFor[lookup.kind] ?? 409);
     }
 
     // ------------------------------------------------------------

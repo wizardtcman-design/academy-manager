@@ -1,39 +1,58 @@
 // ============================================================
-// Stage 9: the common SMS-provider layer.
+// Stage 9 + provider architecture: the common SMS-provider layer.
 //
-// ONE provider contract, many panels: reminders, receipts, claim
-// acks/rejections, welcome messages and manager manual sends all go
-// through sendSmsText()/resolveSmsProvider() — business logic never
-// talks to a panel directly. Adding a future panel touches ONLY
-// SMS_PROVIDERS + its adapter here.
+// ONE formal contract (SmsProviderAdapter), many panels: reminders,
+// receipts, claim acks/rejections, welcome messages and manager manual
+// sends all go through sendSmsText()/sendSmsTemplate()/
+// resolveSmsProvider() — business logic never talks to a panel
+// directly. Adding a future panel touches ONLY SMS_PROVIDERS + its
+// adapter here (see docs/PROVIDER_DEVELOPMENT.md).
 //
-// Providers implemented in this stage (official docs only, nothing
-// guessed — see docs/SMS_PANELS.md for sources):
-//   - smsir   : SMS.ir REST API v1 (https://sms.ir/rest-api/)
-//               auth: X-API-KEY header; send: POST /v1/send/bulk
-//               {lineNumber, messageText, mobiles[]} → {status,message,
-//               data:{packId,messageIds,cost}}; status 1 = success;
+// Every adapter maps provider-specific responses onto the STANDARD
+// system error codes (SmsErrorCode) and produces key-free Persian
+// messages for humans. Tracking id, status and outcome are recorded in
+// the deliveries ledger + sms_outbox by the shared layer.
+//
+// Providers implemented (official docs only, nothing guessed — see
+// docs/SMS_PANELS.md for sources; re-verified against the live official
+// page https://sms.ir/rest-api/):
+//   - smsir   : SMS.ir REST API v1
+//               auth: X-API-KEY header;
+//               text send: POST /v1/send/bulk {lineNumber, messageText,
+//               mobiles[]} → data {packId, messageIds[], cost}; the docs
+//               define messageIds[i]=0 → recipient blacklisted and null
+//               → invalid number / text too long (both NOT delivered);
+//               template send: POST /v1/send/verify {mobile, templateId,
+//               parameters:[{name,value}]} → data {messageId, cost};
+//               delivery report: GET /v1/send/{messageId} → data with
+//               deliveryState (Nullable Byte — the official REST page
+//               publishes NO value legend, so the raw value is reported
+//               honestly, never interpreted);
 //               credit: GET /v1/credit (FREE, used for connection test).
 //   - ryesms  : رایس‌اس‌ام‌اس — the panel (panel6.ir) publishes NO public
-//               web-service documentation (verified 2026: site sitemap,
-//               all doc paths, search engines). The provider SLOT is
-//               registered so the settings UI can list it and store its
-//               fields, but its adapter honestly refuses everything with
-//               docs_pending until the owner supplies the real API spec.
-//               NO endpoint or parameter is invented anywhere.
+//               web-service documentation (site + docs paths + search
+//               engines re-probed; the site itself answers WAF 403). The
+//               provider SLOT is registered so the settings UI can list
+//               it and store its fields, but its adapter honestly
+//               refuses everything with docs_pending until the owner
+//               supplies the real API spec. NO endpoint or parameter is
+//               invented anywhere.
 //
 // Security rules (enforced here):
-//   - API keys live per academy in the namespaced academy_settings KV
-//     (existing project mechanism, same as gateway_api_key) and are
-//     NEVER returned by any endpoint (only masked booleans), NEVER
-//     logged, NEVER included in error texts.
+//   - API keys live per academy in the namespaced D1 table
+//     academy_settings (existing project mechanism, same as
+//     gateway_api_key; scoped "<academyId>:<key>") and are NEVER
+//     returned by any endpoint (only masked booleans), NEVER logged,
+//     NEVER included in error texts. The app-side settings sync is
+//     FORBIDDEN from writing these keys (reserved on /api/sync/settings).
 //   - An optional Cloudflare Secret (SMSIR_API_KEY) overrides the
 //     stored key at runtime — see docs/SMS_PANELS.md for the exact
 //     `wrangler secret put` commands.
-//   - checkSmsConnection() uses ONLY free/no-cost official endpoints
+//   - testSmsConnection() uses ONLY free/no-cost official endpoints
 //     (SMS.ir /v1/credit) — it can never send a billable SMS.
-//   - sendSmsText() claims the deliveries ledger BEFORE calling the
-//     provider, so a retry or an overlapping run can never double-send.
+//   - sendSmsText()/sendSmsTemplate() claim the deliveries ledger
+//     BEFORE calling the provider, so a retry or an overlapping run can
+//     never double-send.
 //
 // Channel policy stays with the callers: when the messaging config has
 // channel 'telegram' for an event, NO SMS may be sent for it — callers
@@ -72,6 +91,54 @@ export interface SmsProviderDef {
         /** Template-based (service line) sending supported by the docs. */
         templateSend: boolean;
     };
+}
+
+// ------------------------------------------------------------
+// STANDARD system error codes — every adapter maps its provider's
+// specific responses onto this vocabulary so the rest of the system
+// (ledger, outbox, admin UI, tests) never sees provider internals.
+// ------------------------------------------------------------
+export type SmsErrorCode =
+    | 'OK'
+    | 'UNAUTHENTICATED'      // invalid / disabled / IP-restricted key, blocked account
+    | 'NO_CREDIT'            // panel balance insufficient
+    | 'INVALID_LINE'         // bad or inactive sender line
+    | 'INVALID_MOBILE'       // recipient number rejected by the panel
+    | 'RATE_LIMITED'         // panel-side throttling
+    | 'REJECTED'             // content/recipient policy: blacklist, unapproved text, empty text…
+    | 'PROVIDER_ERROR'       // panel-side failure the docs do not classify further
+    | 'UNEXPECTED_RESPONSE'  // answer outside the documented contract
+    | 'NETWORK'              // connection could not be established
+    | 'TIMEOUT'              // the panel did not answer in time
+    | 'NOT_CONFIGURED'       // local settings incomplete / no provider selected
+    | 'DOCS_PENDING';        // provider slot exists but official docs are missing
+
+export const SMS_ERROR_LABELS: Record<SmsErrorCode, string> = {
+    OK: 'موفق',
+    UNAUTHENTICATED: 'احراز هویت',
+    NO_CREDIT: 'اعتبار',
+    INVALID_LINE: 'خط ارسال',
+    INVALID_MOBILE: 'شماره گیرنده',
+    RATE_LIMITED: 'محدودیت تعداد',
+    REJECTED: 'رد شد',
+    PROVIDER_ERROR: 'خطای پنل',
+    UNEXPECTED_RESPONSE: 'پاسخ غیرمنتظره',
+    NETWORK: 'شبکه',
+    TIMEOUT: 'مهلت',
+    NOT_CONFIGURED: 'پیکربندی نشده',
+    DOCS_PENDING: 'در انتظار مستندات'
+};
+
+/** Provider-independent delivery information (capability-gated). */
+export interface SmsDeliveryInfo {
+    ok: boolean;
+    code: SmsErrorCode;
+    /** Persian human message (never contains credentials). */
+    detail: string;
+    /** Raw provider delivery state (NOT interpreted — no official legend). */
+    deliveryState: string;
+    /** Unix ms of the delivery event when the provider reports one; else 0. */
+    deliveredAtEpoch: number;
 }
 
 export const SMS_PROVIDERS: Record<string, SmsProviderDef> = {
@@ -254,6 +321,8 @@ const SMS_HTTP_TIMEOUT_MS = 12_000;
 
 export interface SmsAdapterCallResult {
     ok: boolean;
+    /** Standard system error code (see SmsErrorCode). */
+    code: SmsErrorCode;
     /** Provider tracking id (messageId / packId) when the API returns one. */
     messageId: string;
     /** Human-readable Persian error; NEVER contains credentials. */
@@ -262,12 +331,42 @@ export interface SmsAdapterCallResult {
     raw: string;
 }
 
-type SmsAdapter = {
-    /** MUST be a free/no-cost endpoint only (credit/balance). */
-    checkConnection(settings: Record<string, string>): Promise<{ ok: boolean; detail: string; credit?: string }>;
+export interface SmsConnectionCheckResult {
+    ok: boolean;
+    code: SmsErrorCode;
+    detail: string;
+    credit?: string;
+}
+
+/**
+ * THE provider contract (formal). A new panel implements this interface
+ * and is registered in SMS_ADAPTERS — nothing else in the system changes
+ * (docs/PROVIDER_DEVELOPMENT.md). All methods MUST be key-free in their
+ * outputs and MUST honour the 12s timeout via fetchWithTimeout.
+ */
+export interface SmsProviderAdapter {
+    readonly id: string;
+    /** Local readiness check of THIS provider's settings shape (no network). */
+    validateSettings(settings: Record<string, string>): { ok: boolean; missing: string[] };
+    /** MUST be a free/no-cost endpoint only (credit/balance); never sends. */
+    checkConnection(settings: Record<string, string>): Promise<SmsConnectionCheckResult>;
     /** Sends ONE text to ONE normalized mobile. */
-    send(settings: Record<string, string>, to: string, text: string): Promise<SmsAdapterCallResult>;
-};
+    sendText(settings: Record<string, string>, to: string, text: string): Promise<SmsAdapterCallResult>;
+    /** Template (service-line) send — required only when capabilities.templateSend. */
+    sendTemplate?(settings: Record<string, string>, to: string, templateId: string, parameters: Array<{ name: string; value: string }>): Promise<SmsAdapterCallResult>;
+    /** Delivery status of ONE message — required only when capabilities.deliveryReport. */
+    queryDelivery?(settings: Record<string, string>, messageId: string): Promise<SmsDeliveryInfo>;
+}
+
+/** Internal alias — the formal contract every registered adapter implements. */
+type SmsAdapter = SmsProviderAdapter;
+
+function okResult(messageId: string, raw: string): SmsAdapterCallResult {
+    return { ok: true, code: 'OK', messageId, error: '', raw };
+}
+function failResult(code: SmsErrorCode, error: string, raw: string): SmsAdapterCallResult {
+    return { ok: false, code, messageId: '', error, raw };
+}
 
 /** fetch with a hard timeout — a hanging panel must never stall the cron. */
 async function fetchWithTimeout(url: string, init: RequestInit): Promise<Response> {
@@ -285,6 +384,11 @@ function networkErrorText(e: unknown): string {
     const msg = e instanceof Error ? e.message : String(e);
     if (/abort/i.test(msg)) return 'مهلت اتصال به پنل پیامکی تمام شد.';
     return 'اتصال به پنل پیامکی برقرار نشد.';
+}
+function networkError(e: unknown): { text: string; code: SmsErrorCode } {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (/abort/i.test(msg)) return { text: networkErrorText(e), code: 'TIMEOUT' };
+    return { text: networkErrorText(e), code: 'NETWORK' };
 }
 
 /** SMS.ir status codes (official table, https://sms.ir/rest-api/). */
@@ -309,11 +413,31 @@ function smsIrStatusText(status: number): string {
     return map[status] || `خطای پنل پیامکی (کد ${status}).`;
 }
 
+/** Official status table → STANDARD system error codes. */
+function smsIrStatusCode(status: number): SmsErrorCode {
+    if (status === 1) return 'OK';
+    if ([10, 11, 12, 13, 14].includes(status)) return 'UNAUTHENTICATED';
+    if (status === 20) return 'RATE_LIMITED';
+    if (status === 101 || status === 123) return 'INVALID_LINE';
+    if (status === 102) return 'NO_CREDIT';
+    if (status === 104) return 'INVALID_MOBILE';
+    if ([0, 103, 105, 115, 117].includes(status)) return 'REJECTED';
+    return 'PROVIDER_ERROR';
+}
+
 const SMSIR_BASE = 'https://api.sms.ir/v1';
 
 const smsIrAdapter: SmsAdapter = {
+    id: 'smsir',
+
+    // Local readiness — no network, no cost.
+    validateSettings(settings) {
+        const missing = ['api_key', 'line'].filter((k) => !(settings[k] || '').trim());
+        return { ok: missing.length === 0, missing };
+    },
+
     // GET /v1/credit — the official FREE balance endpoint (no SMS is sent).
-    async checkConnection(settings) {
+    async checkConnection(settings): Promise<SmsConnectionCheckResult> {
         try {
             const res = await fetchWithTimeout(SMSIR_BASE + '/credit', {
                 method: 'GET',
@@ -322,27 +446,32 @@ const smsIrAdapter: SmsAdapter = {
             let body: any = null;
             try { body = await res.json(); } catch (_) { /* non-JSON error page */ }
             if (res.status === 401) {
-                return { ok: false, detail: 'کلید وب‌سرویس نامعتبر است (۴۰۱).' };
+                return { ok: false, code: 'UNAUTHENTICATED', detail: 'کلید وب‌سرویس نامعتبر است (۴۰۱).' };
             }
             if (body && typeof body.status === 'number' && body.status !== 1) {
-                return { ok: false, detail: smsIrStatusText(body.status) };
+                return { ok: false, code: smsIrStatusCode(body.status), detail: smsIrStatusText(body.status) };
             }
             if (res.status !== 200) {
-                return { ok: false, detail: `پاسخ غیرمنتظره پنل پیامکی (کد HTTP ${res.status}).` };
+                return { ok: false, code: 'UNEXPECTED_RESPONSE', detail: `پاسخ غیرمنتظره پنل پیامکی (کد HTTP ${res.status}).` };
             }
             const credit = body?.data;
             return {
                 ok: true,
+                code: 'OK',
                 detail: 'اتصال با پنل SMS.ir برقرار است.',
                 credit: credit === undefined || credit === null ? undefined : String(credit)
             };
         } catch (e) {
-            return { ok: false, detail: networkErrorText(e) };
+            const n = networkError(e);
+            return { ok: false, code: n.code, detail: n.text };
         }
     },
 
     // POST /v1/send/bulk — {lineNumber, messageText, mobiles[]} (official docs).
-    async send(settings, to, text) {
+    // Per the official page: messageIds[i] = 0 → that recipient is
+    // BLACKLISTED; null → invalid number or text too long — neither is a
+    // delivery, so the adapter reports them as failures, never a fake SENT.
+    async sendText(settings, to, text): Promise<SmsAdapterCallResult> {
         try {
             const res = await fetchWithTimeout(SMSIR_BASE + '/send/bulk', {
                 method: 'POST',
@@ -360,22 +489,108 @@ const smsIrAdapter: SmsAdapter = {
             let body: any = null;
             try { body = await res.json(); } catch (_) { /* non-JSON error page */ }
             if (body && typeof body.status === 'number' && body.status !== 1) {
-                return { ok: false, messageId: '', error: smsIrStatusText(body.status), raw: `status:${body.status}` };
+                return failResult(smsIrStatusCode(body.status), smsIrStatusText(body.status), `status:${body.status}`);
             }
             if (res.status !== 200 || !body || body.status !== 1) {
-                return {
-                    ok: false, messageId: '',
-                    error: `پاسخ غیرمنتظره پنل پیامکی (کد HTTP ${res.status}).`,
-                    raw: `http:${res.status}`
-                };
+                return failResult('UNEXPECTED_RESPONSE', `پاسخ غیرمنتظره پنل پیامکی (کد HTTP ${res.status}).`, `http:${res.status}`);
             }
             const data = body.data || {};
             const packId = String(data.packId || '');
-            const firstMsgId = Array.isArray(data.messageIds) && data.messageIds.length
-                ? String(data.messageIds[0]) : '';
-            return { ok: true, messageId: firstMsgId || packId, error: '', raw: `pack:${packId}` };
+            // ONE recipient was sent: its own messageId decides the outcome
+            // (docs — 0 = blacklist, null = invalid number / text too long).
+            if (Array.isArray(data.messageIds) && data.messageIds.length) {
+                const first = data.messageIds[0];
+                if (first === 0 || first === '0') {
+                    return failResult('REJECTED', smsIrStatusText(115), `pack:${packId};msg:0`);
+                }
+                if (first === null || first === undefined) {
+                    return failResult('INVALID_MOBILE', 'شماره گیرنده نامعتبر است یا متن بیش از حد مجاز بوده است.', `pack:${packId};msg:null`);
+                }
+                return okResult(String(first), `pack:${packId}`);
+            }
+            if (packId) {
+                // Array absent (outside the documented shape): the pack id is
+                // the only tracking reference the panel gave us.
+                return okResult(packId, `pack:${packId}`);
+            }
+            return failResult('UNEXPECTED_RESPONSE', 'پاسخ غیرمنتظره پنل پیامکی: شناسه پیامک برگردانده نشد.', 'no-id');
         } catch (e) {
-            return { ok: false, messageId: '', error: networkErrorText(e), raw: 'network' };
+            const n = networkError(e);
+            return failResult(n.code, n.text, 'network');
+        }
+    },
+
+    // POST /v1/send/verify — {mobile, templateId, parameters:[{name,value}]}
+    // (official docs; service-line template send, data:{messageId, cost}).
+    async sendTemplate(settings, to, templateId, parameters): Promise<SmsAdapterCallResult> {
+        try {
+            const res = await fetchWithTimeout(SMSIR_BASE + '/send/verify', {
+                method: 'POST',
+                headers: {
+                    'X-API-KEY': settings.api_key,
+                    'Content-Type': 'application/json',
+                    Accept: 'application/json'
+                },
+                body: JSON.stringify({
+                    mobile: to,
+                    templateId: Number(templateId),
+                    parameters: parameters.map((p) => ({ name: String(p.name), value: String(p.value) }))
+                })
+            });
+            let body: any = null;
+            try { body = await res.json(); } catch (_) { /* non-JSON error page */ }
+            if (body && typeof body.status === 'number' && body.status !== 1) {
+                return failResult(smsIrStatusCode(body.status), smsIrStatusText(body.status), `status:${body.status}`);
+            }
+            if (res.status !== 200 || !body || body.status !== 1) {
+                return failResult('UNEXPECTED_RESPONSE', `پاسخ غیرمنتظره پنل پیامکی (کد HTTP ${res.status}).`, `http:${res.status}`);
+            }
+            const messageId = String(body.data?.messageId || '');
+            if (!messageId || messageId === '0') {
+                return failResult('UNEXPECTED_RESPONSE', 'پاسخ غیرمنتظره پنل پیامکی: شناسه پیامک برگردانده نشد.', 'no-id');
+            }
+            return okResult(messageId, 'verify');
+        } catch (e) {
+            const n = networkError(e);
+            return failResult(n.code, n.text, 'network');
+        }
+    },
+
+    // GET /v1/send/{messageId} — official delivery report. The official REST
+    // page publishes NO legend for deliveryState values (Nullable Byte), so
+    // the RAW value is reported honestly and never interpreted.
+    async queryDelivery(settings, messageId): Promise<SmsDeliveryInfo> {
+        try {
+            const res = await fetchWithTimeout(`${SMSIR_BASE}/send/${encodeURIComponent(messageId)}`, {
+                method: 'GET',
+                headers: { 'X-API-KEY': settings.api_key, Accept: 'application/json' }
+            });
+            let body: any = null;
+            try { body = await res.json(); } catch (_) { /* non-JSON error page */ }
+            if (res.status === 401) {
+                return { ok: false, code: 'UNAUTHENTICATED', detail: 'کلید وب‌سرویس نامعتبر است (۴۰۱).', deliveryState: '', deliveredAtEpoch: 0 };
+            }
+            if (body && typeof body.status === 'number' && body.status !== 1) {
+                return { ok: false, code: smsIrStatusCode(body.status), detail: smsIrStatusText(body.status), deliveryState: '', deliveredAtEpoch: 0 };
+            }
+            if (res.status !== 200 || !body || body.status !== 1) {
+                return { ok: false, code: 'UNEXPECTED_RESPONSE', detail: `پاسخ غیرمنتظره پنل پیامکی (کد HTTP ${res.status}).`, deliveryState: '', deliveredAtEpoch: 0 };
+            }
+            const data = body.data || {};
+            const state = data.deliveryState === null || data.deliveryState === undefined ? '' : String(data.deliveryState);
+            const at = Number(data.deliveryDateTime || 0);
+            return {
+                ok: true,
+                code: 'OK',
+                detail: state
+                    ? `وضعیت دلیوری پنل: ${state}${at > 0 ? ` (زمان دلیوری: ${at})` : ''}`
+                    : 'پنل هنوز وضعیت دلیوری را گزارش نکرده است.',
+                deliveryState: state,
+                deliveredAtEpoch: at > 0 ? at * 1000 : 0
+            };
+        } catch (e) {
+            const n = networkError(e);
+            return { ok: false, code: n.code, detail: n.text, deliveryState: '', deliveredAtEpoch: 0 };
         }
     }
 };
@@ -385,21 +600,25 @@ const smsIrAdapter: SmsAdapter = {
  * documentation (verified: site sitemap, doc paths, search engines — see
  * docs/SMS_PANELS.md). Every method honestly refuses; NOTHING is invented.
  */
-const ryeSmsDocsPending = {
+const ryeSmsDocsPending: SmsConnectionCheckResult = {
     ok: false,
+    code: 'DOCS_PENDING',
     detail: 'مستندات رسمی وب‌سرویس رایس‌اس‌ام‌اس به‌صورت عمومی منتشر نشده است؛ آزمایش اتصال پس از دسترسی به مستندات فعال می‌شود.'
 };
 
 const ryeSmsAdapter: SmsAdapter = {
+    id: 'rysesms',
+    validateSettings(settings) {
+        const missing = ['api_key', 'line'].filter((k) => !(settings[k] || '').trim());
+        return { ok: missing.length === 0, missing };
+    },
     async checkConnection() {
         return ryeSmsDocsPending;
     },
-    async send() {
-        return {
-            ok: false, messageId: '',
-            error: 'ارسال از رایس‌اس‌ام‌اس هنوز فعال نیست: مستندات رسمی وب‌سرویس در دسترس نیست.',
-            raw: 'docs_pending'
-        };
+    async sendText() {
+        return failResult('DOCS_PENDING',
+            'ارسال از رایس‌اس‌ام‌اس هنوز فعال نیست: مستندات رسمی وب‌سرویس در دسترس نیست.',
+            'docs_pending');
     }
 };
 
@@ -484,6 +703,8 @@ export type SmsSendStatus = 'SENT' | 'FAILED' | 'UNCONFIGURED' | 'BLOCKED' | 'IN
 
 export interface SmsSendOutcome {
     status: SmsSendStatus;
+    /** Standard system error code of a failed attempt ('' when not applicable). */
+    code: SmsErrorCode | '';
     providerMessageId: string;
     error: string;
     provider: string;
@@ -499,16 +720,16 @@ export interface SmsSendInput {
 }
 
 /**
- * Sends ONE SMS through the active provider with duplicate protection:
- * the deliveries ledger slot (channel 'sms') is claimed BEFORE the HTTP
- * call — a retry, a concurrent cron run or a crash+resume can never
- * double-send the same message.
+ * Shared duplicate-protected send path (text + template). The deliveries
+ * ledger slot (channel 'sms') is claimed BEFORE the HTTP call — a retry, a
+ * concurrent cron run or a crash+resume can never double-send the message.
  */
-export async function sendSmsText(
+async function sendViaProvider(
     env: Env,
     db: AcademyDatabase,
     academyId: string,
-    input: SmsSendInput
+    input: SmsSendInput,
+    invoke: (adapter: SmsAdapter, settings: Record<string, string>, to: string) => Promise<SmsAdapterCallResult>
 ): Promise<SmsSendOutcome> {
     const store = new ContractStore(env);
     const cfg = await getSmsConfig(db);
@@ -516,6 +737,7 @@ export async function sendSmsText(
     if (resolved.kind !== 'ok') {
         return {
             status: resolved.kind === 'docs-pending' ? 'BLOCKED' : 'UNCONFIGURED',
+            code: resolved.kind === 'docs-pending' ? 'DOCS_PENDING' : 'NOT_CONFIGURED',
             providerMessageId: '',
             error: resolved.reason,
             provider: cfg.provider
@@ -525,7 +747,7 @@ export async function sendSmsText(
     const to = normalizeIranMobile(input.to);
     if (!to) {
         return {
-            status: 'FAILED', providerMessageId: '',
+            status: 'FAILED', code: 'INVALID_MOBILE', providerMessageId: '',
             error: 'شماره موبایل گیرنده معتبر نیست؛ پیامک ارسال نشد.', provider: provider.def.id
         };
     }
@@ -536,34 +758,150 @@ export async function sendSmsText(
         const prev = await store.getDeliveryRow(academyId, input.ledgerId, 'sms');
         const prevStatus = prev?.status || '';
         const prevAge = Date.now() - (prev?.updated_at_epoch || 0);
-        if (prevStatus === 'SENT') return { status: 'DUPLICATE', providerMessageId: '', error: 'این پیامک قبلاً ارسال شده بود.', provider: provider.def.id };
-        if (prevStatus === 'SKIPPED') return { status: 'DUPLICATE', providerMessageId: '', error: 'این پیامک قبلاً رد شده بود.', provider: provider.def.id };
+        if (prevStatus === 'SENT') return { status: 'DUPLICATE', code: '', providerMessageId: '', error: 'این پیامک قبلاً ارسال شده بود.', provider: provider.def.id };
+        if (prevStatus === 'SKIPPED') return { status: 'DUPLICATE', code: '', providerMessageId: '', error: 'این پیامک قبلاً رد شده بود.', provider: provider.def.id };
         const reclaimable = prevStatus === 'PENDING' ? prevAge > 10 * 60_000 : true;
         const reClaimed = reclaimable ? await store.reclaimDelivery(academyId, input.ledgerId, 'sms') : false;
         if (!reClaimed) {
-            return { status: 'IN_FLIGHT', providerMessageId: '', error: 'ارسال این پیامک در جریان است.', provider: provider.def.id };
+            return { status: 'IN_FLIGHT', code: '', providerMessageId: '', error: 'ارسال این پیامک در جریان است.', provider: provider.def.id };
         }
     }
 
     const adapter = SMS_ADAPTERS[provider.def.id];
     if (!adapter) {
         await store.finishDelivery(academyId, input.ledgerId, 'sms', 'SKIPPED', 'provider adapter missing');
-        return { status: 'UNCONFIGURED', providerMessageId: '', error: 'آداپتور پنل پیامکی یافت نشد.', provider: provider.def.id };
+        return { status: 'UNCONFIGURED', code: 'NOT_CONFIGURED', providerMessageId: '', error: 'آداپتور پنل پیامکی یافت نشد.', provider: provider.def.id };
     }
 
     let res: SmsAdapterCallResult;
     try {
-        res = await adapter.send(provider.settings, to, input.text);
+        res = await invoke(adapter, provider.settings, to);
     } catch (e) {
-        res = { ok: false, messageId: '', error: networkErrorText(e), raw: 'network' };
+        const n = networkError(e);
+        res = { ok: false, code: n.code, messageId: '', error: n.text, raw: 'network' };
     }
 
     if (res.ok) {
         await store.finishDelivery(academyId, input.ledgerId, 'sms', 'SENT', '', res.messageId);
         input.onOutbox?.({ status: 'SENT', error: '', providerMessageId: res.messageId });
-        return { status: 'SENT', providerMessageId: res.messageId, error: '', provider: provider.def.id };
+        return { status: 'SENT', code: '', providerMessageId: res.messageId, error: '', provider: provider.def.id };
     }
     await store.finishDelivery(academyId, input.ledgerId, 'sms', 'FAILED', res.error, '');
     input.onOutbox?.({ status: 'FAILED', error: res.error, providerMessageId: '' });
-    return { status: 'FAILED', providerMessageId: '', error: res.error, provider: provider.def.id };
+    return { status: 'FAILED', code: res.code, providerMessageId: '', error: res.error, provider: provider.def.id };
+}
+
+/**
+ * Sends ONE text SMS through the active provider (duplicate-protected).
+ */
+export async function sendSmsText(
+    env: Env,
+    db: AcademyDatabase,
+    academyId: string,
+    input: SmsSendInput
+): Promise<SmsSendOutcome> {
+    return sendViaProvider(env, db, academyId, input, (adapter, settings, to) => adapter.sendText(settings, to, input.text));
+}
+
+// ------------------------------------------------------------
+// Template (service-line) send — contract capability, duplicate-protected
+// ------------------------------------------------------------
+
+export interface SmsTemplateSendInput {
+    to: string;
+    /** The provider's own template id (SMS.ir: numeric قالب خدماتی id). */
+    templateId: string;
+    parameters: Array<{ name: string; value: string }>;
+    /** Unique ledger id, e.g. `manual-tpl:<clientMsgId>`. */
+    ledgerId: string;
+    onOutbox?: (row: { status: string; error: string; providerMessageId: string }) => void;
+}
+
+/** Template sends reuse the text path's envelope (ledger claim, outbox, outcome). */
+function templateAsSendInput(input: SmsTemplateSendInput): SmsSendInput {
+    return {
+        to: input.to,
+        text: '', // the template + parameters define the body panel-side
+        ledgerId: input.ledgerId,
+        onOutbox: input.onOutbox
+    };
+}
+
+/**
+ * Sends ONE template SMS through the active provider when — and only when —
+ * the provider's official API documents a template send and the adapter
+ * implements it. The SAME duplicate protection as sendSmsText applies.
+ */
+export async function sendSmsTemplate(
+    env: Env,
+    db: AcademyDatabase,
+    academyId: string,
+    input: SmsTemplateSendInput
+): Promise<SmsSendOutcome> {
+    const cfg = await getSmsConfig(db);
+    const def = cfg.provider ? SMS_PROVIDERS[cfg.provider] : null;
+    if (!def || !def.capabilities.templateSend) {
+        return {
+            status: 'BLOCKED', code: 'DOCS_PENDING', providerMessageId: '',
+            error: 'این پنل ارسال قالبی مستندشده ندارد؛ ارسال انجام نشد.', provider: cfg.provider
+        };
+    }
+    return sendViaProvider(env, db, academyId, templateAsSendInput(input), (adapter, settings, to) => {
+        if (!adapter.sendTemplate) {
+            return Promise.resolve(failResult('DOCS_PENDING', 'ارسال قالبی برای این پنل پیاده‌سازی نشده است.', 'no-template'));
+        }
+        return adapter.sendTemplate(settings, to, input.templateId, input.parameters);
+    });
+}
+
+// ------------------------------------------------------------
+// Delivery status (contract capability — raw values, never interpreted)
+// ------------------------------------------------------------
+
+export type SmsDeliveryLookup =
+    | { kind: 'ok'; provider: string; deliveryState: string; deliveredAtEpoch: number; detail: string }
+    | { kind: 'unsupported'; provider: string; detail: string }
+    | { kind: 'unknown-ledger'; detail: string }
+    | { kind: 'error'; provider: string; code: SmsErrorCode; detail: string };
+
+/**
+ * Queries the panel's delivery report for ONE previously sent message.
+ * The ledger id is the SAME id the send used (e.g. `sms-<reminderId>` or
+ * `manual:<clientMsgId>`); the provider tracking id recorded at send time
+ * is what the panel is asked about. Raw delivery state only — the official
+ * REST docs publish no value legend, so nothing is interpreted here.
+ */
+export async function querySmsDeliveryStatus(
+    env: Env,
+    db: AcademyDatabase,
+    academyId: string,
+    ledgerId: string
+): Promise<SmsDeliveryLookup> {
+    const cfg = await getSmsConfig(db);
+    const def = cfg.provider ? SMS_PROVIDERS[cfg.provider] : null;
+    if (!def || !def.capabilities.deliveryReport) {
+        return { kind: 'unsupported', provider: def?.id || '', detail: 'این پنل گزارش دلیوری مستندشده ندارد.' };
+    }
+    const store = new ContractStore(env);
+    const row = await store.getDeliveryRow(academyId, ledgerId, 'sms');
+    const providerMessageId = String(row?.provider_message_id || '');
+    if (!row || !providerMessageId) {
+        return { kind: 'unknown-ledger', detail: 'ارسالی با این شناسه در دفتر ثبت تحویل پیدا نشد.' };
+    }
+    if (row.status !== 'SENT') {
+        return { kind: 'unknown-ledger', detail: 'این پیامک موفق ثبت نشده است؛ گزارش دلیوری فقط برای ارسال‌های موفق معنا دارد.' };
+    }
+    const resolved = await resolveSmsProvider(env, db);
+    if (resolved.kind !== 'ok') {
+        return { kind: 'error', provider: def.id, code: resolved.kind === 'docs-pending' ? 'DOCS_PENDING' : 'NOT_CONFIGURED', detail: resolved.reason };
+    }
+    const adapter = SMS_ADAPTERS[def.id];
+    if (!adapter?.queryDelivery) {
+        return { kind: 'unsupported', provider: def.id, detail: 'این پنل گزارش دلیوری مستندشده ندارد.' };
+    }
+    const info = await adapter.queryDelivery(resolved.provider.settings, providerMessageId);
+    if (!info.ok) {
+        return { kind: 'error', provider: def.id, code: info.code, detail: info.detail };
+    }
+    return { kind: 'ok', provider: def.id, deliveryState: info.deliveryState, deliveredAtEpoch: info.deliveredAtEpoch, detail: info.detail };
 }

@@ -31,6 +31,7 @@ import { handleApiRequest } from '../src/handlers/api';
 import { dispatchDueReminders } from '../src/reminders';
 import { sendSmsText, normalizeIranMobile, SMS_PROVIDERS } from '../src/sms';
 import { epochToShamsi } from '../src/shamsi';
+import { shamsiAtAcademyTime, academyTzOffsetMinutes } from '../src/tz';
 import { AcademyDatabase } from '../src/db';
 import { D1Shim } from './helpers/d1-shim';
 import { makeEnv, ACADEMY_A, ACADEMY_B, API_KEY } from './helpers/fixtures';
@@ -331,16 +332,24 @@ describe('channel policy + duplicate prevention + pipelines', () => {
     it('8+9. event channel policy decides: telegram-only never sends; both delivers', async () => {
         const { env, adb, db } = await seedWorld();
         await configureSmsir(env);
+        // Deterministic nob geometry (this test used to be wall-clock flaky:
+        // dispatching at now+26h only lands between the -1d and due-day nobs
+        // before 08:00 Tehran). The dispatch times below are pinned to the
+        // REAL computed nob epochs (10:00 Asia/Tehran of the Shamsi due
+        // date), so the newest-due nob is ALWAYS the asserted one.
+        const tzMin = academyTzOffsetMinutes('Asia/Tehran');
+        const shamsiA = epochToShamsi(Date.now() + DAY);
+        const eM1a = shamsiAtAcademyTime(shamsiA, -1, 10, 0, tzMin); // ins-9a «-1 روز قبل» nob
         await pushInstallment(env, ACADEMY_A, [installment({
             id: 'ins-9a', student_id: 'stu-9',
-            due_date_epoch: Date.now() + DAY, due_date_shamsi: epochToShamsi(Date.now() + DAY)
+            due_date_epoch: Date.now() + DAY, due_date_shamsi: shamsiA
         })]);
         // default channel 'telegram' → the reminder goes to Telegram, SMS row SKIPPED
         smsHttp.length = 0;
         smsPanelBehavior = 'ok';
-        await dispatchDueReminders(env, adb, null as any, ACADEMY_A, Date.now() + 26 * 3600_000);
+        await dispatchDueReminders(env, adb, null as any, ACADEMY_A, eM1a + 3600_000);
         expect(smsHttp.length).toBe(0);
-        // the newest DUE nob of ins-9a at now+26h is the -1d one (…:-1)
+        // newest DUE nob of ins-9a at (eM1a + 1h) IS the -1d one (…:-1)
         const skipped = db.get(`SELECT status, error FROM sms_outbox WHERE id = 'sms-auto:ins-9a:-1'`) as any;
         expect(skipped?.status).toBe('SKIPPED');
         expect(String(skipped?.error)).toContain('sms_channel_disabled_by_settings');
@@ -349,14 +358,17 @@ describe('channel policy + duplicate prevention + pipelines', () => {
         await api(env, 'PUT', '/api/messaging/config', {
             events: { INSTALLMENT_REMINDER: { channel: 'both' } }
         });
-        // a fresh due nob (different installment so the ledger is fresh)
+        // a fresh installment one day later: its -1d nob fires exactly at
+        // ins-9a's DUE-DAY nob, so ONE dispatch legitimately delivers both.
+        const shamsiB = epochToShamsi(Date.now() + 2 * DAY);
+        const eM1b = shamsiAtAcademyTime(shamsiB, -1, 10, 0, tzMin); // == e0a by construction
         await pushInstallment(env, ACADEMY_A, [installment({
             id: 'ins-9b', student_id: 'stu-9', installment_number: 2,
-            due_date_epoch: Date.now() + 2 * DAY, due_date_shamsi: epochToShamsi(Date.now() + 2 * DAY)
+            due_date_epoch: Date.now() + 2 * DAY, due_date_shamsi: shamsiB
         })]);
         smsHttp.length = 0;
-        await dispatchDueReminders(env, adb, null as any, ACADEMY_A, Date.now() + 50 * 3600_000);
-        // At +50h the catch-up keeps the NEWEST due nob per installment:
+        await dispatchDueReminders(env, adb, null as any, ACADEMY_A, eM1b + 3600_000);
+        // The catch-up keeps the NEWEST due nob per installment:
         // ins-9a → its due-day nob (INSTALLMENT_REMINDER), ins-9b → its -1d
         // nob — both legitimately deliver via the panel under 'both'.
         expect(smsHttp.length).toBe(2);
@@ -368,7 +380,7 @@ describe('channel policy + duplicate prevention + pipelines', () => {
             `SELECT provider_message_id FROM deliveries WHERE academy_id = ? AND reminder_id = 'sms-auto:ins-9b:-1' AND channel = 'sms'`
         , ACADEMY_A) as any;
         expect(String(ledger?.provider_message_id || '')).toContain('87654');
-    });
+    }, 30000);
 
     it('10. manager manual send over the SMS channel is real, policy-gated and idempotent', async () => {
         const { env, adb } = await seedWorld();

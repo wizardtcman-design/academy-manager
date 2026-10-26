@@ -17,8 +17,8 @@ android {
     applicationId = "com.aistudio.academymanager.c7kd"
     minSdk = 24
     targetSdk = 36
-    versionCode = 22
-    versionName = "2.8.0"
+    versionCode = 23
+    versionName = "2.8.1"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }

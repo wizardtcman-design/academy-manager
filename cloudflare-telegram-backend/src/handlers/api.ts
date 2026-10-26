@@ -598,9 +598,15 @@ export async function handleApiRequest(
             // to forge the day marker (silently cancelling today's automatic
             // backup) or the run lock / resume state. All-or-nothing: the whole
             // push is refused when ANY key is reserved.
+            // Provider architecture: the SMS panel config (sms_provider +
+            // <providerId>_<field> keys, e.g. smsir_api_key) is worker-owned
+            // manager-API config — a settings push must never be able to
+            // silently swap the active panel or overwrite its credentials.
             const entries = Object.entries(body);
-            if (entries.some(([k]) => k.startsWith('backup:'))) {
-                return jsonResponse({ success: false, message: 'کلید «backup:» برای سیستم پشتیبان‌گیری رزرو شده است.' }, 400);
+            const RESERVED_KEY = /^(backup:|sms_provider$|smsir_|rysesms_)/;
+            const reserved = entries.find(([k]) => RESERVED_KEY.test(k));
+            if (reserved) {
+                return jsonResponse({ success: false, message: `کلید «${reserved[0]}» مدیریت‌شدۀ سرور است و از طریق همگام‌سازی تنظیمات قابل‌نوشتن نیست (پنل پیامکی/پشتیبان‌گیری).` }, 400);
             }
             for (const [k, v] of entries) {
                 await db.setSetting(k, String(v));

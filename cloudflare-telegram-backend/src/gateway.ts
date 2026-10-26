@@ -63,8 +63,39 @@ export const GATEWAY_DISABLED_REASON = 'پرداخت آنلاین در این ن
 
 export type TxnRow = PaymentTxnRecord;
 
+/**
+ * Standard payment-provider error codes (mirrors the SMS taxonomy style):
+ * adapters map their provider's specific responses onto these so callers
+ * never see provider internals.
+ */
+export type PaymentErrorCode =
+    | 'OK'
+    | 'UNAUTHENTICATED'
+    | 'NO_CREDIT'
+    | 'INVALID_REQUEST'
+    | 'NOT_FOUND'
+    | 'AMOUNT_MISMATCH'
+    | 'RATE_LIMITED'
+    | 'PROVIDER_ERROR'
+    | 'UNEXPECTED_RESPONSE'
+    | 'NETWORK'
+    | 'TIMEOUT'
+    | 'NOT_SUPPORTED';
+
+/** What a gateway adapter officially supports (beyond link + verify). */
+export interface GatewayCapabilities {
+    /** The provider documents a transaction-status endpoint. */
+    statusCheck: boolean;
+    /** The provider documents cancelling an unpaid order. */
+    cancel: boolean;
+    /** The provider documents refunds. */
+    refund: boolean;
+}
+
 export interface GatewayProvider {
     id: string;
+    /** Optional — when absent only createPaymentLink + verifyPayment are used. */
+    capabilities?: GatewayCapabilities;
     /** Provider-specific hosted checkout URL for this order. */
     createPaymentLink(txn: TxnRow, callbackUrl: string): Promise<{ redirectUrl: string }>;
     /**
@@ -75,19 +106,41 @@ export interface GatewayProvider {
         | { ok: true; paidAmount: number; ref: string; raw: string }
         | { ok: false; error: string; status?: 'FAILED' | 'CANCELED' | 'PENDING' }
     >;
+    /** Contract capability — ask the provider for ONE transaction's status. */
+    getPaymentStatus?(txn: TxnRow): Promise<
+        | { ok: true; status: 'PENDING' | 'PAID' | 'FAILED' | 'CANCELED' | 'EXPIRED'; ref: string; raw: string }
+        | { ok: false; code: PaymentErrorCode; error: string }
+    >;
+    /** Contract capability — cancel an UNPAID order (never a paid one). */
+    cancelPayment?(txn: TxnRow): Promise<{ ok: true; raw: string } | { ok: false; code: PaymentErrorCode; error: string }>;
+    /** Contract capability — refund part/all of a PAID transaction. */
+    refundPayment?(txn: TxnRow, amount: number): Promise<{ ok: true; ref: string; raw: string } | { ok: false; code: PaymentErrorCode; error: string }>;
 }
 
 // No provider is wired by default. Adding one later touches ONLY this map
 // (via registerProviderFactory) plus the manager's settings — the link,
 // ledger, verification contract, installment update and receipt pipeline
-// below are already complete. Nothing is activated without both: a factory
-// registered in code AND gateway_provider/gateway_merchant_id/gateway_api_key
-// configured by the manager.
+// below are already complete. Nothing is activated without ALL THREE: a
+// factory registered in code, the deploy-time flag, and
+// gateway_provider/gateway_merchant_id/gateway_api_key configured by the
+// manager (see docs/PROVIDER_DEVELOPMENT.md).
 const PROVIDER_FACTORIES: Record<string, ((merchantId: string, apiKey: string) => GatewayProvider) | undefined> = {};
 
 /** The single extension point for connecting a real gateway adapter. */
 export function registerProviderFactory(id: string, factory: (merchantId: string, apiKey: string) => GatewayProvider): void {
-    PROVIDER_FACTORIES[id.toLowerCase()] = factory;
+    const key = String(id || '').trim().toLowerCase();
+    if (!key || !/^[a-z0-9_-]{2,32}$/.test(key)) {
+        throw new Error('invalid gateway provider id');
+    }
+    if (typeof factory !== 'function') {
+        throw new Error('gateway provider factory must be a function');
+    }
+    PROVIDER_FACTORIES[key] = factory;
+}
+
+/** Test/audit introspection: whether a factory is registered (never the factory itself). */
+export function hasProviderFactory(id: string): boolean {
+    return Boolean(PROVIDER_FACTORIES[String(id || '').trim().toLowerCase()]);
 }
 
 export async function resolveProvider(env: Env, db: AcademyDatabase): Promise<{ provider: GatewayProvider | null; reason: string }> {
