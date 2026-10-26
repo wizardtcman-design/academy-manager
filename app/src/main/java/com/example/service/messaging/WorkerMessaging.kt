@@ -5,7 +5,7 @@ import org.json.JSONObject
 
 /**
  * Stage 6 — the app-side model of the WORKER's messaging settings
- * (`/api/messaging/*`). JVM-pure so it is unit-testable without Android.
+ * (`/api/messaging/...`). JVM-pure so it is unit-testable without Android.
  *
  * The worker is the source of truth for reminder/receipt/welcome texts and
  * per-event auto/manual/channel policy. This file only parses/serializes:

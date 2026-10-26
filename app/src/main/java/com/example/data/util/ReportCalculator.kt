@@ -29,7 +29,7 @@ import java.util.Locale
 object ReportCalculator {
 
     /** Iran has had no DST since 2022; the offset is a fixed +03:30. */
-    private const val TEHRAN_OFFSET_MS = 3.5 * 60 * 60 * 1000
+    private const val TEHRAN_OFFSET_MS = 12_600_000L // fixed +03:30 (no DST since 2022)
 
     data class NamedAmount(val name: String, val amount: Long, val count: Int = 0)
 

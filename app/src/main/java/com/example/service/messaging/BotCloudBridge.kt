@@ -10,6 +10,7 @@ import com.example.data.repository.AcademyRepository
 import com.example.data.util.FinanceUtil
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient

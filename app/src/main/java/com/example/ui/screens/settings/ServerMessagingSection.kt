@@ -61,7 +61,7 @@ import kotlinx.coroutines.launch
 /**
  * Stage 6 — «تنظیمات پیام‌رسانی سرور (روبات)»: the third tab of the
  * messages settings. Everything here talks to the WORKER
- * (/api/messaging/*) with the academy's own credentials; the worker is
+ * (/api/messaging/...) with the academy's own credentials; the worker is
  * the single source of truth for reminder/receipt/welcome texts and the
  * per-event auto/manual/channel policy.
  *
