@@ -228,9 +228,9 @@ describe('/start secure identification (one-time token)', () => {
         const token = await mintLink('stu-a1');
         const res = await webhook(env, ACADEMY_A, `/start ${token}`, 111000002);
         expect(res.status).toBe(200);
-        const row = db.get('SELECT telegram_chat_id, telegram_link_hash FROM students WHERE id = ?', 'stu-a1') as any;
+        const row = db.get('SELECT telegram_chat_id, telegram_link_hash, telegram_link_used FROM students WHERE id = ?', 'stu-a1') as any;
         expect(row.telegram_chat_id).toBe('111000002');
-        expect(row.telegram_link_hash).toBe(''); // single-use: burned
+        expect(row.telegram_link_used).toBe(1); // single-use: burned via the used flag
         const doc = tgCalls.find((c) => c.kind === 'sendMessage' && c.chatId === '111000002');
         expect(doc?.text).toContain('stu-a1'.length ? 'اتصال حساب تلگرام' : '');
     });
@@ -245,6 +245,11 @@ describe('/start secure identification (one-time token)', () => {
         await webhook(env, ACADEMY_A, `/start ${token}`, 111000099);
         const hijack = db.get('SELECT telegram_chat_id FROM students WHERE id = ?', 'stu-a2') as any;
         expect(hijack.telegram_chat_id).toBe('111000003');
+        // the replay gets the honest "already used" answer, never a fake success
+        const last = tgCalls[tgCalls.length - 1];
+        expect(last.text).toContain('قبلاً استفاده شده');
+        const usedLog = db.get(`SELECT status FROM message_logs WHERE student_id = 'stu-a2' AND message_type = 'START_LINK_USED'`) as any;
+        expect(usedLog?.status).toBe('FAILED');
     });
 
     it("another academy's token is refused (tenant scoping)", async () => {

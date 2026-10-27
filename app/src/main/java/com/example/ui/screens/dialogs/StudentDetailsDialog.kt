@@ -44,8 +44,9 @@ import androidx.compose.material.icons.filled.Payment
 import androidx.compose.material.icons.filled.Payments
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Phone
-import androidx.compose.material.icons.filled.Receipt
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Send
+import androidx.compose.material.icons.filled.Receipt
 import androidx.compose.material.icons.filled.Undo
 import androidx.compose.ui.unit.sp
 import androidx.compose.material3.FilterChip
@@ -125,7 +126,9 @@ fun StudentDetailsDialog(
     onRefreshContract: (Enrollment) -> Unit = {},
     onRevokeContract: (Enrollment) -> Unit = {},
     onShareContractFile: (com.example.data.model.Contract, Boolean) -> Unit = { _, _ -> },
-    onOpenSignPage: (com.example.data.model.Contract) -> Unit = {}
+    onOpenSignPage: (com.example.data.model.Contract) -> Unit = {},
+    onRegenerateTelegramLink: (Student) -> Unit = {},
+    onResendSignLink: (Student) -> Unit = {}
 ) {
     val context = LocalContext.current
     var selectedTabIndex by remember { mutableIntStateOf(0) }
@@ -350,7 +353,9 @@ fun StudentDetailsDialog(
                     )
                     2 -> TelegramAndMessagesTab(
                         student = student,
-                        telegramLink = telegramLink
+                        telegramLink = telegramLink,
+                        onRegenerateTelegramLink = onRegenerateTelegramLink,
+                        onResendSignLink = onResendSignLink
                     )
                 }
             }
@@ -376,7 +381,9 @@ private fun InstallmentsTab(
     onRefreshContract: (Enrollment) -> Unit = {},
     onRevokeContract: (Enrollment) -> Unit = {},
     onShareContractFile: (com.example.data.model.Contract, Boolean) -> Unit = { _, _ -> },
-    onOpenSignPage: (com.example.data.model.Contract) -> Unit = {}
+    onOpenSignPage: (com.example.data.model.Contract) -> Unit = {},
+    onRegenerateTelegramLink: (Student) -> Unit = {},
+    onResendSignLink: (Student) -> Unit = {}
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -900,7 +907,9 @@ private fun PaymentsTab(
 @Composable
 private fun TelegramAndMessagesTab(
     student: Student,
-    telegramLink: String
+    telegramLink: String,
+    onRegenerateTelegramLink: (Student) -> Unit,
+    onResendSignLink: (Student) -> Unit
 ) {
     val context = LocalContext.current
 
@@ -952,6 +961,34 @@ private fun TelegramAndMessagesTab(
                         Icon(Icons.Default.ContentCopy, contentDescription = null, modifier = Modifier.size(16.dp))
                         Spacer(modifier = Modifier.width(6.dp))
                         Text("کپی لینک اختصاصی استارت تلگرام", style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant, thickness = 0.5.dp)
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    text = "ابزار اضطراری مدیر: لینک فعلی را باطل و یک لینک یک‌بارمصرف جدید می‌سازد؛ لینک قبلی دیگر کار نمی‌کند.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(modifier = Modifier.height(6.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
+                    OutlinedButton(
+                        onClick = { onRegenerateTelegramLink(student) },
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("تولید لینک جدید", style = MaterialTheme.typography.labelMedium)
+                    }
+                    OutlinedButton(
+                        onClick = { onResendSignLink(student) },
+                        modifier = Modifier.weight(1f)
+                    ) {
+                        Icon(Icons.Default.Send, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("ارسال لینک امضا", style = MaterialTheme.typography.labelMedium)
                     }
                 }
             }
@@ -1111,8 +1148,24 @@ private fun ContractStatusBlock(
                     }
                 }
                 hasLink -> {
-                    Button(onClick = onOpenSign, modifier = Modifier.weight(1f), contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 6.dp, vertical = 2.dp)) {
+                    val context2 = LocalContext.current
+                    Button(
+                        onClick = onOpenSign,
+                        enabled = com.example.service.messaging.TelegramStudentLink.isValidSignUrl(contract?.signUrl.orEmpty()),
+                        modifier = Modifier.weight(1f),
+                        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 6.dp, vertical = 2.dp)
+                    ) {
                         Text("باز کردن صفحه امضا", fontSize = 11.sp)
+                    }
+                    OutlinedButton(
+                        onClick = {
+                            val clipboard = context2.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                            clipboard.setPrimaryClip(ClipData.newPlainText("لینک امضای قرارداد", contract?.signUrl.orEmpty()))
+                            Toast.makeText(context2, "لینک امضا کپی شد؛ برای هنرجو بفرستید.", Toast.LENGTH_SHORT).show()
+                        },
+                        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 6.dp, vertical = 2.dp)
+                    ) {
+                        Text("کپی لینک", fontSize = 11.sp)
                     }
                     OutlinedButton(onClick = onRefresh, contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 6.dp, vertical = 2.dp)) {
                         Text("بروزرسانی", fontSize = 11.sp)

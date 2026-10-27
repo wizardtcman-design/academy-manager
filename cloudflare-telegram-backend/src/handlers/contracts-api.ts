@@ -172,6 +172,10 @@ export async function handleContractsApi(request: Request, env: Env, url: URL): 
         delete publicInfo.phone;
         delete publicInfo.nationalCode;
         delete publicInfo.national_code;
+        // The app bakes the academy seal + manager signature INTO the original
+        // PDF when those images are configured. The flag tells the signing
+        // layer NOT to draw them a second time on the receipt box.
+        if (meta.sealBakedInPdf === true) publicInfo.sealBakedInPdf = true;
 
         // Optional academy seal + manager signature, drawn on the signed PDF.
         const storeImage = async (part: any, slug: string) => {
@@ -230,6 +234,15 @@ export async function handleContractsApi(request: Request, env: Env, url: URL): 
             // separate row so the SAME link can be re-sent before signing.
             await store.setAppToken(academyId, res.row.id, await sha256Hex(appToken));
             await store.storePendingToken(academyId, res.row.id, appToken);
+        }
+        if (res.created || (res.row.status !== 'SIGNED' && res.row.status !== 'REVOKED')) {
+            // A fresh/rotated link invalidates the auto-send ledger entry: the
+            // next /start connect may deliver the NEW link once.
+            try {
+                await env.DB.prepare(
+                    `DELETE FROM contract_deliveries WHERE academy_id = ? AND contract_id = ? AND kind = 'SIGN_LINK_TELEGRAM'`
+                ).bind(academyId, res.row.id).run();
+            } catch (_) { /* delivery ledger is best-effort */ }
         }
         // Never trust a client-built link: hand back the server's own URL.
         const keptToken = await store.pendingToken(academyId, res.row.id, res.row.token_hash);
@@ -355,11 +368,12 @@ export async function handleContractsApi(request: Request, env: Env, url: URL): 
             }
         }
 
-        // Fresh one-time token (rotates any previous link of this student).
+        // Fresh one-time token (rotates any previous link of this student;
+        // the rotation also re-arms the used flag so the new link is claimable).
         const token = randomToken(24);
         const expiresAt = Date.now() + LINK_TOKEN_TTL_DAYS * 86400000;
         await env.DB!.prepare(
-            'UPDATE students SET telegram_link_hash = ?, telegram_link_expires = ?, updated_at_epoch = ? WHERE id = ? AND academy_id = ?'
+            'UPDATE students SET telegram_link_hash = ?, telegram_link_expires = ?, telegram_link_used = 0, updated_at_epoch = ? WHERE id = ? AND academy_id = ?'
         ).bind(await sha256Hex(token), expiresAt, Date.now(), studentId, academyId).run();
 
         const botLink = telegramDeepLink(botUsername, token);
@@ -510,8 +524,14 @@ export async function handleContractsApi(request: Request, env: Env, url: URL): 
 
     if (request.method === 'GET' && !match[2]) {
         const base = publicBase(request, env);
-        const res = ok('وضعیت قرارداد', rowToApi(row, base, row.status === 'ISSUED' || row.status === 'OPENED' ? 'link-in-app' : undefined));
-        return res;
+        // The CURRENT pending sign link (same stable token) travels with the
+        // status so the app's refresh can heal a stale cached URL. Never for
+        // signed/revoked/expired rows.
+        const signToken = (row.status === 'ISSUED' || row.status === 'OPENED') &&
+            (!row.expires_at_epoch || row.expires_at_epoch > Date.now())
+            ? (await store.pendingToken(academyId, row.id, row.token_hash) || undefined)
+            : undefined;
+        return ok('وضعیت قرارداد', rowToApi(row, base, signToken));
     }
 
     if (request.method === 'POST' && match[2] === '/revoke') {

@@ -143,6 +143,11 @@ export class D1Shim {
         return this.db.prepare(sql).get(...(params as never[])) as Row | undefined;
     }
 
+    /** Direct multi-row read for test assertions (event ledgers, ...). */
+    all(sql: string, ...params: unknown[]): Row[] {
+        return this.db.prepare(sql).all(...(params as never[])) as Row[];
+    }
+
     run(sql: string, ...params: unknown[]): void {
         this.db.prepare(sql).run(...(params as never[]));
     }

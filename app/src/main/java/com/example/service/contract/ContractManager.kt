@@ -8,6 +8,7 @@ import com.example.data.model.Enrollment
 import com.example.data.util.PdfDocumentHelper
 import com.example.data.util.PersianDateUtil
 import com.example.data.util.SecureToken
+import com.example.service.messaging.TelegramStudentLink
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -211,19 +212,43 @@ class ContractManager(private val context: Context) {
         IssueResult(true, updated, "لینک امضا آماده است.")
     }
 
-    /** Pulls the remote status; when signed, downloads the final PDF once. */
-    suspend fun refresh(enrollment: Enrollment): Contract? = withContext(Dispatchers.IO) {
-        val contract = dao.getByEnrollment(enrollment.id) ?: return@withContext null
-        if (contract.remoteId.isBlank()) return@withContext contract
+    /** Outcome of a manual refresh: what happened, why it did not, and the
+     *  fresh contract — so the UI can show a REAL answer instead of silence. */
+    data class RefreshResult(
+        val ok: Boolean,
+        val contract: Contract?,
+        val message: String,
+        val healedLink: Boolean = false
+    )
+
+    /**
+     * Pulls the remote status; when signed, downloads the final PDF once.
+     * Mission phase-1: the server now returns the CURRENT pending sign link
+     * with the status — a stale cached URL (rotated/re-issued on the server)
+     * is healed here automatically, so "بروزرسانی" actually fixes dead links.
+     */
+    suspend fun refresh(enrollment: Enrollment): RefreshResult = withContext(Dispatchers.IO) {
+        val contract = dao.getByEnrollment(enrollment.id)
+            ?: return@withContext RefreshResult(false, null, "قراردادی برای این ثبت‌نام وجود ندارد؛ ابتدا لینک امضا را صادر کنید.")
+        if (contract.remoteId.isBlank()) {
+            return@withContext RefreshResult(false, contract, "این قرارداد هنوز روی سرور ثبت نشده؛ «صدور لینک جدید» را بزنید.")
+        }
         // A signed contract is final, but its final file may still be missing
         // (app closed mid-download). Fetch it once more instead of giving up.
         if (contract.isSigned) {
             val existing = contract.localSignedPdfPath.takeIf { it.isNotBlank() }?.let(::File)
-            if (existing != null && existing.exists() && existing.length() > 0) return@withContext contract
+            if (existing != null && existing.exists() && existing.length() > 0) {
+                return@withContext RefreshResult(true, contract, "قرارداد امضا شده و فایل نهایی روی همین گوشی ذخیره است.")
+            }
         }
         val client = ContractCloudClient.fromSettings(db.settingsDao().getSettingsDirect())
+        if (!client.isConfigured()) {
+            return@withContext RefreshResult(false, contract, "برای بروزرسانی، آدرس سرور Cloudflare و کلید API را در تنظیمات وارد کنید.")
+        }
         val res = client.getContract(contract.remoteId)
-        if (!res.ok || res.data == null) return@withContext contract
+        if (!res.ok || res.data == null) {
+            return@withContext RefreshResult(false, contract, "بروزرسانی ناموفق بود: ${res.error.ifBlank { "ارتباط با سرور برقرار نشد" }}")
+        }
 
         val data = res.data
         val remoteStatus = data.optString("status", contract.status)
@@ -231,6 +256,19 @@ class ContractManager(private val context: Context) {
             openedAtEpoch = if (data.optLong("openedAtEpoch", 0L) > 0) data.optLong("openedAtEpoch") else contract.openedAtEpoch,
             updatedAt = System.currentTimeMillis()
         )
+        // Heal a stale cached link with the server's CURRENT pending one.
+        var healed = false
+        val remoteSignUrl = data.optString("signUrl")
+        if (remoteStatus == "ISSUED" || remoteStatus == "OPENED") {
+            if (remoteSignUrl.isNotBlank() && TelegramStudentLink.isValidSignUrl(remoteSignUrl) && remoteSignUrl != updated.signUrl) {
+                updated = updated.copy(
+                    signUrl = remoteSignUrl,
+                    publicToken = remoteSignUrl.substringAfter("s=", "").takeIf { it.length >= 20 } ?: updated.publicToken,
+                    lastError = ""
+                )
+                healed = true
+            }
+        }
         if (remoteStatus == "SIGNED") {
             val target = File(context.filesDir, "contracts_signed/Contract_${contract.id.take(8)}.pdf")
             val dl = client.downloadContractForStudent(
@@ -255,7 +293,11 @@ class ContractManager(private val context: Context) {
             updated = updated.copy(status = "EXPIRED")
         }
         dao.updateContract(updated)
-        updated
+        val statusLine = when {
+            updated.isSigned -> "قرارداد امضا شد و فایل نهایی ذخیره شد."
+            else -> "وضعیت قرارداد: ${updated.statusFa}"
+        }
+        RefreshResult(true, updated, if (healed) "$statusLine (لینک امضا به‌روز شد)." else statusLine, healed)
     }
 
     /** The freshly checked file, or an earlier copy that is still complete. */

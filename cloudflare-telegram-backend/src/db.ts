@@ -187,9 +187,19 @@ export class AcademyDatabase {
             created_at_epoch: existing?.created_at_epoch ?? now,
             updated_at_epoch: now
         };
+        // A freshly rotated link (new hash pushed by the app or a manager
+        // re-issue) is UNUSED again: the old link died, the new one must be
+        // claimable exactly once.
+        const linkWasRotated = incomingLinkHash !== '' && incomingLinkHash !== ((existing as any)?.telegram_link_hash || '');
 
         if (this.db) {
             try {
+                // Migration 0012 may not be applied yet (deploy-order safety):
+                // the used-flag re-arm clause is only emitted when the column exists.
+                const usedCol = await this.hasLinkUsedColumn();
+                const usedClause = usedCol
+                    ? ', telegram_link_used = CASE WHEN ? = 1 THEN 0 ELSE students.telegram_link_used END'
+                    : '';
                 await this.db.prepare(`
                     INSERT INTO students (
                         id, academy_id, student_code, full_name, phone, national_code,
@@ -208,13 +218,14 @@ export class AcademyDatabase {
                         linked_at_epoch = excluded.linked_at_epoch,
                         updated_at_epoch = excluded.updated_at_epoch,
                         telegram_link_hash = excluded.telegram_link_hash,
-                        telegram_link_expires = excluded.telegram_link_expires
+                        telegram_link_expires = excluded.telegram_link_expires${usedClause}
                     WHERE academy_id = excluded.academy_id
                 `).bind(
                     record.id, this.academyId, record.student_code, record.full_name, record.phone, record.national_code,
                     record.telegram_chat_id, record.telegram_username, record.is_telegram_connected,
                     record.linked_at_epoch, record.created_at_epoch, record.updated_at_epoch,
-                    storedLinkHash, storedLinkExpires
+                    storedLinkHash, storedLinkExpires,
+                    ...(usedCol ? [linkWasRotated ? 1 : 0] : [])
                 ).run();
             } catch (e) {
                 // Surfaced to the caller (sync API) so a failed row is reported
@@ -304,12 +315,14 @@ export class AcademyDatabase {
         }
     }
 
-    /** Stores (or rotates) the /start link token of one student (hash + expiry). */
+    /** Stores (or rotates) the /start link token of one student (hash + expiry).
+     *  A rotation makes the link claimable again (used = 0): the previous link
+     *  died with the old hash, the new one must work exactly once. */
     async setTelegramLinkHash(studentId: string, linkHash: string, expiresAtEpoch: number): Promise<void> {
         if (!this.db) return;
         try {
             await this.db.prepare(
-                'UPDATE students SET telegram_link_hash = ?, telegram_link_expires = ?, updated_at_epoch = ? WHERE id = ? AND academy_id = ?'
+                'UPDATE students SET telegram_link_hash = ?, telegram_link_expires = ?, telegram_link_used = 0, updated_at_epoch = ? WHERE id = ? AND academy_id = ?'
             ).bind((linkHash || '').trim().toLowerCase(), expiresAtEpoch || 0, Date.now(), studentId, this.academyId).run();
         } catch (e) {
             console.warn('[DB] D1 setTelegramLinkHash failed:', e);
@@ -326,6 +339,99 @@ export class AcademyDatabase {
         } catch (e) {
             console.warn('[DB] D1 consumeTelegramLinkToken failed:', e);
         }
+    }
+
+    /**
+     * Migration-0012 graceful degradation: a database that has not received
+     * the telegram_link_used column yet (deploy-order safety) must keep
+     * working — the code falls back to the legacy non-atomic claim until the
+     * migration is applied. The probe result is cached per instance.
+     */
+    private linkUsedColumn: boolean | null = null;
+    private async hasLinkUsedColumn(): Promise<boolean> {
+        if (this.linkUsedColumn !== null) return this.linkUsedColumn;
+        if (!this.db) {
+            this.linkUsedColumn = false;
+            return false;
+        }
+        try {
+            await this.db.prepare('SELECT telegram_link_used FROM students LIMIT 1').first();
+            this.linkUsedColumn = true;
+        } catch {
+            this.linkUsedColumn = false;
+        }
+        return this.linkUsedColumn;
+    }
+
+    /**
+     * Atomic one-time link claim (migration 0012): binds the chat AND burns the
+     * token in a single conditional UPDATE. Exactly one caller can ever see
+     * changes === 1, so two accounts racing on the same /start link cannot both
+     * bind — the loser is told the link was just used by someone else.
+     * The hash stays on the row (with used=1) purely so a replay can be
+     * reported as "already used"; a used hash can never bind again.
+     * On a database without migration 0012 the legacy two-step path runs so
+     * connecting keeps working until the migration lands.
+     */
+    async claimTelegramLink(studentId: string, chatId: string, username: string, linkHash: string): Promise<boolean> {
+        const now = Date.now();
+        const hash = (linkHash || '').trim().toLowerCase();
+        if (!hash) return false;
+
+        if (this.db) {
+            try {
+                if (!(await this.hasLinkUsedColumn())) {
+                    // Legacy schema: bind + burn as two statements (pre-0012 semantics).
+                    await this.linkTelegramChat(studentId, chatId, username);
+                    await this.consumeTelegramLinkToken(studentId);
+                    return true;
+                }
+                const res = await this.db.prepare(`
+                    UPDATE students SET
+                        telegram_chat_id = ?,
+                        telegram_username = ?,
+                        is_telegram_connected = 1,
+                        linked_at_epoch = CASE WHEN linked_at_epoch > 0 THEN linked_at_epoch ELSE ? END,
+                        telegram_link_used = 1,
+                        telegram_link_expires = 0,
+                        updated_at_epoch = ?
+                    WHERE id = ? AND academy_id = ?
+                      AND telegram_link_hash = ?
+                      AND telegram_link_used = 0
+                      AND (telegram_link_expires = 0 OR telegram_link_expires > ?)
+                `).bind(chatId, username, now, now, studentId, this.academyId, hash, now).run();
+                const changes = Number((res as any)?.meta?.changes ?? (res as any)?.changes ?? 0);
+                if (changes !== 1) return false;
+            } catch (e) {
+                console.warn('[DB] D1 claimTelegramLink failed:', e);
+                return false;
+            }
+        }
+
+        const student = await this.getStudentById(studentId, this.academyId);
+        if (!student) return false;
+        student.telegram_chat_id = chatId;
+        student.telegram_username = username;
+        student.is_telegram_connected = 1;
+        student.updated_at_epoch = now;
+        if (!this.strict) {
+            memoryStudents.set(studentId, student);
+            memoryChatMap.set(chatId, studentId);
+        }
+        if (this.kv) {
+            try {
+                await this.kv.put(`student:${this.academyId}:${studentId}`, JSON.stringify(student), { expirationTtl: 3600 });
+                await this.kv.put(`chat:${this.academyId}:${chatId}`, studentId, { expirationTtl: 3600 });
+            } catch (_) {}
+        }
+        return true;
+    }
+
+    /** True when the link token of this student row was already consumed once. */
+    isLinkUsed(student: StudentRecord | null | undefined): boolean {
+        // Pre-0012 databases carry no used flag: nothing is ever "used" there.
+        if (this.linkUsedColumn === false) return false;
+        return Number((student as any)?.telegram_link_used || 0) === 1;
     }
 
     // ============================================================

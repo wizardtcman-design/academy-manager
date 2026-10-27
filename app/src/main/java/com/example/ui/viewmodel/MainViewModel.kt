@@ -810,14 +810,86 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun refreshContract(enrollment: com.example.data.model.Enrollment) {
         viewModelScope.launch {
-            val c = contractManager.refresh(enrollment)
-            showMessage(
-                when {
-                    c == null -> "قراردادی برای این ثبت‌نام پیدا نشد."
-                    c.isSigned -> "قرارداد امضا شده و فایل نهایی ذخیره شد."
-                    else -> "وضعیت قرارداد: ${c.statusFa}"
+            val res = contractManager.refresh(enrollment)
+            showMessage(res.message)
+        }
+    }
+
+    /**
+     * Emergency manual tool (manager-only): rotates the student's one-time
+     * /start link. The previous link dies immediately; the new hash is pushed
+     * to the Worker right away in cloud mode, so the fresh link works NOW.
+     */
+    fun regenerateStudentTelegramLink(student: Student, onResult: (Boolean, String) -> Unit = { _, _ -> }) {
+        viewModelScope.launch {
+            academyRepository.regenerateStudentTelegramLink(student).fold(
+                onSuccess = { updated ->
+                    val s = settings.value
+                    var note = ""
+                    if (s?.telegramUseWorker == true && s.telegramWorkerUrl.isNotBlank() && s.telegramApiSecret.isNotBlank()) {
+                        val (ok, err) = messagingManager.telegramProvider.syncStudentToCloudflareWorker(
+                            s.telegramWorkerUrl, s.telegramApiSecret, updated
+                        )
+                        note = if (ok) " و روی سرور ثبت شد." else " (همگام‌سازی سرور ناموفق: $err)"
+                    }
+                    showMessage("لینک اختصاصی جدید برای ${updated.fullName} ساخته شد$note")
+                    onResult(true, "")
+                },
+                onFailure = { e ->
+                    val msg = e.message ?: "خطا در ساخت لینک جدید"
+                    showMessage(msg)
+                    onResult(false, msg)
                 }
             )
+        }
+    }
+
+    /**
+     * Manual resend (manager-only, secondary to the automatic flow): sends the
+     * CURRENT sign link of every pending contract to the student's connected
+     * chat — the same stable token, never a second divergent one.
+     */
+    fun resendContractSignLink(student: Student, onResult: (Boolean, String) -> Unit = { _, _ -> }) {
+        viewModelScope.launch {
+            val pending = academyRepository.getContractsAwaitingSignature(student.id)
+            if (pending.isEmpty()) {
+                showMessage("قرارداد در انتظار امضایی با لینک معتبر برای این هنرجو نیست.")
+                onResult(false, "empty")
+                return@launch
+            }
+            if (!student.isTelegramConnected || student.telegramChatId.isBlank()) {
+                showMessage("این هنرجو هنوز تلگرام را متصل نکرده است؛ ابتدا لینک اتصال را برایش بفرستید.")
+                onResult(false, "not-connected")
+                return@launch
+            }
+            val s = settings.value
+            var sent = 0
+            var lastError = ""
+            for (contract in pending) {
+                val text = buildString {
+                    append("📝 قرارداد دوره شما آمادهٔ امضاست.\n")
+                    append("با لینک امن زیر صفحهٔ امضا را باز کنید؛ شماره تماس و کد ملی را وارد کنید و با انگشت امضا کنید:\n\n")
+                    append(contract.signUrl)
+                }
+                try {
+                    val (result, _) = messagingManager.sendMessage(student, text, "AUTO")
+                    if (result is com.example.service.messaging.MessageSendResult.Success ||
+                        result is com.example.service.messaging.MessageSendResult.ManualActionRequired) {
+                        sent++
+                    } else if (result is com.example.service.messaging.MessageSendResult.Failed) {
+                        lastError = result.error
+                    }
+                } catch (e: Exception) {
+                    lastError = e.message ?: "ارسال ناموفق"
+                }
+            }
+            if (sent > 0) {
+                showMessage("لینک امضا برای ${student.fullName} ارسال شد (${sent} قرارداد).")
+                onResult(true, "")
+            } else {
+                showMessage("ارسال لینک امضا ناموفق بود: ${lastError.ifBlank { "کانال ارسال در دسترس نیست" }}")
+                onResult(false, lastError)
+            }
         }
     }
 

@@ -780,27 +780,30 @@ class TelegramProvider(
                                 sendMessageToChatInternal(botToken, chatId, greeting)
                             }
                         } else {
-                            // Real student ID received from Telegram Start deep link
-                            val student = academyRepository.getStudentById(studentIdParam)
-                                ?: academyRepository.getStudentByTelegramToken(studentIdParam)
+                            // Mission phase-1 hardening: ONLY the one-time link
+                            // token is accepted (20-64 url-safe chars) — a raw
+                            // student id is never a link, exactly like the Worker.
+                            val tokenFormatOk = studentIdParam.matches(Regex("^[A-Za-z0-9_-]{20,64}$"))
+                            val student = if (tokenFormatOk) academyRepository.getStudentByTelegramToken(studentIdParam) else null
 
                             if (student == null) {
-                                // Student ID not found in Room
+                                // Invalid, malformed or already-consumed token:
+                                // one neutral answer for every caller (no id echo).
                                 failedConnections++
-                                val errorMsg = "❌ هنرجوی گرامی، شناسه ارسالی (<code>$studentIdParam</code>) در سامانه آموزشگاه یافت نشد.\nلطفاً از لینک اختصاصی معتبر استفاده کنید یا با مدیریت آموزشگاه تماس بگیرید."
+                                val errorMsg = "🔒 برای اتصال حساب از لینک اختصاصی شخصی استفاده کنید که آموزشگاه برای شما ارسال کرده است.\nهر لینک فقط یک بار و فقط برای هنرجوی خودش کار می‌کند؛ اگر لینک را قبلاً استفاده کرده‌اید، از مدیریت آموزشگاه لینک جدید بگیرید."
                                 sendMessageToChatInternal(botToken, chatId, errorMsg, parseMode = "HTML")
 
                                 academyRepository.logCustomAudit(
                                     AuditLog(
                                         entityType = "STUDENT",
-                                        entityId = studentIdParam,
+                                        entityId = "",
                                         actionType = "TELEGRAM_LINK_FAILED",
                                         newValue = "Chat ID: $chatId, Username: @$username",
-                                        reason = "شناسه هنرجو در دیتابیس یافت نشد",
+                                        reason = "لینک نامعتبر، با فرمت نادرست یا قبلاً مصرف‌شده",
                                         changedBy = "ربات تلگرام",
                                         timestampShamsi = PersianDateUtil.currentShamsiString(),
                                         timestampEpoch = System.currentTimeMillis(),
-                                        description = "تلاش ناموفق اتصال تلگرام: شناسه $studentIdParam در دیتابیس یافت نشد (شناسه چت تلگرام: $chatId, نام: $firstName)"
+                                        description = "تلاش ناموفق اتصال تلگرام: پارامتر /start یک توکن معتبر یک‌بارمصرف نبود (شناسه چت تلگرام: $chatId, نام: $firstName)"
                                     )
                                 )
                             } else {
@@ -850,6 +853,14 @@ class TelegramProvider(
                                         updatedAt = now
                                     )
                                     academyRepository.updateStudent(updatedStudent)
+                                    // One-time semantics (mission phase-1): the
+                                    // consumed token dies RIGHT HERE — a replay of
+                                    // this /start link can never bind anyone again.
+                                    val burnedStudent = updatedStudent.copy(
+                                        telegramLinkToken = com.example.data.util.SecureToken.newToken(),
+                                        updatedAt = System.currentTimeMillis()
+                                    )
+                                    academyRepository.updateStudent(burnedStudent)
                                     newConnections++
 
                                     academyRepository.logCustomAudit(
@@ -885,6 +896,53 @@ class TelegramProvider(
                                         parseMode = "HTML",
                                         replyMarkup = getStudentMenuReplyMarkupJson()
                                     )
+
+                                    // Mission phase-1: right after a SUCCESSFUL
+                                    // fresh connect, the student's own chat gets the
+                                    // current sign link of every contract still
+                                    // awaiting their signature. This runs once per
+                                    // link (the token was just burned), so repeated
+                                    // /start taps can never spam duplicate messages
+                                    // and no new token is ever minted here.
+                                    try {
+                                        val awaiting = academyRepository.getContractsAwaitingSignature(student.id)
+                                        for (contract in awaiting) {
+                                            val signText = buildString {
+                                                append("\ud83d\udcdd قرارداد دوره شما آماده امضاست.\n")
+                                                append("با لینک امن زیر صفحه امضا را باز کنید؛ شماره تماس و کد ملی را وارد کنید و با انگشت امضا کنید.\n")
+                                                append("نسخه نهایی بلافاصله بعد از امضا خودکار همین‌جا ارسال می‌شود.\n\n")
+                                                append(contract.signUrl)
+                                            }
+                                            sendMessageToChatInternal(botToken, chatId, signText)
+                                            academyRepository.logCustomAudit(
+                                                AuditLog(
+                                                    entityType = "CONTRACT",
+                                                    entityId = contract.id,
+                                                    actionType = "CONTRACT_SIGN_LINK_SENT",
+                                                    newValue = "Chat ID: $chatId",
+                                                    reason = "ارسال خودکار لینک امضا بعد از اتصال موفق تلگرام",
+                                                    changedBy = "ربات تلگرام",
+                                                    timestampShamsi = PersianDateUtil.currentShamsiString(),
+                                                    timestampEpoch = System.currentTimeMillis(),
+                                                    description = "لینک امضای قرارداد ${contract.id.take(8)} برای هنرجو ${student.fullName} پس از اتصال تلگرام ارسال شد."
+                                                )
+                                            )
+                                        }
+                                    } catch (e: Exception) {
+                                        academyRepository.logCustomAudit(
+                                            AuditLog(
+                                                entityType = "CONTRACT",
+                                                entityId = student.id,
+                                                actionType = "CONTRACT_SIGN_LINK_SEND_FAILED",
+                                                newValue = "Chat ID: $chatId",
+                                                reason = "خطا در ارسال خودکار لینک امضا",
+                                                changedBy = "ربات تلگرام",
+                                                timestampShamsi = PersianDateUtil.currentShamsiString(),
+                                                timestampEpoch = System.currentTimeMillis(),
+                                                description = "ارسال خودکار لینک امضا ناموفق بود: ${e.message}"
+                                            )
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -1275,7 +1333,7 @@ class TelegramProvider(
 
                     // A signed contract is the official copy: send the server's
                     // SIGNED file (hash checked) instead of a freshly drawn one.
-                    val signed = contractManager.refresh(enrollment)?.takeIf { it.isSigned }
+                    val signed = contractManager.refresh(enrollment).contract?.takeIf { it.isSigned }
                     val signedFile = signed?.let { c ->
                         c.localSignedPdfPath.takeIf { it.isNotBlank() }?.let(::File)?.takeIf { it.exists() && it.length() > 0 }
                     }

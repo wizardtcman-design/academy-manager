@@ -45,6 +45,24 @@ object TelegramStudentLink {
         return "https://t.me/$user?start=$studentId"
     }
 
+    /**
+     * A REAL contract sign URL (`<base>/sign?s=<token>` with a 20-64 char
+     * url-safe token). Guards against storing placeholder values such as the
+     * legacy `.../sign?s=link-in-app` the status endpoint once returned.
+     * JVM-pure for unit tests.
+     */
+    fun isValidSignUrl(url: String): Boolean {
+        val clean = url.trim()
+        if (!clean.startsWith("http://") && !clean.startsWith("https://")) return false
+        if (!clean.contains("/sign?")) return false
+        val token = clean.substringAfter("s=", "").substringBefore("&")
+        return token.matches(Regex("^[A-Za-z0-9_-]{20,64}$"))
+    }
+
+    /** The sign token inside a sign URL, or "" when the URL is not a valid one. */
+    fun signTokenOf(url: String): String =
+        if (isValidSignUrl(url)) url.trim().substringAfter("s=", "").substringBefore("&") else ""
+
     /** Persian welcome message for a newly registered student (SMS-ready, never auto-sent as SMS). */
     fun welcomeText(academyName: String, fullName: String, botLink: String): String {
         val name = fullName.trim().ifBlank { "هنرجو" }

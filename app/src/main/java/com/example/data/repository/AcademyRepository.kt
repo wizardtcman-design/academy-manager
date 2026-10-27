@@ -158,6 +158,7 @@ class AcademyRepository(
     private val refundDao = database.refundDao()
     private val expenseCategoryDao = database.expenseCategoryDao()
     private val archiveDao = database.archiveDao()
+    private val contractDao = database.contractDao()
 
     init {
         CoroutineScope(Dispatchers.IO).launch {
@@ -253,6 +254,46 @@ class AcademyRepository(
         )
         return Result.success(Unit)
     }
+
+    /**
+     * Emergency manual link tool (manager-only): rotates the one-time /start
+     * token so the PREVIOUS link dies immediately and a fresh, unguessable,
+     * single-use link takes its place. The chat binding is untouched — only
+     * the manager decides to disconnect, and only a NEW link can (re)bind.
+     * The caller pushes the new hash to the Worker right away (cloud mode).
+     */
+    suspend fun regenerateStudentTelegramLink(student: Student): Result<Student> = withContext(Dispatchers.IO) {
+        runCatching {
+            val now = System.currentTimeMillis()
+            val updated = student.copy(
+                telegramLinkToken = com.example.data.util.SecureToken.newToken(),
+                updatedAt = now
+            )
+            studentDao.updateStudent(updated)
+            firebaseManager.saveStudentToFirestore(updated)
+            logAction(
+                entityType = "STUDENT",
+                entityId = student.id,
+                actionType = "TELEGRAM_LINK_REGENERATED",
+                previousValue = if (student.telegramLinkToken.isBlank()) "بدون لینک" else "لینک قبلی باطل شد",
+                newValue = "لینک یک‌بارمصرف جدید صادر شد",
+                description = "لینک اختصاصی تلگرام هنرجو ${student.fullName} توسط مدیر بازتولید شد؛ لینک قبلی دیگر کار نمی‌کند."
+            )
+            updated
+        }
+    }
+
+    /** Contracts of one student that still wait for the student's signature
+     *  and carry a valid, unexpired sign link — used by the post-connect
+     *  auto-delivery in the bot and by the manual resend tool. */
+    suspend fun getContractsAwaitingSignature(studentId: String): List<com.example.data.model.Contract> =
+        withContext(Dispatchers.IO) {
+            contractDao.getForStudent(studentId).firstOrNull().orEmpty().filter {
+                (it.status == "ISSUED" || it.status == "OPENED") &&
+                    it.signUrl.isNotBlank() &&
+                    it.expiresAtEpoch > System.currentTimeMillis()
+            }
+        }
 
     /**
      * Allocates the next short student code (`1405-001`): the running number

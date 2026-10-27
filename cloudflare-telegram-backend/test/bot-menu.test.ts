@@ -269,8 +269,10 @@ describe('six menu buttons answer with real pushed data (academy A)', () => {
         expect(docs[0].fileName).toBe('contract-c-signed.pdf');
         expect(docs[0].byteLength).toBe(PDF.length);  // the actual stored bytes
         expect(lastTextTo(701)).toContain('کد قرارداد');
-        const ev = db.get(`SELECT type, detail FROM contract_events WHERE contract_id = 'c-signed' AND type = 'PDF_SENT'`) as any;
-        expect(ev?.detail).toBe('telegram:bot-menu');
+        const evs = db.all(`SELECT detail FROM contract_events WHERE contract_id = 'c-signed' AND type = 'PDF_SENT'`) as any[];
+        // The connect catch-up (auto-after-sign) fires when the chat is linked;
+        // the bot menu itself always adds its own bot-menu event on top.
+        expect(evs.map((e) => e.detail)).toContain('telegram:bot-menu');
     });
 
     it('📄 قرارداد من for an unsigned (ISSUED) contract explains the next step', async () => {

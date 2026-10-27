@@ -3,10 +3,11 @@
 // ============================================================
 
 import { Env, TelegramUpdate, StudentRecord } from '../types';
-import { TelegramBotClient } from '../telegram';
+import { TelegramBotClient, academyBotToken } from '../telegram';
 import { AcademyDatabase } from '../db';
 import { ContractStore, ContractRow } from '../contracts-store';
 import { readContractFile } from './contracts-api';
+import { deliverSignedPdfToStudent } from './sign';
 import { timingSafeEqual, sha256Hex } from '../crypto';
 import {
     submitReceiptClaim, notifyManagersOfClaim, approveClaim, rejectClaim,
@@ -223,9 +224,53 @@ async function processUpdate(
                     return;
                 }
 
-                // Bind the chat, then burn the token: exactly one successful use.
-                await db.linkTelegramChat(tokenStudent.id, chatId, username);
-                await db.consumeTelegramLinkToken(tokenStudent.id);
+                // A consumed link is replayed? Every link works exactly once;
+                // the honest answer is "already used", never a fake success.
+                if (db.isLinkUsed(tokenStudent)) {
+                    await bot.sendMessage({
+                        chatId,
+                        text: '♻️ این لینک قبلاً استفاده شده است. هر لینک اتصال فقط یک بار کار می‌کند؛ برای اتصال دوباره از آموزشگاه لینک جدید بگیرید.',
+                        parseMode: 'HTML'
+                    });
+                    await db.logMessage({
+                        id: crypto.randomUUID(),
+                        student_id: tokenStudent.id,
+                        student_name: tokenStudent.full_name,
+                        chat_id: chatId,
+                        message_type: 'START_LINK_USED',
+                        content: 'link token replay after consumption',
+                        status: 'FAILED',
+                        error_message: 'Telegram link token already used',
+                        timestamp_epoch: Date.now(),
+                        timestamp_shamsi: ''
+                    });
+                    return;
+                }
+
+                // Bind the chat and burn the token in ONE atomic statement
+                // (migration 0012): exactly one account can win the claim, so
+                // two chats racing on the same link can never both connect.
+                const claimed = await db.claimTelegramLink(tokenStudent.id, chatId, username, linkHash);
+                if (!claimed) {
+                    await bot.sendMessage({
+                        chatId,
+                        text: '♻️ این لینک همین حالا توسط حساب دیگری مصرف شد. هر لینک فقط یک بار کار می‌کند؛ برای اتصال از آموزشگاه لینک جدید بگیرید.',
+                        parseMode: 'HTML'
+                    });
+                    await db.logMessage({
+                        id: crypto.randomUUID(),
+                        student_id: tokenStudent.id,
+                        student_name: tokenStudent.full_name,
+                        chat_id: chatId,
+                        message_type: 'START_LINK_USED',
+                        content: 'link token claimed by a concurrent /start',
+                        status: 'FAILED',
+                        error_message: 'Telegram link token lost the atomic claim',
+                        timestamp_epoch: Date.now(),
+                        timestamp_shamsi: ''
+                    });
+                    return;
+                }
 
                 const welcomeMsg = `🎉 سلام <b>${tokenStudent.full_name}</b> عزیز!\n\n` +
                     `اتصال حساب تلگرام شما به سامانه هوشمند آموزشگاه با موفقیت برقرار شد. ✅\n\n` +
@@ -278,6 +323,17 @@ async function processUpdate(
                     timestamp_epoch: Date.now(),
                     timestamp_shamsi: ''
                 });
+
+                // Mission phase-1: right after a successful connect, the
+                // student's own chat receives what the contract flow still
+                // owes them — the current sign link of a pending contract, or
+                // the signed PDF that could not be delivered earlier. Both
+                // paths are claimed exactly once (no duplicate spam).
+                try {
+                    await deliverContractItemsAfterConnect(env, db, academyOfBot, tokenStudent, chatId, requestOrigin);
+                } catch (e) {
+                    console.warn('post-connect contract delivery failed:', (e as any)?.message || e);
+                }
                 return;
             }
         }
@@ -1003,60 +1059,113 @@ async function handleContract(bot: TelegramBotClient, env: Env, student: Student
         rows = [];
     }
     const signed = rows.find((r) => r.status === 'SIGNED');
+    const open = rows.find((r) => r.status === 'ISSUED' || r.status === 'OPENED');
     if (signed) {
-        const bytes = await readContractFile(env, signed.signed_pdf_key);
-        if (bytes) {
-            await bot.sendDocument({
-                chatId,
-                fileName: `contract-${signed.id.slice(0, 8)}.pdf`,
-                bytes,
-                caption: `📄 قرارداد امضاشدهٔ شما (${signed.course_title || 'دوره آموزشی'})`
-            });
-            // Forensics: the student asked for the file again from the bot menu.
-            try {
-                await store.event(academyId, signed.id, { type: 'PDF_SENT', detail: 'telegram:bot-menu' });
-            } catch (_) {}
-            // Stage 6: CONTRACT_DELIVERED template (default = the original
-            // wording); auto=false sends no follow-up text (the PDF itself
-            // is always delivered).
-            const legacyFollowUp = `✅ این نسخهٔ نهایی و امضاشدهٔ قرارداد شماست.\nکد قرارداد: <code>${signed.id.slice(0, 8)}</code>`;
-            let followUp = legacyFollowUp;
-            try {
-                const cfg = await getMessagingConfig(new AcademyDatabase(env, academyId));
-                if (cfg.events.CONTRACT_DELIVERED.auto) {
-                    followUp = renderEvent(cfg, 'CONTRACT_DELIVERED', { contractCode: signed.id.slice(0, 8) }, legacyFollowUp).text;
-                } else {
-                    followUp = '';
+        try {
+            const bytes = await readContractFile(env, signed.signed_pdf_key);
+            if (bytes) {
+                await bot.sendDocument({
+                    chatId,
+                    fileName: `contract-${signed.id.slice(0, 8)}.pdf`,
+                    bytes,
+                    caption: `📄 قرارداد امضاشدهٔ شما (${signed.course_title || 'دوره آموزشی'})`
+                });
+                // Forensics: the student asked for the file again from the bot menu.
+                try {
+                    await store.event(academyId, signed.id, { type: 'PDF_SENT', detail: 'telegram:bot-menu' });
+                } catch (_) {}
+                // Stage 6: CONTRACT_DELIVERED template (default = the original
+                // wording); auto=false sends no follow-up text (the PDF itself
+                // is always delivered).
+                const legacyFollowUp = `✅ این نسخهٔ نهایی و امضاشدهٔ قرارداد شماست.\nکد قرارداد: <code>${signed.id.slice(0, 8)}</code>`;
+                let followUp = legacyFollowUp;
+                try {
+                    const cfg = await getMessagingConfig(new AcademyDatabase(env, academyId));
+                    if (cfg.events.CONTRACT_DELIVERED.auto) {
+                        followUp = renderEvent(cfg, 'CONTRACT_DELIVERED', { contractCode: signed.id.slice(0, 8) }, legacyFollowUp).text;
+                    } else {
+                        followUp = '';
+                    }
+                } catch (_) { /* keep the legacy text */ }
+                if (followUp) {
+                    await bot.sendMessage({
+                        chatId,
+                        text: followUp,
+                        parseMode: 'HTML',
+                        replyMarkup: TelegramBotClient.getStudentReplyKeyboard()
+                    });
+                    // Stage 9: SMS copy of the contract-delivered notice.
+                    try {
+                        const dbD = new AcademyDatabase(env, academyId);
+                        const cfgD = await getMessagingConfig(dbD);
+                        await sendEventSmsCopy(env, dbD, academyId, 'CONTRACT_DELIVERED', {
+                            channel: cfgD.events.CONTRACT_DELIVERED.channel,
+                            studentId: signed.student_id,
+                            ledgerKey: signed.id,
+                            html: followUp
+                        });
+                    } catch (_) { /* best-effort */ }
                 }
-            } catch (_) { /* keep the legacy text */ }
-            if (followUp) {
+                // A newer PENDING contract (e.g. the next course) still needs
+                // its sign link — fall through instead of stopping here.
+                if (!open) return;
+            } else {
+                // No stored file: an honest answer instead of crashing.
                 await bot.sendMessage({
                     chatId,
-                    text: followUp,
+                    text: '📄 قرارداد امضاشدهٔ شما در سیستم ثبت است اما فایل آن روی سرور در دسترس نیست.\nلطفاً به مدیریت آموزشگاه اطلاع دهید تا وضعیت فایل بررسی شود.',
                     parseMode: 'HTML',
                     replyMarkup: TelegramBotClient.getStudentReplyKeyboard()
                 });
-                // Stage 9: SMS copy of the contract-delivered notice.
                 try {
-                    const dbD = new AcademyDatabase(env, academyId);
-                    const cfgD = await getMessagingConfig(dbD);
-                    await sendEventSmsCopy(env, dbD, academyId, 'CONTRACT_DELIVERED', {
-                        channel: cfgD.events.CONTRACT_DELIVERED.channel,
-                        studentId: signed.student_id,
-                        ledgerKey: signed.id,
-                        html: followUp
-                    });
-                } catch (_) { /* best-effort */ }
+                    await store.event(academyId, signed.id, { type: 'DELIVERY_FAILED', detail: 'bot-menu: signed file missing' });
+                } catch (_) {}
+                return;
             }
+        } catch (e) {
+            // A storage/telegram error must never take the whole bot down.
+            try {
+                await store.event(academyId, signed.id, { type: 'DELIVERY_FAILED', detail: `bot-menu: ${(e as any)?.message || e}` });
+            } catch (_) {}
+            await bot.sendMessage({
+                chatId,
+                text: '⚠️ ارسال فایل قرارداد ناموفق بود. لطفاً چند لحظه دیگر دوباره تلاش کنید.',
+                parseMode: 'HTML',
+                replyMarkup: TelegramBotClient.getStudentReplyKeyboard()
+            });
             return;
         }
     }
-    const open = rows.find((r) => r.status === 'ISSUED' || r.status === 'OPENED');
     if (open) {
+        // The student asked for their contract: hand them the CURRENT sign
+        // link (the same stable pending token) instead of a vague instruction.
+        let signUrl = '';
+        try {
+            const token = await store.pendingToken(academyId, open.id, open.token_hash);
+            const base = env.PUBLIC_BASE_URL || '';
+            if (token && base) signUrl = `${base.replace(/\/+$/, '')}/sign?s=${encodeURIComponent(token)}`;
+        } catch (_) { /* link stays empty -> instructive text below */ }
+        if (signUrl) {
+            try {
+                await bot.sendMessage({
+                    chatId,
+                    text: `📝 قرارداد «${open.course_title || 'آموزشی'}» شما هنوز امضا نشده است.\n` +
+                        `با دکمهٔ زیر صفحهٔ امضا را باز کنید؛ شماره و کد ملی را وارد کنید و با انگشت امضا کنید.\n` +
+                        `بعد از امضا، نسخهٔ نهایی خودکار همین‌جا ارسال می‌شود.`,
+                    parseMode: 'HTML',
+                    replyMarkup: { inline_keyboard: [[{ text: '✍️ بازکردن صفحهٔ امضای قرارداد', url: signUrl }]] }
+                });
+                try {
+                    await store.event(academyId, open.id, { type: 'SIGN_LINK_SENT', detail: 'telegram:bot-menu' });
+                } catch (_) {}
+                return;
+            } catch (_) { /* fall through to the plain text below */ }
+        }
         await bot.sendMessage({
             chatId,
             text: `📝 قرارداد شما هنوز امضا نشده است.\n` +
                 `لینک امضای ارسال‌شده توسط آموزشگاه را باز کنید، شماره و کد ملی را وارد کنید و با انگشت امضا کنید.\n` +
+                `اگر لینک را در دست ندارید، از مدیریت آموزشگاه لینک جدید بگیرید.\n` +
                 `بعد از امضا، نسخهٔ نهایی خودکار همین‌جا ارسال می‌شود.`,
             parseMode: 'HTML',
             replyMarkup: TelegramBotClient.getStudentReplyKeyboard()
@@ -1068,6 +1177,138 @@ async function handleContract(bot: TelegramBotClient, env: Env, student: Student
         `👤 <b>هنرجو:</b> ${student.full_name}\n\n` +
         `✅ قرارداد رسمی شما در سیستم آموزشگاه ثبت گردیده است. جهت دریافت نسخه چاپی به دفتر آموزشگاه مراجعه فرمایید.`;
     await bot.sendMessage({ chatId, text: res, parseMode: 'HTML', replyMarkup: TelegramBotClient.getStudentReplyKeyboard() });
+}
+
+// ============================================================
+// Mission phase-1: after a successful /start connect, the student's own
+// chat receives what the contract flow still owes them:
+//   1. a contract awaiting signature -> its CURRENT sign link (the same
+//      stable pending token — a second, divergent token is never minted)
+//   2. a SIGNED contract whose PDF could not be delivered earlier because
+//      no chat was linked at signing time -> the final file now
+// Both paths are claimed exactly once per contract (contract_deliveries),
+// so reconnects, webhook re-deliveries and double posts never spam. Send
+// failures are logged (message_logs + contract_events) and stay trackable;
+// the bot menu remains the manual retry for anything that failed.
+// ============================================================
+export async function deliverContractItemsAfterConnect(
+    env: Env,
+    db: AcademyDatabase,
+    academyId: string,
+    student: StudentRecord,
+    chatId: string,
+    requestOrigin = ''
+): Promise<void> {
+    const store = new ContractStore(env);
+    let rows: ContractRow[] = [];
+    try {
+        rows = await store.findByStudent(academyId, student.id);
+    } catch {
+        rows = [];
+    }
+    if (rows.length === 0) return;
+
+    // ---- 1. signed contract the student has not received yet ----
+    const signed = rows.find((r) => r.status === 'SIGNED');
+    if (signed && signed.signed_pdf_key) {
+        try {
+            const bytes = await readContractFile(env, signed.signed_pdf_key);
+            if (bytes) {
+                // Claims SIGNED_PDF_TELEGRAM exactly once; a no-op when the
+                // file was already delivered from another path.
+                await deliverSignedPdfToStudent(env, signed, bytes);
+            }
+        } catch (e) {
+            try {
+                await store.event(academyId, signed.id, { type: 'DELIVERY_FAILED', detail: `connect catch-up: ${(e as any)?.message || e}` });
+            } catch (_) {}
+        }
+    }
+
+    // ---- 2. pending signature: send the current stable sign link once ----
+    const pending = rows.find((r) =>
+        (r.status === 'ISSUED' || r.status === 'OPENED') &&
+        (!r.expires_at_epoch || r.expires_at_epoch > Date.now()));
+    if (!pending) return;
+
+    const claimed = await store.claimContractDelivery(academyId, pending.id, 'SIGN_LINK_TELEGRAM');
+    if (!claimed) return; // already sent (or being sent) for this contract
+
+    const token = await store.pendingToken(academyId, pending.id, pending.token_hash);
+    const base = (env.PUBLIC_BASE_URL || requestOrigin || '').replace(/\/+$/, '');
+    const signUrl = token && base ? `${base}/sign?s=${encodeURIComponent(token)}` : '';
+    const escName = (student.full_name || 'هنرجو').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const escCourse = (pending.course_title || 'آموزشی').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+    const fail = async (where: string, error: string) => {
+        await store.finishContractDelivery(academyId, pending.id, 'SIGN_LINK_TELEGRAM', false);
+        try {
+            await store.event(academyId, pending.id, { type: 'DELIVERY_FAILED', detail: `sign-link/${where}: ${error}` });
+        } catch (_) {}
+        await db.logMessage({
+            id: crypto.randomUUID(),
+            student_id: student.id,
+            student_name: student.full_name,
+            chat_id: chatId,
+            message_type: 'SIGN_LINK_SENT',
+            content: `contract ${pending.id.slice(0, 8)} (auto after connect)`,
+            status: 'FAILED',
+            error_message: error,
+            timestamp_epoch: Date.now(),
+            timestamp_shamsi: ''
+        });
+    };
+
+    if (!signUrl) {
+        // Re-issuing a link clears this slot again, so a future reconnect
+        // retries automatically once a real pending token exists.
+        await fail('link', token ? 'PUBLIC_BASE_URL/origin unavailable' : 'no pending sign token');
+        return;
+    }
+
+    const botToken = await academyBotToken(env, academyId);
+    if (!botToken) {
+        await fail('bot', 'bot not connected');
+        return;
+    }
+
+    const text = `📝 سلام <b>${escName}</b> عزیز!\n\n` +
+        `قرارداد دورهٔ «${escCourse}» شما آمادهٔ امضاست.\n` +
+        `با دکمهٔ زیر صفحهٔ امضا را باز کنید، شماره تماس و کد ملی را وارد کنید و با انگشت امضا کنید.\n` +
+        `نسخهٔ نهایی قرارداد بلافاصله بعد از امضا خودکار برایتان ارسال می‌شود.`;
+    const bot = new TelegramBotClient(botToken);
+    let sent: Awaited<ReturnType<TelegramBotClient['sendMessage']>>;
+    try {
+        sent = await bot.sendMessage({
+            chatId,
+            text,
+            parseMode: 'HTML',
+            replyMarkup: { inline_keyboard: [[{ text: '✍️ بازکردن صفحهٔ امضای قرارداد', url: signUrl }]] }
+        });
+    } catch (e: any) {
+        sent = { ok: false, description: `network: ${e?.message || e}` } as any;
+    }
+
+    if (sent.ok) {
+        await store.finishContractDelivery(academyId, pending.id, 'SIGN_LINK_TELEGRAM', true);
+        try {
+            await store.event(academyId, pending.id, { type: 'SIGN_LINK_SENT', detail: 'telegram:auto-after-connect' });
+        } catch (_) {}
+        await db.logMessage({
+            id: crypto.randomUUID(),
+            student_id: student.id,
+            student_name: student.full_name,
+            chat_id: chatId,
+            message_type: 'SIGN_LINK_SENT',
+            content: `contract ${pending.id.slice(0, 8)} (auto after connect)`,
+            status: 'SUCCESS',
+            error_message: '',
+            timestamp_epoch: Date.now(),
+            timestamp_shamsi: ''
+        });
+    } else {
+        await fail('telegram', sent.description || 'telegram send failed');
+    }
 }
 
 // 📞 Contact Info Handler

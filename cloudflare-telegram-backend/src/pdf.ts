@@ -426,11 +426,14 @@ export function appendSignatureLayer(original: Uint8Array, layer: SignedLayer): 
     const boxX = margin;
 
     // Canvas input: the student drew with the mouse, so the PNG's aspect ratio
-    // is what keeps the strokes from looking stretched on paper.
+    // is what keeps the strokes from looking stretched on paper. The signature
+    // is fitted into a 150x100 box with BOTH axes scaled together — clamping
+    // only one axis would stretch a tall/narrow drawing non-uniformly.
     const sigW = layer.imageWidth || 1;
     const sigH = layer.imageHeight || 1;
-    const sigBoxW = 150;
-    const sigBoxH = Math.min(100, (sigBoxW * sigH) / sigW);
+    const sigFit = Math.min(150 / sigW, 100 / sigH);
+    const sigBoxW = sigW * sigFit;
+    const sigBoxH = sigH * sigFit;
 
     // ---- content stream (signature image + seal + receipt text) ----
     let ops = 'q\n';
@@ -464,10 +467,13 @@ export function appendSignatureLayer(original: Uint8Array, layer: SignedLayer): 
         textY -= 13;
     }
     ops += persianText(boxX + 12, boxY + 30 + sigBoxH + 6, 'امضای هنرجو', 4.4, '0.35 0.39 0.45', 0.5, false);
-    // verification facts are Latin-only, so the compact font keeps them legible
-    let vY = boxY + 24;
+    // verification facts are Latin-only, so the compact font keeps them legible.
+    // They sit in the middle strip, left-aligned: the right strip belongs to
+    // the manager-signature image, and the old right-aligned position made
+    // long digests run under it.
+    let vY = boxY + 100;
     for (const v of layer.verifyLines) {
-        ops += asciiText(w - margin - 8 - v.length * 1.9, vY, v, 4.2, false);
+        ops += asciiText(boxX + 175, vY, v, 4.2, false);
         vY -= 8;
     }
     ops += asciiText(boxX + 8, boxY - 10, `signed ${new Date(now).toISOString().slice(0, 19)}Z`, 4, false);

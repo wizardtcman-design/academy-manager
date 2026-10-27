@@ -478,7 +478,9 @@ fun StudentsScreen(
             onRefreshContract = { viewModel.refreshContract(it) },
             onRevokeContract = { viewModel.revokeContractLink(it) },
             onShareContractFile = { c, signed -> viewModel.shareContractFile(c, signed) },
-            onOpenSignPage = { c -> viewModel.openUrlExternally(c.signUrl) }
+            onOpenSignPage = { c -> viewModel.openUrlExternally(c.signUrl) },
+            onRegenerateTelegramLink = { st -> viewModel.regenerateStudentTelegramLink(st) },
+            onResendSignLink = { st -> viewModel.resendContractSignLink(st) }
         )
     }
 

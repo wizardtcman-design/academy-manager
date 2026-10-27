@@ -124,6 +124,8 @@ export interface StudentRecord {
     linked_at_epoch: number;
     created_at_epoch: number;
     updated_at_epoch: number;
+    /** Added by migration 0012 — 1 once the /start link has been consumed. */
+    telegram_link_used?: number;
 }
 
 export interface InstallmentRecord {

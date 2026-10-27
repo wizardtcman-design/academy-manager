@@ -37,7 +37,9 @@ a{color:#1d4ed8}
 </style></head>
 <body>
 <main>
-  <div class="card"><h1 id="academy">در حال بارگذاری…</h1><p class="muted" id="sub"></p></div>
+  <div class="card"><h1 id="academy">در حال بارگذاری…</h1><p class="muted" id="sub"></p>
+    <button class="ghost" id="reload" type="button" hidden style="margin-top:10px;width:100%">🔄 به‌روزرسانی وضعیت</button>
+  </div>
 
   <div class="card" id="view" hidden>
     <h2>مشخصات قرارداد</h2>
@@ -115,11 +117,13 @@ a{color:#1d4ed8}
   function showError(msg) { var b = $('err'); b.textContent = msg; b.hidden = !msg; }
 
   function load() {
+    $('reload').hidden = true;
     fetch('/sign/' + encodeURIComponent(TOKEN) + '/open', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}', cache: 'no-store' })
       .then(function (r) { return r.json(); })
       .then(function (json) {
-        if (!json.success) { $('academy').textContent = 'امکان نمایش قرارداد نیست'; $('sub').textContent = json.message || ''; return; }
+        if (!json.success) { $('academy').textContent = 'امکان نمایش قرارداد نیست'; $('sub').textContent = json.message || ''; $('reload').hidden = false; return; }
         data = json.data;
+        $('reload').hidden = false;
         $('academy').textContent = data.academyName;
         $('sub').textContent = 'قرارداد شماره ' + data.contractNumber + ' · ' + data.studentName;
         var rows = [
@@ -144,9 +148,18 @@ a{color:#1d4ed8}
       })
       .catch(function () {
         $('academy').textContent = 'خطا در ارتباط';
-        $('sub').textContent = 'اینترنت را بررسی کنید و صفحه را دوباره باز کنید.';
+        $('sub').textContent = 'اینترنت را بررسی کنید و دکمهٔ به‌روزرسانی را بزنید.';
+        $('reload').hidden = false;
       });
   }
+
+  // The refresh button re-runs the open call so a revoked/expired state, a
+  // rotated link notice or a transient network error is re-checked from the
+  // server instead of leaving a dead page.
+  $('reload').onclick = function () {
+    $('academy').textContent = 'در حال بارگذاری…'; $('sub').textContent = '';
+    load();
+  };
 
   $('submit').onclick = function () {
     showError('');

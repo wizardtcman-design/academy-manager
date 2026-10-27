@@ -157,7 +157,8 @@ export async function handleSignRoute(request: Request, env: Env, url: URL): Pro
             if (!opened) {
                 await store.event(row.academy_id, row.id, { type: 'OPENED', ip, userAgent: ua });
             }
-            const info = JSON.parse(row.enrollment_json || '{}');
+            // A malformed info blob must degrade to an empty block, never a 500.
+            const info = safeEnrollmentInfo(row);
             // Every string field is escaped server-side (XSS: the page injects
             // these values via innerHTML; enrollment_json is app-controlled).
             const escInstallments = (info.installments || []).map((it: any) =>
@@ -237,7 +238,7 @@ export async function handleSignRoute(request: Request, env: Env, url: URL): Pro
 
         const dims = imageSize(imageBytes);
         const isPng = imageBytes[0] === 0x89 && imageBytes[1] === 0x50 && imageBytes[2] === 0x4e && imageBytes[3] === 0x47;
-        const info = JSON.parse(row.enrollment_json || '{}');
+        const info = safeEnrollmentInfo(row);
         const faTime = toPersianDigits(new Date().toLocaleString('fa-IR', { timeZone: 'Asia/Tehran' }));
         const printName = (row.student_name || '').replace(/[^\u0600-\u06FF\s]/g, '').trim() || 'هنرجو';
         const printCourse = (row.course_title || '').replace(/[^\u0600-\u06FF\s]/g, '').trim() || 'دوره';
@@ -255,8 +256,11 @@ export async function handleSignRoute(request: Request, env: Env, url: URL): Pro
         ];
 
         // Academy seal + manager signature uploaded by the app (optional).
-        const sealKey = (row as any).seal_key as string;
-        const sigKey = (row as any).sig_key as string;
+        // When the app already baked them into the original PDF (sealBakedInPdf)
+        // they are skipped here, so the final version shows them exactly once.
+        const sealBaked = info.sealBakedInPdf === true;
+        const sealKey = sealBaked ? null : ((row as any).seal_key as string || null);
+        const sigKey = sealBaked ? null : ((row as any).sig_key as string || null);
         const sealBytes = sealKey ? await readContractFile(env, sealKey) : null;
         const managerSigBytes = sigKey ? await readContractFile(env, sigKey) : null;
         const isPngBytes = (bytes: Uint8Array | null) =>
@@ -395,6 +399,16 @@ export async function handleSignRoute(request: Request, env: Env, url: URL): Pro
 /** Persian text rendered for a canvas PDF is laid out LTR; show digits as-is. */
 function toDisplayDigits(line: string): string {
     return line;
+}
+
+/** enrollment_json is app-controlled, but a corrupted blob must never 500 the
+ *  public sign page — degrade to an empty info block instead. */
+function safeEnrollmentInfo(row: ContractRow): Record<string, any> {
+    try {
+        return JSON.parse(row.enrollment_json || '{}') || {};
+    } catch {
+        return {};
+    }
 }
 
 function imageSize(bytes: Uint8Array): { width: number; height: number } {

@@ -92,4 +92,25 @@ class TelegramStudentLinkTest {
         val withoutToken = Student(firstName = "ب")
         assertEquals("", TelegramStudentLink.tokenOf(withoutToken))
     }
+
+    @Test
+    fun isValidSignUrlAcceptsRealSignLinks() {
+        val good = "https://worker.example.com/sign?s=Ab12Cd34Ef56Gh78Ij90Kl12"
+        assertTrue(TelegramStudentLink.isValidSignUrl(good))
+        assertEquals("Ab12Cd34Ef56Gh78Ij90Kl12", TelegramStudentLink.signTokenOf(good))
+        assertTrue(TelegramStudentLink.isValidSignUrl("http://localhost:8787/sign?s=abcDEF123-_456789012"))
+    }
+
+    @Test
+    fun isValidSignUrlRejectsPlaceholdersAndGarbage() {
+        // the legacy placeholder the status endpoint once returned
+        assertFalse(TelegramStudentLink.isValidSignUrl("https://worker.example.com/sign?s=link-in-app"))
+        // no token at all / short token / wrong host path / non-url
+        assertFalse(TelegramStudentLink.isValidSignUrl("https://worker.example.com/sign?s="))
+        assertFalse(TelegramStudentLink.isValidSignUrl("https://worker.example.com/sign?s=short"))
+        assertFalse(TelegramStudentLink.isValidSignUrl("https://worker.example.com/other?s=Ab12Cd34Ef56Gh78Ij90Kl12"))
+        assertFalse(TelegramStudentLink.isValidSignUrl(""))
+        assertFalse(TelegramStudentLink.isValidSignUrl("not a url"))
+        assertEquals("", TelegramStudentLink.signTokenOf("https://worker.example.com/sign?s=short"))
+    }
 }
