@@ -15,16 +15,15 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AttachMoney
+import androidx.compose.material.icons.filled.CalendarMonth
 import androidx.compose.material.icons.filled.DateRange
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.FormatListNumbered
+import androidx.compose.material.icons.filled.Groups
+import androidx.compose.material.icons.filled.HistoryEdu
 import androidx.compose.material.icons.filled.School
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
-import androidx.compose.material3.Icon
+import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -54,7 +53,12 @@ fun AddEditCourseDialog(
         tuitionFee: Long,
         installmentCount: Int,
         description: String,
-        isActive: Boolean
+        isActive: Boolean,
+        academicYear: String,
+        startShamsi: String,
+        startTime: String,
+        startEpoch: Long,
+        capacity: Int
     ) -> Unit
 ) {
     var title by remember { mutableStateOf(courseToEdit?.title ?: "") }
@@ -63,6 +67,12 @@ fun AddEditCourseDialog(
     var installmentCountText by remember { mutableStateOf(courseToEdit?.installmentCount?.toString() ?: "3") }
     var description by remember { mutableStateOf(courseToEdit?.description ?: "") }
     var isActive by remember { mutableStateOf(courseToEdit?.isActive ?: true) }
+
+    // Mission fields: academic year, exact start (Jalali date + clock time) and capacity.
+    var academicYear by remember { mutableStateOf(courseToEdit?.academicYear ?: "") }
+    var startShamsi by remember { mutableStateOf(courseToEdit?.startShamsi ?: "") }
+    var startTime by remember { mutableStateOf(courseToEdit?.startTime ?: "") }
+    var capacityText by remember { mutableStateOf(courseToEdit?.capacity?.toString() ?: "0") }
 
     var titleError by remember { mutableStateOf(false) }
     var feeError by remember { mutableStateOf(false) }
@@ -82,23 +92,42 @@ fun AddEditCourseDialog(
         }
         val duration = durationMonthsText.toIntOrNull() ?: 3
         val installments = installmentCountText.toIntOrNull() ?: 3
+        val capacity = PersianDateUtil.toPlainDigits(capacityText).toIntOrNull()?.coerceAtLeast(0) ?: 0
+        // startEpoch is only meaningful when a real Jalali date was picked.
+        val startEpoch = if (startShamsi.isNotBlank()) {
+            PersianDateUtil.parseShamsiToEpoch(startShamsi)
+        } else 0L
         if (!hasError) {
-            onConfirm(title, duration, fee, installments, description, isActive)
+            onConfirm(
+                title,
+                duration,
+                fee,
+                installments,
+                description,
+                isActive,
+                academicYear.trim(),
+                startShamsi,
+                startTime.trim(),
+                startEpoch,
+                capacity
+            )
         }
     }
 
     com.example.ui.components.AppFormDialog(
         title = if (isEditing) "ویرایش دوره" else "تعریف دورهٔ جدید",
-        subtitle = "عنوان، شهریه و تعداد اقساط دوره را مشخص کنید",
+        subtitle = "مشخصات، تاریخ شروع، ظرفیت و اقساط دوره را مشخص کنید",
         icon = Icons.Default.School,
         onDismiss = onDismiss,
         confirmText = if (isEditing) "ذخیره تغییرات" else "ایجاد دوره",
         onConfirm = { submit() },
-        maxHeight = 720,
+        maxHeight = 760,
         testTag = "course_form_dialog"
     ) {
         com.example.ui.components.FormSection(title = "مشخصات دوره", icon = Icons.Default.School) {
-            com.example.ui.components.FormNumberField(
+            // FormTextField (not FormNumberField): the title is free text and a
+            // digits-only grouping field would strip every Persian letter.
+            com.example.ui.components.FormTextField(
                 value = title,
                 onValueChange = { title = it; titleError = false },
                 label = "نام دورهٔ آموزشی *",
@@ -119,7 +148,37 @@ fun AddEditCourseDialog(
         }
 
         com.example.ui.components.FormSection(
-            title = "شهریه و اقساط",
+            title = "سال آموزشی و شروع دوره",
+            icon = Icons.Default.CalendarMonth,
+            accent = MaterialTheme.colorScheme.secondary
+        ) {
+            com.example.ui.components.FormTextField(
+                value = academicYear,
+                onValueChange = { academicYear = it },
+                label = "سال آموزشی (اختیاری) — مثال: ۱۴۰۴-۱۴۰۵",
+                leadingIcon = Icons.Default.HistoryEdu,
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next)
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                com.example.ui.components.JalaliDateField(
+                    value = startShamsi,
+                    onValueChange = { startShamsi = it },
+                    label = "تاریخ شروع دقیق (اختیاری)",
+                    modifier = Modifier.weight(1.4f)
+                )
+                com.example.ui.components.FormTextField(
+                    value = startTime,
+                    onValueChange = { startTime = it },
+                    label = "ساعت شروع",
+                    leadingIcon = Icons.Default.Schedule,
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
+                    modifier = Modifier.weight(1f)
+                )
+            }
+        }
+
+        com.example.ui.components.FormSection(
+            title = "شهریه، ظرفیت و اقساط",
             icon = Icons.Default.AttachMoney,
             accent = MaterialTheme.colorScheme.tertiary
         ) {
@@ -158,6 +217,15 @@ fun AddEditCourseDialog(
                     modifier = Modifier.weight(1f)
                 )
             }
+            com.example.ui.components.FormNumberField(
+                value = capacityText,
+                onValueChange = { capacityText = it },
+                label = "ظرفیت دوره (۰ = بدون محدودیت)",
+                leadingIcon = Icons.Default.Groups,
+                supportingText = "با پر شدن ظرفیت، ثبت‌نام خودکار متوقف می‌شود (بازگشایی دستی توسط مدیر).",
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number, imeAction = ImeAction.Next),
+                testTag = "course_capacity_input"
+            )
         }
 
         Row(

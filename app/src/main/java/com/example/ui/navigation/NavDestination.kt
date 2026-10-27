@@ -11,6 +11,9 @@ sealed class Screen(val route: String, val title: String) {
     
     // Sub-screens under More
     object Courses : Screen("courses", "دوره‌ها")
+    object CourseDetails : Screen("course_details", "جزئیات دوره")
+    object Archive : Screen("archive", "بایگانی دوره‌ها")
+    object Phonebook : Screen("phonebook", "دفترچه تلفن")
     object Settings : Screen("settings", "تنظیمات آموزشگاه")
     object AuditLogs : Screen("audit_logs", "تاریخچه تغییرات")
     object Reminders : Screen("reminders", "یادآوری‌ها و پیام‌ها")

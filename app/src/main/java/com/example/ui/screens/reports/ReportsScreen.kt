@@ -35,6 +35,7 @@ import androidx.compose.material.icons.filled.DateRange
 import androidx.compose.material.icons.filled.Insights
 import androidx.compose.material.icons.filled.PointOfSale
 import androidx.compose.material.icons.filled.QueryStats
+import androidx.compose.material.icons.filled.Savings
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Summarize
 import androidx.compose.material.icons.filled.Today
@@ -82,6 +83,8 @@ fun ReportsScreen(
     val installments by viewModel.installments.collectAsState()
     val bankAccounts by viewModel.bankAccounts.collectAsState()
     val settings by viewModel.settings.collectAsState()
+    // Mission: the archive side of the grand income (known amounts only).
+    val archiveStudents by viewModel.allArchiveStudents.collectAsState()
 
     val todayShamsi = remember { PersianDateUtil.currentShamsiString() }
     val currentJalali = remember { PersianDateUtil.currentJalali() }
@@ -145,6 +148,21 @@ fun ReportsScreen(
 
     val totalIncome = periodPayments.sumOf { it.amount }
     val transactionCount = periodPayments.size
+
+    // «درآمد قطعی کل آموزشگاه» = live all-time net (non-reversed, non-sample
+    // payments minus refunds) + archive known received. Both sides are
+    // exclusive by construction, so each payment is counted exactly once.
+    val archiveTotals = remember(archiveStudents) {
+        com.example.data.util.ArchiveMath.totalsFor(archiveStudents)
+    }
+    val liveCollected = remember(payments, refunds) {
+        payments.filter { !it.isReversed && !it.isSampleData }.sumOf { it.amount } -
+            refunds.filter { !it.isSampleData }.sumOf { it.amount }
+    }
+    val grandIncome = com.example.data.util.ArchiveMath.grandTotal(
+        archiveTotals.knownReceivedTotal,
+        liveCollected
+    )
 
     // Method breakdown
     val posIncome = periodPayments.filter { it.paymentMethod == "POS" }.sumOf { it.amount }
@@ -321,6 +339,70 @@ fun ReportsScreen(
                         Text("تعداد تراکنش‌های موفق:", style = MaterialTheme.typography.bodySmall)
                         Text("${PersianDateUtil.toPersianDigits(transactionCount.toString())} فقره", fontWeight = FontWeight.Bold)
                     }
+                }
+            }
+        }
+
+        // Mission hero: the academy's GRAND confirmed income = live ledger
+        // (all-time net) + archive history (known amounts only).
+        item {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(20.dp),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.45f)
+                )
+            ) {
+                Column(modifier = Modifier.padding(18.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "درآمد قطعی کل آموزشگاه",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.tertiary
+                        )
+                        Surface(
+                            shape = CircleShape,
+                            color = MaterialTheme.colorScheme.tertiary,
+                            modifier = Modifier.size(36.dp)
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Icon(
+                                    Icons.Default.Savings,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.onTertiary,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(14.dp))
+
+                    Text(
+                        text = "پرداخت‌های واقعی سیستم فعلی + دریافتی قطعی بایگانی:",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Text(
+                        text = PersianDateUtil.formatCurrency(grandIncome),
+                        style = MaterialTheme.typography.headlineMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.tertiary
+                    )
+
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    Text(
+                        text = "سهم بایگانی تاریخی: ${PersianDateUtil.formatCurrency(archiveTotals.knownReceivedTotal)} " +
+                            "(${PersianDateUtil.toPersianDigits(archiveTotals.unknownReceivedCount.toString())} مبلغ نامشخص محاسبه نشده)",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 }
             }
         }

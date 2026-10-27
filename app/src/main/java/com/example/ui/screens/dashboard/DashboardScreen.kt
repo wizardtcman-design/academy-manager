@@ -486,7 +486,7 @@ fun DashboardScreen(
             courseToEdit = null,
             currencyUnit = currencyUnit,
             onDismiss = { showQuickCourseDialog = false },
-            onConfirm = { title, duration, fee, installments, desc, active ->
+            onConfirm = { title, duration, fee, installments, desc, active, _, _, _, _, _ ->
                 viewModel.addCourse(title, duration, fee, installments, desc, active) { _, _ ->
                     showQuickCourseDialog = false
                     showEnrollDialog = true

@@ -456,6 +456,62 @@ private fun InstallmentsTab(
                                 )
                             }
 
+                            // Mission: read-only certificate status on the student's
+                            // enrollment rows (editing lives in Course Details).
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Surface(
+                                    shape = RoundedCornerShape(8.dp),
+                                    color = when (enrollment.certificateStatus) {
+                                        com.example.data.model.Enrollment.CERTIFICATE_PENDING ->
+                                            com.example.ui.theme.StatusWarning.copy(alpha = 0.13f)
+                                        com.example.data.model.Enrollment.CERTIFICATE_ISSUED ->
+                                            com.example.ui.theme.StatusInfo.copy(alpha = 0.13f)
+                                        com.example.data.model.Enrollment.CERTIFICATE_DELIVERED ->
+                                            com.example.ui.theme.StatusSuccess.copy(alpha = 0.13f)
+                                        else -> MaterialTheme.colorScheme.surfaceVariant
+                                    }
+                                ) {
+                                    Text(
+                                        text = "مدرک: " + com.example.data.util.CourseStatusLabels
+                                            .certificateStatusLabel(enrollment.certificateStatus),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        fontWeight = FontWeight.Bold,
+                                        color = when (enrollment.certificateStatus) {
+                                            com.example.data.model.Enrollment.CERTIFICATE_PENDING ->
+                                                com.example.ui.theme.StatusWarning
+                                            com.example.data.model.Enrollment.CERTIFICATE_ISSUED ->
+                                                com.example.ui.theme.StatusInfo
+                                            com.example.data.model.Enrollment.CERTIFICATE_DELIVERED ->
+                                                com.example.ui.theme.StatusSuccess
+                                            else -> MaterialTheme.colorScheme.onSurfaceVariant
+                                        },
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                    )
+                                }
+                                if (enrollment.enrolledViaOverride) {
+                                    Surface(
+                                        shape = RoundedCornerShape(8.dp),
+                                        color = Color.Transparent,
+                                        border = androidx.compose.foundation.BorderStroke(
+                                            1.dp,
+                                            com.example.ui.theme.StatusWarning.copy(alpha = 0.65f)
+                                        )
+                                    ) {
+                                        Text(
+                                            text = "ثبت‌نام استثنایی",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            fontWeight = FontWeight.Bold,
+                                            color = com.example.ui.theme.StatusWarning,
+                                            modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                                        )
+                                    }
+                                }
+                            }
+
                             Spacer(modifier = Modifier.height(8.dp))
 
                             // Contract PDF Buttons

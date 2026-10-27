@@ -6,6 +6,8 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.data.local.AppDatabase
 import com.example.data.model.AcademySettings
+import com.example.data.model.ArchiveCourse
+import com.example.data.model.ArchiveStudent
 import com.example.data.model.AuditLog
 import com.example.data.model.BankAccount
 import com.example.data.model.Course
@@ -28,6 +30,7 @@ import com.example.data.util.FinanceUtil
 import com.example.data.util.StudentFinancialSummary
 import com.example.service.messaging.MessageSendResult
 import com.example.service.messaging.MessagingManager
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -305,6 +308,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         installmentCount: Int,
         description: String,
         isActive: Boolean,
+        academicYear: String = "",
+        startShamsi: String = "",
+        startTime: String = "",
+        startEpoch: Long = 0L,
+        capacity: Int = 0,
         onComplete: (Boolean, String?) -> Unit
     ) {
         viewModelScope.launch {
@@ -314,7 +322,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 tuitionFee = tuitionFee,
                 installmentCount = installmentCount,
                 description = description,
-                isActive = isActive
+                isActive = isActive,
+                academicYear = academicYear,
+                startShamsi = startShamsi,
+                startTime = startTime,
+                startEpoch = startEpoch,
+                capacity = capacity
             )
             if (res.isSuccess) {
                 showMessage("دوره آموزشی جدید با موفقیت ایجاد شد.")
@@ -364,6 +377,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         firstInstallmentDateShamsi: String,
         firstInstallmentPaidNow: Boolean,
         notes: String,
+        allowOverCapacity: Boolean = false,
         onComplete: (Boolean, String?) -> Unit
     ) {
         viewModelScope.launch {
@@ -376,7 +390,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 customInstallmentAmounts = customInstallmentAmounts,
                 firstInstallmentDateShamsi = firstInstallmentDateShamsi,
                 firstInstallmentPaidNow = firstInstallmentPaidNow,
-                notes = notes
+                notes = notes,
+                allowOverCapacity = allowOverCapacity
             )
             if (res.isSuccess) {
                 showMessage("ثبت‌نام ${student.fullName} با موفقیت انجام و اقساط صادر شد.")
@@ -980,6 +995,220 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
             showMessage("تست ارسال خودکار تلگرام برای $minStr زمانبندی شد (AlarmManager فعال شد).")
             onResult(scheduled)
+        }
+    }
+
+    // ======================================================================
+    // Course lifecycle (mission: capacity / close / completion / finalize)
+    // ======================================================================
+
+    /** Completion review state, keyed by courseId (one dialog reads it at a time). */
+    data class CourseCompletionUiState(
+        val courseId: String? = null,
+        val loading: Boolean = false,
+        val status: com.example.data.repository.CourseCompletionStatus? = null,
+        val error: String? = null
+    )
+
+    private val _courseCompletion = MutableStateFlow(CourseCompletionUiState())
+    val courseCompletion: StateFlow<CourseCompletionUiState> = _courseCompletion.asStateFlow()
+
+    /** Runs the pure pre-finalize review for [courseId]; the UI shows the checklist. */
+    fun checkCourseCompletion(courseId: String) {
+        viewModelScope.launch {
+            _courseCompletion.value = CourseCompletionUiState(courseId = courseId, loading = true)
+            val res = academyRepository.completionCheck(courseId)
+            _courseCompletion.value = if (res.isSuccess) {
+                CourseCompletionUiState(courseId = courseId, loading = false, status = res.getOrNull())
+            } else {
+                CourseCompletionUiState(
+                    courseId = courseId,
+                    loading = false,
+                    error = res.exceptionOrNull()?.message ?: "خطا در بررسی وضعیت پایان دوره."
+                )
+            }
+        }
+    }
+
+    fun openEnrollment(courseId: String) {
+        viewModelScope.launch {
+            val res = academyRepository.openEnrollment(courseId)
+            if (res.isSuccess) {
+                showMessage("ثبت‌نام دوره بازگشایی شد.")
+            } else {
+                showMessage(res.exceptionOrNull()?.message ?: "خطا در بازگشایی ثبت‌نام.")
+            }
+        }
+    }
+
+    fun closeEnrollmentManually(courseId: String) {
+        viewModelScope.launch {
+            val res = academyRepository.closeEnrollmentManually(courseId)
+            if (res.isSuccess) {
+                showMessage("ثبت‌نام این دوره بسته شد.")
+            } else {
+                showMessage(res.exceptionOrNull()?.message ?: "خطا در بستن ثبت‌نام.")
+            }
+        }
+    }
+
+    fun setCourseHoldingEnded(courseId: String, endShamsi: String, endEpoch: Long) {
+        viewModelScope.launch {
+            val res = academyRepository.setCourseHoldingEnded(courseId, endShamsi, endEpoch)
+            if (res.isSuccess) {
+                showMessage("پایان برگزاری دوره ثبت شد.")
+            } else {
+                showMessage(res.exceptionOrNull()?.message ?: "خطا در ثبت پایان برگزاری.")
+            }
+        }
+    }
+
+    fun markCourseReady(courseId: String) {
+        viewModelScope.launch {
+            val res = academyRepository.markCourseReady(courseId)
+            if (res.isSuccess) {
+                showMessage("دوره آماده بررسی پایان شد؛ حالا می‌توانید پایان کامل را تأیید کنید.")
+            } else {
+                showMessage(res.exceptionOrNull()?.message ?: "دوره هنوز شرایط پایان کامل را ندارد.")
+            }
+        }
+    }
+
+    fun finalizeCourse(courseId: String) {
+        viewModelScope.launch {
+            val res = academyRepository.finalizeCourse(courseId)
+            if (res.isSuccess) {
+                showMessage("پایان کامل دوره تأیید شد؛ سوابق مالی آن حفظ می‌شود.")
+            } else {
+                showMessage(res.exceptionOrNull()?.message ?: "خطا در تأیید پایان دوره.")
+            }
+        }
+    }
+
+    fun setCertificateStatus(enrollmentId: String, status: String) {
+        viewModelScope.launch {
+            val res = academyRepository.setCertificateStatus(enrollmentId, status)
+            if (res.isSuccess) {
+                showMessage("وضعیت مدرک به‌روزرسانی شد.")
+            } else {
+                showMessage(res.exceptionOrNull()?.message ?: "خطا در ثبت وضعیت مدرک.")
+            }
+        }
+    }
+
+    // ======================================================================
+    // Archive (بایگانی دوره‌ها و هنرجویان قدیمی) — isolated from live ledger
+    // ======================================================================
+
+    val allArchiveCourses: StateFlow<List<ArchiveCourse>> = academyRepository.allArchiveCourses
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    /**
+     * Every archive student in one flow: the archive screen groups it by
+     * course and the reports page sums the known received amounts from it.
+     */
+    val allArchiveStudents: StateFlow<List<ArchiveStudent>> =
+        database.archiveDao().getAllArchiveStudents()
+            .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    /** Passthrough for one archive course's students (collected by the UI). */
+    fun archiveStudentsFor(courseId: String): Flow<List<ArchiveStudent>> =
+        academyRepository.getArchiveStudentsForCourse(courseId)
+
+    fun addArchiveCourse(
+        title: String,
+        academicYear: String = "",
+        startShamsi: String = "",
+        notes: String = "",
+        onComplete: (Boolean, String?) -> Unit = { _, _ -> }
+    ) {
+        viewModelScope.launch {
+            val res = academyRepository.addArchiveCourse(title, academicYear, startShamsi, notes)
+            if (res.isSuccess) {
+                showMessage("دوره تاریخی به بایگانی اضافه شد.")
+                onComplete(true, null)
+            } else {
+                showMessage(res.exceptionOrNull()?.message ?: "خطا در ثبت دوره تاریخی.")
+                onComplete(false, res.exceptionOrNull()?.message)
+            }
+        }
+    }
+
+    fun updateArchiveCourse(course: ArchiveCourse, onComplete: (Boolean, String?) -> Unit = { _, _ -> }) {
+        viewModelScope.launch {
+            val res = academyRepository.updateArchiveCourse(course)
+            if (res.isSuccess) {
+                showMessage("دوره تاریخی ویرایش شد.")
+                onComplete(true, null)
+            } else {
+                showMessage(res.exceptionOrNull()?.message ?: "خطا در ویرایش دوره تاریخی.")
+                onComplete(false, res.exceptionOrNull()?.message)
+            }
+        }
+    }
+
+    fun deleteArchiveCourse(course: ArchiveCourse) {
+        viewModelScope.launch {
+            val res = academyRepository.deleteArchiveCourse(course)
+            if (res.isSuccess) {
+                showMessage("دوره تاریخی و هنرجویان آن از بایگانی حذف شد.")
+            } else {
+                showMessage(res.exceptionOrNull()?.message ?: "خطا در حذف دوره تاریخی.")
+            }
+        }
+    }
+
+    fun addArchiveStudent(
+        archiveCourseId: String,
+        fullName: String,
+        mobile: String = "",
+        tuitionAmount: Long? = null,
+        receivedAmount: Long? = null,
+        paymentDatesNote: String = "",
+        notes: String = "",
+        onComplete: (Boolean, String?) -> Unit = { _, _ -> }
+    ) {
+        viewModelScope.launch {
+            val res = academyRepository.addArchiveStudent(
+                archiveCourseId = archiveCourseId,
+                fullName = fullName,
+                mobile = mobile,
+                tuitionAmount = tuitionAmount,
+                receivedAmount = receivedAmount,
+                paymentDatesNote = paymentDatesNote,
+                notes = notes
+            )
+            if (res.isSuccess) {
+                showMessage("هنرجوی تاریخی به بایگانی این دوره اضافه شد.")
+                onComplete(true, null)
+            } else {
+                showMessage(res.exceptionOrNull()?.message ?: "خطا در ثبت هنرجوی تاریخی.")
+                onComplete(false, res.exceptionOrNull()?.message)
+            }
+        }
+    }
+
+    fun updateArchiveStudent(student: ArchiveStudent, onComplete: (Boolean, String?) -> Unit = { _, _ -> }) {
+        viewModelScope.launch {
+            val res = academyRepository.updateArchiveStudent(student)
+            if (res.isSuccess) {
+                showMessage("اطلاعات هنرجوی تاریخی ویرایش شد.")
+                onComplete(true, null)
+            } else {
+                showMessage(res.exceptionOrNull()?.message ?: "خطا در ویرایش هنرجوی تاریخی.")
+                onComplete(false, res.exceptionOrNull()?.message)
+            }
+        }
+    }
+
+    fun deleteArchiveStudent(student: ArchiveStudent) {
+        viewModelScope.launch {
+            val res = academyRepository.deleteArchiveStudent(student)
+            if (res.isSuccess) {
+                showMessage("هنرجوی تاریخی از بایگانی حذف شد.")
+            } else {
+                showMessage(res.exceptionOrNull()?.message ?: "خطا در حذف هنرجوی تاریخی.")
+            }
         }
     }
 }

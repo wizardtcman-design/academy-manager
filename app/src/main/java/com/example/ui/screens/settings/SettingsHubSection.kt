@@ -21,8 +21,10 @@ import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.filled.AccountBalance
 import androidx.compose.material.icons.filled.AccountCircle
+import androidx.compose.material.icons.filled.Archive
 import androidx.compose.material.icons.filled.Backup
 import androidx.compose.material.icons.filled.CalendarMonth
+import androidx.compose.material.icons.filled.Contacts
 import androidx.compose.material.icons.filled.CreditCard
 import androidx.compose.material.icons.filled.FormatListNumbered
 import androidx.compose.material.icons.filled.History
@@ -73,6 +75,8 @@ fun SettingsHubSection(
     onNavigateToCourses: () -> Unit,
     onNavigateToAuditLogs: () -> Unit,
     onNavigateToReminders: () -> Unit,
+    onNavigateToArchive: () -> Unit = {},
+    onNavigateToPhonebook: () -> Unit = {},
     onOpenChangePassword: () -> Unit,
     onOpenInstallmentFormula: () -> Unit,
     onOpenCalendar: () -> Unit,
@@ -185,6 +189,7 @@ fun SettingsHubSection(
         QuickTile("بانک و کارت", Icons.Default.CreditCard, MaterialTheme.colorScheme.secondary, Modifier.weight(1f)) { onSelectTab(3) }
         QuickTile("قالب پیام", Icons.Default.Message, MaterialTheme.colorScheme.tertiary, Modifier.weight(1f)) { onNavigateToReminders() }
         QuickTile("دوره‌ها", Icons.Default.FormatListNumbered, MaterialTheme.colorScheme.primary, Modifier.weight(1f)) { onNavigateToCourses() }
+        QuickTile("دفترچه تلفن", Icons.Default.Contacts, MaterialTheme.colorScheme.tertiary, Modifier.weight(1f)) { onNavigateToPhonebook() }
         QuickTile("ربات تلگرام", Icons.Default.Share, MaterialTheme.colorScheme.secondary, Modifier.weight(1f)) { onOpenIntegrations() }
         QuickTile("امنیت", Icons.Default.Security, Color(0xFF34D399), Modifier.weight(1f)) { onSelectTab(4) }
     }
@@ -211,6 +216,7 @@ fun SettingsHubSection(
         icon = Icons.Default.Security,
         accent = MaterialTheme.colorScheme.primary
     ) {
+        HubRow("بایگانی دوره‌ها و هنرجویان قدیمی", "ثبت دوره‌های گذشته و دریافتی‌های قطعی آن‌ها", Icons.Default.Archive, MaterialTheme.colorScheme.secondary) { onNavigateToArchive() }
         HubRow("تاریخچه تغییرات (Audit Log)", "ثبت خودکار افزودن‌ها، ویرایش‌ها و حذف‌ها", Icons.Default.History, Color(0xFF34D399)) { onNavigateToAuditLogs() }
         HubRow("فرمول محاسبه اقساط", "محاسبه بر اساس تاریخ قسط اول با تقویم خورشیدی", Icons.Default.AccountBalance, Color(0xFFFBBF24)) { onOpenInstallmentFormula() }
         HubRow("تغییر رمز عبور مدیر", "بروزرسانی امن رمز ورود به سامانه", Icons.Default.Lock, MaterialTheme.colorScheme.secondary) { onOpenChangePassword() }

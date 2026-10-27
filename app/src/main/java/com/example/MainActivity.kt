@@ -80,10 +80,12 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.example.data.model.AcademySettings
 import com.example.ui.navigation.Screen
+import com.example.ui.screens.archive.ArchiveScreen
 import com.example.ui.screens.audit.AuditLogsScreen
 import com.example.ui.screens.auth.AppLockScreen
 import com.example.ui.screens.auth.LoginScreen
 import com.example.ui.screens.bot.BotScreen
+import com.example.ui.screens.courses.CourseDetailsScreen
 import com.example.ui.screens.courses.CoursesScreen
 import com.example.ui.screens.dashboard.DashboardScreen
 import com.example.ui.screens.dialogs.AddEditStudentDialog
@@ -94,6 +96,7 @@ import com.example.ui.screens.reminders.RemindersScreen
 import com.example.ui.screens.reports.ReportsScreen
 import com.example.ui.screens.settings.SettingsScreen
 import com.example.ui.screens.settings.availableThemeModels
+import com.example.ui.screens.students.PhonebookScreen
 import com.example.ui.screens.students.StudentsScreen
 import com.example.ui.components.FloatingNavBar
 import com.example.ui.components.NavItem
@@ -275,11 +278,20 @@ fun MainAppScaffold(
     var currentTab by remember { mutableStateOf<Screen>(Screen.Dashboard) }
     // Settings is NOT a bottom tab: it opens full-screen from the gear in the top bar.
     var activeSubScreen by remember { mutableStateOf<Screen?>(null) }
+    // CourseDetails needs the id of the course it renders (kept next to the
+    // sub-screen slot, exactly like the existing flat routing style).
+    var activeCourseId by remember { mutableStateOf<String?>(null) }
     var settingsOpen by remember { mutableStateOf(false) }
     var updateOpen by remember { mutableStateOf(false) }
     var showQuickAddStudentDialog by remember { mutableStateOf(false) }
     var showChangePasswordDialog by remember { mutableStateOf(false) }
     var showQuickThemeDialog by remember { mutableStateOf(false) }
+
+    // Live ledger lists the reworked CoursesScreen and CourseDetails need.
+    val enrollments by viewModel.enrollments.collectAsState()
+    val installments by viewModel.installments.collectAsState()
+
+    val currencyUnit = settings?.currencyUnit ?: "تومان"
 
     val activeThemeItem = remember(settings?.themeName) {
         availableThemeModels.find { it.id == (settings?.themeName ?: "BLUE") } ?: availableThemeModels.first()
@@ -579,9 +591,23 @@ fun MainAppScaffold(
                     Screen.Courses -> {
                         CoursesScreen(
                             courses = courses,
-                            currencyUnit = settings?.currencyUnit ?: "تومان",
-                            onAddCourse = { title, duration, fee, installments, desc, isActive ->
-                                viewModel.addCourse(title, duration, fee, installments, desc, isActive) { _, _ -> }
+                            enrollments = enrollments,
+                            installments = installments,
+                            currencyUnit = currencyUnit,
+                            onAddCourse = { title, duration, fee, installments, desc, isActive, year, startShamsi, startTime, startEpoch, capacity ->
+                                viewModel.addCourse(
+                                    title = title,
+                                    durationMonths = duration,
+                                    tuitionFee = fee,
+                                    installmentCount = installments,
+                                    description = desc,
+                                    isActive = isActive,
+                                    academicYear = year,
+                                    startShamsi = startShamsi,
+                                    startTime = startTime,
+                                    startEpoch = startEpoch,
+                                    capacity = capacity
+                                ) { _, _ -> }
                             },
                             onUpdateCourse = { course ->
                                 viewModel.updateCourse(course) { _, _ -> }
@@ -589,6 +615,37 @@ fun MainAppScaffold(
                             onDeleteCourse = { course ->
                                 viewModel.deleteCourse(course)
                             },
+                            onOpenCourseDetails = { courseId ->
+                                activeCourseId = courseId
+                                activeSubScreen = Screen.CourseDetails
+                            },
+                            onBack = { activeSubScreen = null }
+                        )
+                    }
+
+                    Screen.CourseDetails -> {
+                        CourseDetailsScreen(
+                            viewModel = viewModel,
+                            courseId = activeCourseId ?: "",
+                            currencyUnit = currencyUnit,
+                            onClose = {
+                                // Return to the courses list this screen came from.
+                                activeSubScreen = Screen.Courses
+                            }
+                        )
+                    }
+
+                    Screen.Archive -> {
+                        ArchiveScreen(
+                            viewModel = viewModel,
+                            currencyUnit = currencyUnit,
+                            onBack = { activeSubScreen = null }
+                        )
+                    }
+
+                    Screen.Phonebook -> {
+                        PhonebookScreen(
+                            viewModel = viewModel,
                             onBack = { activeSubScreen = null }
                         )
                     }
@@ -602,6 +659,8 @@ fun MainAppScaffold(
                             onNavigateToCourses = { activeSubScreen = Screen.Courses },
                             onNavigateToAuditLogs = { activeSubScreen = Screen.AuditLogs },
                             onNavigateToReminders = { activeSubScreen = Screen.Reminders },
+                            onNavigateToArchive = { activeSubScreen = Screen.Archive },
+                            onNavigateToPhonebook = { activeSubScreen = Screen.Phonebook },
                             onOpenChangePassword = { showChangePasswordDialog = true },
                             onLogout = { viewModel.logout() },
                             onOpenBotTab = {
