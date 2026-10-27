@@ -63,6 +63,19 @@ jobs:
       - name: Pin wrangler.toml to the production D1 (never rebind)
         run: node scripts/pin-d1-to-prod.mjs wrangler.toml "$PROD_DB_ID" "$PROD_DB_NAME"
 
+      - name: Migration ledger gate (read-only — shows exactly what will apply)
+        run: |
+          set -o pipefail
+          npx wrangler d1 migrations list "$PROD_DB_NAME" --remote | tee "$RUNNER_TEMP/migrations-preview.log"
+          if grep -q "0001_tenancy.sql" "$RUNNER_TEMP/migrations-preview.log"; then
+            echo "FAIL: دفتر مهاجرت‌ها (d1_migrations) روی دیتابیس تولیدی وجود ندارد یا خالی است؛ برای همین مهاجرت‌های از-قبل-اعمال‌شده هم در فهرست «در انتظار اعمال» ظاهر شده‌اند."
+            echo "      در این حالت migrations apply از 0001 دوباره شروع می‌کند و روی ستون/جدول تکراری متوقف می‌شود (deploy پیش از انتشار کد می‌ایستد، اما این اجرا بی‌نتیجه تکرار می‌شود)."
+            echo "      → اگر این همان دیتابیس تولیدیِ شناخته‌شده است: ابتدا طبق docs/BACKUP_AND_MIGRATION_PLAN.md (بخش ۵-آ) دفتر را bootstrap کنید، بعد دوباره Run بزنید."
+            echo "      → فقط اگر واقعاً یک دیتابیس تازهٔ خالی از صفر است: این گیت را موقتاً از workflow حذف کنید."
+            exit 1
+          fi
+          echo "OK: هنگام apply دقیقاً همان مهاجرت‌های فهرست بالا اجرا می‌شوند (انتظار: 0012 به‌عنوان تنها/آخرین مورد)."
+
       - name: Backup D1 before any change (rollback asset)
         run: |
           npx wrangler d1 export "$PROD_DB_NAME" --output="$RUNNER_TEMP/d1-pre-deploy-backup.sql"

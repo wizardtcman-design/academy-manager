@@ -39,4 +39,14 @@ interface ContractDao {
 
     @Query("DELETE FROM contracts")
     suspend fun clearAll()
+
+    // --- Test-data cleanup (temporary admin tool) ---
+    @Query("SELECT * FROM contracts WHERE studentId = :studentId")
+    suspend fun getForStudentList(studentId: String): List<Contract>
+
+    @Query("DELETE FROM contracts WHERE studentId = :studentId")
+    suspend fun deleteForStudent(studentId: String)
+
+    @Query("SELECT COUNT(*) FROM contracts WHERE studentId = :studentId")
+    suspend fun countForStudent(studentId: String): Int
 }

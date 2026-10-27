@@ -46,7 +46,8 @@ function fail(message: string, status = 400, extra: Record<string, unknown> = {}
     return json({ success: false, message, error: message, ...extra }, status);
 }
 
-function academyIdOf(request: Request, env: Env): string {
+/** Tenant from X-Academy-Id (or the historical 'default'); '' when refused. */
+export function academyIdOf(request: Request, env: Env): string {
     const header = request.headers.get('X-Academy-Id') || '';
     const allowed = (env.ACADEMY_IDS || 'default').split(',').map((s) => s.trim()).filter(Boolean);
     const candidate = header.trim() || 'default';

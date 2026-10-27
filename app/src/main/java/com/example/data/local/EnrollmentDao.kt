@@ -56,4 +56,11 @@ interface EnrollmentDao {
 
     @Query("DELETE FROM enrollments WHERE isSampleData = 1")
     suspend fun deleteSampleEnrollments()
+
+    // --- Test-data cleanup (temporary admin tool) ---
+    @Query("DELETE FROM enrollments WHERE studentId = :studentId")
+    suspend fun deleteForStudent(studentId: String)
+
+    @Query("SELECT COUNT(*) FROM enrollments WHERE studentId = :studentId")
+    suspend fun countForStudent(studentId: String): Int
 }

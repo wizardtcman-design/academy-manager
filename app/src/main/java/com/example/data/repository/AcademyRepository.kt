@@ -3203,6 +3203,212 @@ class AcademyRepository(
     }
 
     // ==========================================
+    // 9-b. TEST-DATA CLEANUP (temporary admin tool)
+    // Removes EXPLICITLY selected test students and everything provably
+    // theirs — on the Worker (atomic D1 batch), in Firestore, and in Room —
+    // so a fresh test cycle can start with clean ids and dead old links.
+    // Academy settings, courses, bank accounts, templates and every other
+    // student's data are NEVER touched. Identification is by id only.
+    // ==========================================
+
+    /** Local (Room) counts for the pre-delete preview dialog. */
+    data class LocalTestDataCounts(
+        val found: List<Student>,
+        val missingIds: List<String>,
+        val enrollments: Int,
+        val installments: Int,
+        val payments: Int,
+        val reminders: Int,
+        val contracts: Int,
+        val messageLogs: Int,
+        val auditLogs: Int
+    ) {
+        val total: Int get() = enrollments + installments + payments + reminders + contracts + messageLogs + auditLogs
+    }
+
+    data class TestDataCleanupReport(
+        val serverPurged: Boolean,
+        val serverDeletedTotal: Long,
+        val serverRemainingClean: Boolean,
+        val firestoreDeleted: Int,
+        val localDeleted: Map<String, Int>,
+        val localRemainingClean: Boolean,
+        val warnings: List<String>,
+        val message: String
+    )
+
+    private suspend fun localAuditEntityIds(studentId: String): List<String> {
+        val ids = mutableListOf(studentId)
+        ids += enrollmentDao.getEnrollmentsForStudent(studentId).firstOrNull()?.map { it.id } ?: emptyList()
+        ids += installmentDao.getInstallmentsForStudent(studentId).firstOrNull()?.map { it.id } ?: emptyList()
+        ids += contractDao.getForStudentList(studentId).map { it.id }
+        return ids.filter { it.isNotBlank() }.distinct()
+    }
+
+    suspend fun previewLocalTestData(studentIds: List<String>): LocalTestDataCounts {
+        val students = studentIds.mapNotNull { studentDao.getStudentById(it) }
+        val missing = studentIds.filter { id -> students.none { it.id == id } }
+        var enrollments = 0; var installments = 0; var payments = 0
+        var reminders = 0; var contracts = 0; var logs = 0; var audits = 0
+        for (s in students) {
+            enrollments += enrollmentDao.countForStudent(s.id)
+            installments += installmentDao.countForStudent(s.id)
+            payments += paymentDao.countForStudent(s.id)
+            reminders += reminderDao.countForStudent(s.id)
+            contracts += contractDao.countForStudent(s.id)
+            logs += messageLogDao.countForStudent(s.id)
+            audits += auditLogDao.countForEntityIds(localAuditEntityIds(s.id))
+        }
+        return LocalTestDataCounts(students, missing, enrollments, installments, payments, reminders, contracts, logs, audits)
+    }
+
+    /**
+     * Full cleanup for the given EXPLICIT student ids:
+     *  1) Worker purge (atomic, bearer-gated) — aborts on failure so the
+     *     local side never runs ahead of the server,
+     *  2) Firestore docs for the student and its dependents,
+     *  3) Room cascade + local PDF files + resurrection-guard tombstones,
+     *  4) verification pass that counts every table again (must be zero).
+     */
+    suspend fun runTestDataCleanup(
+        studentIds: List<String>,
+        onProgress: (String) -> Unit = {}
+    ): Result<TestDataCleanupReport> {
+        if (studentIds.isEmpty()) {
+            return Result.failure(Exception("حداقل یک هنرجوی آزمایشی را انتخاب کنید."))
+        }
+        val warnings = mutableListOf<String>()
+
+        // ---- 0) resolve the students in Room (identification by id only) ----
+        onProgress("بررسی هنرجوهای انتخاب‌شده...")
+        val students = studentIds.mapNotNull { studentDao.getStudentById(it) }
+        val missing = studentIds.filter { id -> students.none { it.id == id } }
+        if (missing.isNotEmpty()) {
+            warnings.add("${missing.size} شناسه در دستگاه پیدا نشد (احتمالاً قبلاً پاک شده‌اند): ${missing.joinToString().take(120)}")
+        }
+        if (students.isEmpty()) {
+            return Result.failure(Exception("هیچ‌کدام از شناسه‌های انتخاب‌شده در دستگاه وجود ندارند؛ چیزی برای پاک‌سازی نیست."))
+        }
+        val ids = students.map { it.id }
+
+        // ---- 1) server (Worker D1) purge — all-or-nothing ----
+        var serverDeletedTotal = 0L
+        var serverRemainingClean = true
+        var serverPurged = false
+        val settings = settingsDao.getSettingsDirect()
+        val client = com.example.service.contract.ContractCloudClient.fromSettings(settings)
+        if (client.isConfigured()) {
+            onProgress("پاک‌سازی روی سرور (Worker)...")
+            val purgeRes = client.purgeTestData(ids, confirm = true)
+            if (purgeRes.ok && purgeRes.data != null) {
+                val parsed = com.example.service.contract.ContractCloudClient.parseTestDataPurge(purgeRes.data)
+                serverDeletedTotal = parsed.deletedTotal
+                serverRemainingClean = parsed.remainingClean
+                serverPurged = true
+            } else {
+                // Abort BEFORE touching anything locally: a half-cleanup is
+                // exactly what this tool must never produce.
+                return Result.failure(Exception("پاک‌سازی سمت سرور ناموفق بود و متوقف شد: ${purgeRes.error}"))
+            }
+        } else {
+            warnings.add("سرور (Worker) تنظیم نشده است؛ فقط داده‌های دستگاه و فایربیس پاک می‌شوند.")
+        }
+
+        // ---- 2) Firestore ----
+        var firestoreDeleted = 0
+        if (firebaseManager.isReady()) {
+            onProgress("پاک‌سازی اسناد فایربیس...")
+            for (id in ids) {
+                firebaseManager.deleteStudentFromFirestore(id)
+                firestoreDeleted += firebaseManager.deleteDocsWhereEqualTo("enrollments", "studentId", id)
+                firestoreDeleted += firebaseManager.deleteDocsWhereEqualTo("installments", "studentId", id)
+                firestoreDeleted += firebaseManager.deleteDocsWhereEqualTo("payments", "studentId", id)
+                firestoreDeleted += firebaseManager.deleteDocsWhereEqualTo("reminders", "studentId", id)
+                firestoreDeleted += firebaseManager.deleteDocsWhereEqualTo("messageLogs", "studentId", id)
+                firestoreDeleted += firebaseManager.deleteDocsWhereEqualTo("auditLogs", "entityId", id)
+            }
+        } else {
+            warnings.add("فایربیس در دسترس نیست؛ اسناد ابری پاک نشدند (همگام‌سازی بعدی دوباره آپلود نمی‌کند چون رکوردهای محلی هم حذف می‌شوند).")
+        }
+
+        // ---- 3) Room cascade ----
+        onProgress("حذف رکوردهای محلی...")
+        val localDeleted = mutableMapOf<String, Int>()
+        var contractsDeleted = 0
+        var logsDeleted = 0
+        var auditsDeleted = 0
+        for (id in ids) {
+            // Contract PDF files on disk first (paths die with the rows).
+            for (c in contractDao.getForStudentList(id)) {
+                for (path in listOf(c.localPdfPath, c.localSignedPdfPath)) {
+                    if (path.isNotBlank()) {
+                        try { java.io.File(path).delete() } catch (_: Exception) {}
+                    }
+                }
+            }
+            contractsDeleted += contractDao.countForStudent(id)
+            contractDao.deleteForStudent(id)
+            val p = paymentDao.countForStudent(id); paymentDao.deleteForStudent(id); localDeleted["payments"] = (localDeleted["payments"] ?: 0) + p
+            val i = installmentDao.countForStudent(id); installmentDao.deleteForStudent(id); localDeleted["installments"] = (localDeleted["installments"] ?: 0) + i
+            val e = enrollmentDao.countForStudent(id); enrollmentDao.deleteForStudent(id); localDeleted["enrollments"] = (localDeleted["enrollments"] ?: 0) + e
+            val r = reminderDao.countForStudent(id); reminderDao.deleteForStudent(id); localDeleted["reminders"] = (localDeleted["reminders"] ?: 0) + r
+            val l = messageLogDao.countForStudent(id); messageLogDao.deleteForStudent(id); logsDeleted += l
+            val auditIds = localAuditEntityIds(id)
+            val a = auditLogDao.countForEntityIds(auditIds); auditLogDao.deleteForEntityIds(auditIds); auditsDeleted += a
+            studentDao.deleteStudentById(id)
+            // Resurrection guards: the pull-filter tombstone (Firestore) and
+            // the Worker push tombstone (next bot sync deletes there too).
+            database.pendingDeletionDao().insert(com.example.data.model.PendingDeletion(entityType = "STUDENT", entityId = id))
+            database.pendingDeletionDao().insertStudentDeletion(com.example.data.model.PendingStudentDeletion(id))
+        }
+        localDeleted["contracts"] = contractsDeleted
+        localDeleted["messageLogs"] = logsDeleted
+        localDeleted["auditLogs"] = auditsDeleted
+        localDeleted["students"] = ids.size
+
+        // ---- 4) verify locally ----
+        onProgress("کنترل نهایی...")
+        var localRemaining = 0
+        for (id in ids) {
+            localRemaining += enrollmentDao.countForStudent(id)
+            localRemaining += installmentDao.countForStudent(id)
+            localRemaining += paymentDao.countForStudent(id)
+            localRemaining += reminderDao.countForStudent(id)
+            localRemaining += contractDao.countForStudent(id)
+            localRemaining += messageLogDao.countForStudent(id)
+        }
+        val localRemainingClean = localRemaining == 0 && ids.all { studentDao.getStudentById(it) == null }
+
+        logAction(
+            entityType = "SYSTEM",
+            entityId = "test_cleanup",
+            actionType = "DELETE",
+            previousValue = "${ids.size} هنرجوی آزمایشی",
+            newValue = "",
+            description = "پاک‌سازی کامل اطلاعات آزمایشی: سرور=${if (serverPurged) "$serverDeletedTotal رکورد" else "غیرفعال"}، فایربیس=$firestoreDeleted سند، دستگاه=${localDeleted.values.sum()} رکورد"
+        )
+
+        val message = buildString {
+            append("پاک‌سازی کامل انجام شد")
+            if (serverPurged) append(" (سرور: $serverDeletedTotal رکورد)")
+            append(". کنترل نهایی محلی: ")
+            append(if (localRemainingClean) "هیچ رکورد وابسته‌ای باقی نمانده است." else "$localRemaining رکورد باقی مانده است!")
+        }
+        return Result.success(
+            TestDataCleanupReport(
+                serverPurged = serverPurged,
+                serverDeletedTotal = serverDeletedTotal,
+                serverRemainingClean = serverRemainingClean,
+                firestoreDeleted = firestoreDeleted,
+                localDeleted = localDeleted,
+                localRemainingClean = localRemainingClean,
+                warnings = warnings,
+                message = message
+            )
+        )
+    }
+
+    // ==========================================
     // 10. REMINDERS
     // ==========================================
     val allReminders: Flow<List<Reminder>> = reminderDao.getAllReminders()

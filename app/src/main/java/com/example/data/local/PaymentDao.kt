@@ -52,4 +52,11 @@ interface PaymentDao {
 
     @Query("DELETE FROM payments WHERE isSampleData = 1")
     suspend fun deleteSamplePayments()
+
+    // --- Test-data cleanup (temporary admin tool) ---
+    @Query("DELETE FROM payments WHERE studentId = :studentId")
+    suspend fun deleteForStudent(studentId: String)
+
+    @Query("SELECT COUNT(*) FROM payments WHERE studentId = :studentId")
+    suspend fun countForStudent(studentId: String): Int
 }

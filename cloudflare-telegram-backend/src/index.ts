@@ -10,6 +10,7 @@ import { handleContractsApi } from './handlers/contracts-api';
 import { handleSignRoute } from './handlers/sign';
 import { handleTelegramConnect } from './handlers/telegram-connect';
 import { handlePayRoute } from './handlers/pay';
+import { handleTestDataApi } from './handlers/test-data';
 
 export default {
     async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -36,6 +37,12 @@ export default {
         if (url.pathname.startsWith('/api/contracts') || url.pathname.startsWith('/api/students/') ||
             url.pathname.startsWith('/api/admin/')) {
             return await handleContractsApi(request, env, url);
+        }
+
+        // 0.a Test-data cleanup (temporary admin tool): bearer-gated preview
+        //     and atomic purge of EXPLICITLY selected test students.
+        if (url.pathname.startsWith('/api/test-data/')) {
+            return await handleTestDataApi(request, env, url);
         }
 
         // 0.b Per-academy bot token management (authenticated with the API key).

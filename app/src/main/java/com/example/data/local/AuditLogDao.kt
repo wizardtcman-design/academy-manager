@@ -20,4 +20,11 @@ interface AuditLogDao {
 
     @Query("DELETE FROM audit_logs")
     suspend fun clearLogs()
+
+    // --- Test-data cleanup (temporary admin tool) ---
+    @Query("DELETE FROM audit_logs WHERE entityId IN (:entityIds)")
+    suspend fun deleteForEntityIds(entityIds: List<String>)
+
+    @Query("SELECT COUNT(*) FROM audit_logs WHERE entityId IN (:entityIds)")
+    suspend fun countForEntityIds(entityIds: List<String>): Int
 }

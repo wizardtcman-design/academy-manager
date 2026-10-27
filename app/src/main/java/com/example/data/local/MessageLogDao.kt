@@ -27,4 +27,11 @@ interface MessageLogDao {
 
     @Query("DELETE FROM message_logs")
     suspend fun clearAll()
+
+    // --- Test-data cleanup (temporary admin tool) ---
+    @Query("DELETE FROM message_logs WHERE studentId = :studentId")
+    suspend fun deleteForStudent(studentId: String)
+
+    @Query("SELECT COUNT(*) FROM message_logs WHERE studentId = :studentId")
+    suspend fun countForStudent(studentId: String): Int
 }
