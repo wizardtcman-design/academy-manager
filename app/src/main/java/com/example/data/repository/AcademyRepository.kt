@@ -3,6 +3,8 @@ package com.example.data.repository
 import com.example.data.local.AppDatabase
 import com.example.data.model.AcademyNotification
 import com.example.data.model.AcademySettings
+import com.example.data.model.ArchiveCourse
+import com.example.data.model.ArchiveStudent
 import com.example.data.model.AuditLog
 import com.example.data.model.BankAccount
 import com.example.data.model.Course
@@ -119,6 +121,19 @@ data class DebtorStudentItem(
     val overdueDays: Int
 )
 
+/**
+ * Result of the pre-finalize completion review for one course. Every list is a
+ * human-readable blocker: the course may only become READY (and then FINALIZED)
+ * when all three are empty. Unknown money is NOT treated as settled by
+ * construction — an installment with remainingAmount > 0 is still unpaid.
+ */
+data class CourseCompletionStatus(
+    val isReady: Boolean,
+    val activeStudents: List<String>,       // names of enrollments with status ACTIVE
+    val unpaidInstallments: List<String>,   // "studentName – قسط n – مبلغ باقی‌مانده X"
+    val missingCertificates: List<String>   // names with certificateStatus PENDING (non-cancelled)
+)
+
 class AcademyRepository(
     private val database: AppDatabase,
     private val firebaseManager: FirebaseManager
@@ -142,6 +157,7 @@ class AcademyRepository(
     private val expenseDao = database.expenseDao()
     private val refundDao = database.refundDao()
     private val expenseCategoryDao = database.expenseCategoryDao()
+    private val archiveDao = database.archiveDao()
 
     init {
         CoroutineScope(Dispatchers.IO).launch {
@@ -441,13 +457,21 @@ class AcademyRepository(
         tuitionFee: Long,
         installmentCount: Int = 3,
         description: String = "",
-        isActive: Boolean = true
+        isActive: Boolean = true,
+        academicYear: String = "",
+        startShamsi: String = "",
+        startTime: String = "",
+        startEpoch: Long = 0L,
+        capacity: Int = 0
     ): Result<Course> {
         if (title.isBlank()) {
             return Result.failure(Exception("نام دوره الزامی است."))
         }
         if (tuitionFee <= 0) {
             return Result.failure(Exception("شهریه دوره باید بزرگتر از صفر باشد."))
+        }
+        if (capacity < 0) {
+            return Result.failure(Exception("ظرفیت نامعتبر است."))
         }
 
         val course = Course(
@@ -458,7 +482,15 @@ class AcademyRepository(
             installmentCount = if (installmentCount > 0) installmentCount else 3,
             description = description.trim(),
             isActive = isActive,
-            isSampleData = false
+            isSampleData = false,
+            academicYear = academicYear.trim(),
+            startShamsi = startShamsi.trim(),
+            startTime = startTime.trim(),
+            startEpoch = startEpoch,
+            capacity = capacity,
+            enrollmentStatus = Course.ENROLLMENT_OPEN,
+            holdingStatus = Course.HOLDING_ONGOING,
+            finalStatus = Course.FINAL_INCOMPLETE
         )
 
         courseDao.insertCourse(course)
@@ -477,16 +509,24 @@ class AcademyRepository(
     }
 
     suspend fun updateCourse(course: Course): Result<Unit> {
-        courseDao.updateCourse(course)
-        firebaseManager.saveCourseToFirestore(course)
+        val updated = course.copy(updatedAt = System.currentTimeMillis())
+        courseDao.updateCourse(updated)
+        firebaseManager.saveCourseToFirestore(updated)
+
+        // The capacity/status groups are manager-visible state: keep
+        // enrollmentStatus consistent after any edit (manual CLOSE and
+        // FINALIZED are never touched by the recompute).
+        if (updated.finalStatus != Course.FINAL_FINALIZED) {
+            recomputeCourseEnrollmentStatus(updated.id)
+        }
 
         logAction(
             entityType = "COURSE",
-            entityId = course.id,
+            entityId = updated.id,
             actionType = "UPDATE",
             previousValue = "",
-            newValue = course.title,
-            description = "ویرایش مشخصات دوره: ${course.title}"
+            newValue = updated.title,
+            description = "ویرایش مشخصات دوره: ${updated.title}"
         )
 
         return Result.success(Unit)
@@ -503,6 +543,411 @@ class AcademyRepository(
             previousValue = course.title,
             newValue = "",
             description = "حذف دوره آموزشی: ${course.title}"
+        )
+
+        return Result.success(Unit)
+    }
+
+    // ==========================================
+    // 2-b. COURSE WORKFLOW (enrollment / holding / finalize — three separate status groups)
+    // ==========================================
+
+    /**
+     * Keeps the OPEN / CAPACITY_FULL state truthful. Never touches a manual
+     * CLOSE (explicit manager decision persists) or a FINALIZED course.
+     */
+    private suspend fun recomputeCourseEnrollmentStatus(courseId: String) {
+        val course = courseDao.getCourseById(courseId) ?: return
+        if (course.finalStatus == Course.FINAL_FINALIZED) return
+        if (course.enrollmentStatus == Course.ENROLLMENT_CLOSED) return
+        val valid = enrollmentDao.countValidEnrollments(courseId)
+        val newStatus = if (course.capacity > 0 && valid >= course.capacity) {
+            Course.ENROLLMENT_CAPACITY_FULL
+        } else {
+            Course.ENROLLMENT_OPEN
+        }
+        if (newStatus != course.enrollmentStatus) {
+            val updated = course.copy(enrollmentStatus = newStatus, updatedAt = System.currentTimeMillis())
+            courseDao.updateCourse(updated)
+            firebaseManager.saveCourseToFirestore(updated)
+        }
+    }
+
+    /** Re-opens enrollment; capacity truth is recomputed (CAPACITY_FULL if full). */
+    suspend fun openEnrollment(courseId: String): Result<Unit> {
+        val course = courseDao.getCourseById(courseId)
+            ?: return Result.failure(Exception("دوره یافت نشد."))
+        if (course.finalStatus == Course.FINAL_FINALIZED) {
+            return Result.failure(Exception("دوره پایان‌یافته قابل بازگشایی نیست."))
+        }
+        val valid = enrollmentDao.countValidEnrollments(courseId)
+        val newStatus = if (course.capacity > 0 && valid >= course.capacity) {
+            Course.ENROLLMENT_CAPACITY_FULL
+        } else {
+            Course.ENROLLMENT_OPEN
+        }
+        val updated = course.copy(
+            enrollmentStatus = newStatus,
+            updatedAt = System.currentTimeMillis()
+        )
+        courseDao.updateCourse(updated)
+        firebaseManager.saveCourseToFirestore(updated)
+
+        logAction(
+            entityType = "COURSE",
+            entityId = course.id,
+            actionType = "UPDATE",
+            previousValue = course.enrollmentStatus,
+            newValue = newStatus,
+            description = "بازگشایی ثبت‌نام دوره: ${course.title}"
+        )
+
+        return Result.success(Unit)
+    }
+
+    /**
+     * Manual manager close of enrollment. Deliberately does NOT settle or
+     * change anything else — installments, certificates and finance remain
+     * tracked; only NEW registrations stop.
+     */
+    suspend fun closeEnrollmentManually(courseId: String): Result<Unit> {
+        val course = courseDao.getCourseById(courseId)
+            ?: return Result.failure(Exception("دوره یافت نشد."))
+        if (course.enrollmentStatus == Course.ENROLLMENT_CLOSED) {
+            return Result.success(Unit)
+        }
+        val updated = course.copy(
+            enrollmentStatus = Course.ENROLLMENT_CLOSED,
+            updatedAt = System.currentTimeMillis()
+        )
+        courseDao.updateCourse(updated)
+        firebaseManager.saveCourseToFirestore(updated)
+
+        logAction(
+            entityType = "COURSE",
+            entityId = course.id,
+            actionType = "UPDATE",
+            previousValue = course.enrollmentStatus,
+            newValue = Course.ENROLLMENT_CLOSED,
+            description = "بستن دستی ثبت‌نام دوره: ${course.title} (اقساط و مدرک‌ها همچنان پیگیری می‌شوند)"
+        )
+
+        return Result.success(Unit)
+    }
+
+    /**
+     * Marks the holding (برگزاری) as ENDED. This is NOT the finalize workflow:
+     * installments/debt/certificates stay live until the explicit finalize.
+     */
+    suspend fun setCourseHoldingEnded(courseId: String, endShamsi: String, endEpoch: Long): Result<Unit> {
+        val course = courseDao.getCourseById(courseId)
+            ?: return Result.failure(Exception("دوره یافت نشد."))
+        if (course.holdingStatus == Course.HOLDING_ENDED) {
+            return Result.success(Unit)
+        }
+        val updated = course.copy(
+            holdingStatus = Course.HOLDING_ENDED,
+            // If no explicit end date was registered on the course, take it from the action.
+            endShamsi = course.endShamsi.ifBlank { endShamsi.trim() },
+            endEpoch = if (course.endEpoch == 0L) endEpoch else course.endEpoch,
+            updatedAt = System.currentTimeMillis()
+        )
+        courseDao.updateCourse(updated)
+        firebaseManager.saveCourseToFirestore(updated)
+
+        logAction(
+            entityType = "COURSE",
+            entityId = course.id,
+            actionType = "UPDATE",
+            previousValue = Course.HOLDING_ONGOING,
+            newValue = Course.HOLDING_ENDED,
+            description = "ثبت پایان برگزاری دوره: ${course.title}"
+        )
+
+        return Result.success(Unit)
+    }
+
+    /**
+     * Pure review over DAO reads: lists every reason the course is not ready.
+     * No data is changed here — this is the manager's checklist.
+     */
+    suspend fun completionCheck(courseId: String): Result<CourseCompletionStatus> {
+        val course = courseDao.getCourseById(courseId)
+            ?: return Result.failure(Exception("دوره یافت نشد."))
+
+        val enrollments = enrollmentDao.getEnrollmentsForCourse(course.id)
+        val installments = installmentDao.getInstallmentsForCourseDirect(course.id)
+
+        val activeStudents = enrollments
+            .filter { it.status == "ACTIVE" }
+            .map { it.studentName }
+
+        // Unknown money is never assumed settled: any non-cancelled installment
+        // that still has remainingAmount > 0 is reported as unpaid.
+        val unpaidInstallments = installments
+            .filter { it.status != "CANCELLED" && it.remainingAmount > 0 }
+            .map { "${it.studentName} – قسط ${it.installmentNumber} – مبلغ باقی‌مانده ${PersianDateUtil.formatCurrency(it.remainingAmount)}" }
+
+        val missingCertificates = enrollments
+            .filter { it.status != "CANCELLED" && it.certificateStatus == Enrollment.CERTIFICATE_PENDING }
+            .map { it.studentName }
+
+        val status = CourseCompletionStatus(
+            isReady = activeStudents.isEmpty() && unpaidInstallments.isEmpty() && missingCertificates.isEmpty(),
+            activeStudents = activeStudents,
+            unpaidInstallments = unpaidInstallments,
+            missingCertificates = missingCertificates
+        )
+        return Result.success(status)
+    }
+
+    /** Gate 1 of finalize: passes only when the completion review is clean. */
+    suspend fun markCourseReady(courseId: String): Result<Unit> {
+        val course = courseDao.getCourseById(courseId)
+            ?: return Result.failure(Exception("دوره یافت نشد."))
+        if (course.finalStatus == Course.FINAL_FINALIZED) {
+            return Result.failure(Exception("این دوره قبلاً پایان کامل آن تأیید شده است."))
+        }
+
+        val check = completionCheck(courseId).getOrDefault(
+            CourseCompletionStatus(isReady = false, activeStudents = emptyList(), unpaidInstallments = emptyList(), missingCertificates = emptyList())
+        )
+        if (!check.isReady) {
+            return Result.failure(
+                Exception(
+                    "بررسی پایان کامل ناموفق: ${check.activeStudents.size} هنرجوی فعال، " +
+                        "${check.unpaidInstallments.size} قسط پرداخت‌نشده، " +
+                        "${check.missingCertificates.size} مدرک منتظر"
+                )
+            )
+        }
+
+        val updated = course.copy(finalStatus = Course.FINAL_READY, updatedAt = System.currentTimeMillis())
+        courseDao.updateCourse(updated)
+        firebaseManager.saveCourseToFirestore(updated)
+
+        logAction(
+            entityType = "COURSE",
+            entityId = course.id,
+            actionType = "UPDATE",
+            previousValue = course.finalStatus,
+            newValue = Course.FINAL_READY,
+            description = "آماده‌سازی دوره برای پایان کامل: ${course.title}"
+        )
+
+        return Result.success(Unit)
+    }
+
+    /** Gate 2 of finalize: only from READY. Deletes NOTHING — history is preserved. */
+    suspend fun finalizeCourse(courseId: String): Result<Unit> {
+        val course = courseDao.getCourseById(courseId)
+            ?: return Result.failure(Exception("دوره یافت نشد."))
+        if (course.finalStatus != Course.FINAL_READY) {
+            return Result.failure(Exception("دوره ابتدا باید آماده بررسی پایان شود."))
+        }
+
+        val updated = course.copy(
+            finalStatus = Course.FINAL_FINALIZED,
+            enrollmentStatus = Course.ENROLLMENT_CLOSED,
+            updatedAt = System.currentTimeMillis()
+        )
+        courseDao.updateCourse(updated)
+        firebaseManager.saveCourseToFirestore(updated)
+
+        logAction(
+            entityType = "COURSE",
+            entityId = course.id,
+            actionType = "UPDATE",
+            previousValue = course.finalStatus,
+            newValue = Course.FINAL_FINALIZED,
+            description = "تأیید پایان کامل دوره: ${course.title} (هیچ داده‌ای حذف نشد)"
+        )
+
+        return Result.success(Unit)
+    }
+
+    /** Manager action on the certificate (مدرک) of one enrollment. */
+    suspend fun setCertificateStatus(enrollmentId: String, status: String): Result<Unit> {
+        val allowed = setOf(
+            Enrollment.CERTIFICATE_PENDING,
+            Enrollment.CERTIFICATE_ISSUED,
+            Enrollment.CERTIFICATE_DELIVERED,
+            Enrollment.CERTIFICATE_NOT_REQUIRED
+        )
+        if (status !in allowed) {
+            return Result.failure(Exception("وضعیت مدرک نامعتبر است."))
+        }
+        val enrollment = enrollmentDao.getEnrollmentById(enrollmentId)
+            ?: return Result.failure(Exception("ثبت‌نام مورد نظر یافت نشد."))
+
+        val updated = enrollment.copy(
+            certificateStatus = status,
+            updatedAt = System.currentTimeMillis()
+        )
+        enrollmentDao.updateEnrollment(updated)
+        firebaseManager.saveEnrollmentToFirestore(updated)
+
+        logAction(
+            entityType = "ENROLLMENT",
+            entityId = enrollment.id,
+            actionType = "UPDATE",
+            previousValue = enrollment.certificateStatus,
+            newValue = status,
+            description = "تغییر وضعیت مدرک هنرجو ${enrollment.studentName} در دوره ${enrollment.courseTitle}"
+        )
+
+        return Result.success(Unit)
+    }
+
+    // ==========================================
+    // 2-c. ARCHIVE (isolated historical courses & students — never feeds the
+    //      live installments/debt/reminder systems; unknown money stays unknown)
+    // ==========================================
+    val allArchiveCourses: Flow<List<ArchiveCourse>> = archiveDao.getAllArchiveCourses()
+
+    fun getArchiveStudentsForCourse(courseId: String): Flow<List<ArchiveStudent>> =
+        archiveDao.getArchiveStudentsForCourse(courseId)
+
+    suspend fun addArchiveCourse(
+        title: String,
+        academicYear: String = "",
+        startShamsi: String = "",
+        notes: String = ""
+    ): Result<ArchiveCourse> {
+        if (title.isBlank()) {
+            return Result.failure(Exception("عنوان دوره تاریخی الزامی است."))
+        }
+
+        val archiveCourse = ArchiveCourse(
+            title = title.trim(),
+            academicYear = academicYear.trim(),
+            startShamsi = startShamsi.trim(),
+            notes = notes.trim()
+        )
+
+        archiveDao.insertArchiveCourse(archiveCourse)
+        firebaseManager.saveArchiveCourseToFirestore(archiveCourse)
+
+        logAction(
+            entityType = "ARCHIVE_COURSE",
+            entityId = archiveCourse.id,
+            actionType = "CREATE",
+            previousValue = "",
+            newValue = archiveCourse.title,
+            description = "ثبت دوره تاریخی در بایگانی: ${archiveCourse.title}"
+        )
+
+        return Result.success(archiveCourse)
+    }
+
+    suspend fun updateArchiveCourse(course: ArchiveCourse): Result<Unit> {
+        archiveDao.updateArchiveCourse(course)
+        firebaseManager.saveArchiveCourseToFirestore(course)
+
+        logAction(
+            entityType = "ARCHIVE_COURSE",
+            entityId = course.id,
+            actionType = "UPDATE",
+            previousValue = "",
+            newValue = course.title,
+            description = "ویرایش دوره تاریخی بایگانی: ${course.title}"
+        )
+
+        return Result.success(Unit)
+    }
+
+    suspend fun deleteArchiveCourse(course: ArchiveCourse): Result<Unit> {
+        // The archive students of this course belong to it — they never survive alone.
+        val students = archiveDao.getArchiveStudentsForCourseDirect(course.id)
+        archiveDao.deleteArchiveStudentsForCourse(course.id)
+        archiveDao.deleteArchiveCourse(course)
+        firebaseManager.deleteArchiveCourseFromFirestore(course.id)
+        students.forEach { firebaseManager.deleteArchiveStudentFromFirestore(it.id) }
+        val removedStudents = students.size
+
+        logAction(
+            entityType = "ARCHIVE_COURSE",
+            entityId = course.id,
+            actionType = "DELETE",
+            previousValue = course.title,
+            newValue = "",
+            description = "حذف دوره تاریخی بایگانی: ${course.title} (به همراه $removedStudents هنرجوی تاریخی)"
+        )
+
+        return Result.success(Unit)
+    }
+
+    suspend fun addArchiveStudent(
+        archiveCourseId: String,
+        fullName: String,
+        mobile: String = "",
+        tuitionAmount: Long? = null,
+        receivedAmount: Long? = null,
+        paymentDatesNote: String = "",
+        notes: String = ""
+    ): Result<ArchiveStudent> {
+        if (fullName.isBlank()) {
+            return Result.failure(Exception("نام هنرجو الزامی است."))
+        }
+        val archiveCourse = archiveDao.getArchiveCourseById(archiveCourseId)
+            ?: return Result.failure(Exception("دوره تاریخی یافت نشد."))
+
+        // null = نامشخص: an unknown amount is never assumed zero and never
+        // counted as income/debt — it is only flagged so the UI can show it.
+        val student = ArchiveStudent(
+            archiveCourseId = archiveCourse.id,
+            fullName = fullName.trim(),
+            mobile = mobile.trim(),
+            tuitionAmount = tuitionAmount,
+            receivedAmount = receivedAmount,
+            paymentDatesNote = paymentDatesNote.trim(),
+            notes = notes.trim(),
+            hasUnknownInfo = (tuitionAmount == null || receivedAmount == null)
+        )
+
+        archiveDao.insertArchiveStudent(student)
+        firebaseManager.saveArchiveStudentToFirestore(student)
+
+        logAction(
+            entityType = "ARCHIVE_STUDENT",
+            entityId = student.id,
+            actionType = "CREATE",
+            previousValue = "",
+            newValue = student.fullName,
+            description = "ثبت هنرجوی تاریخی در بایگانی دوره ${archiveCourse.title}: ${student.fullName}"
+        )
+
+        return Result.success(student)
+    }
+
+    suspend fun updateArchiveStudent(student: ArchiveStudent): Result<Unit> {
+        val updated = student.copy(hasUnknownInfo = (student.tuitionAmount == null || student.receivedAmount == null))
+        archiveDao.updateArchiveStudent(updated)
+        firebaseManager.saveArchiveStudentToFirestore(updated)
+
+        logAction(
+            entityType = "ARCHIVE_STUDENT",
+            entityId = updated.id,
+            actionType = "UPDATE",
+            previousValue = "",
+            newValue = updated.fullName,
+            description = "ویرایش هنرجوی تاریخی بایگانی: ${updated.fullName}"
+        )
+
+        return Result.success(Unit)
+    }
+
+    suspend fun deleteArchiveStudent(student: ArchiveStudent): Result<Unit> {
+        archiveDao.deleteArchiveStudent(student)
+        firebaseManager.deleteArchiveStudentFromFirestore(student.id)
+
+        logAction(
+            entityType = "ARCHIVE_STUDENT",
+            entityId = student.id,
+            actionType = "DELETE",
+            previousValue = student.fullName,
+            newValue = "",
+            description = "حذف هنرجوی تاریخی بایگانی: ${student.fullName}"
         )
 
         return Result.success(Unit)
@@ -533,7 +978,8 @@ class AcademyRepository(
         customInstallmentAmounts: List<Long> = emptyList(),
         firstInstallmentDateShamsi: String,
         firstInstallmentPaidNow: Boolean,
-        notes: String = ""
+        notes: String = "",
+        allowOverCapacity: Boolean = false
     ): Result<Enrollment> {
         val totalFee = course.tuitionFee
         val finalFee = (totalFee - discount).coerceAtLeast(0L)
@@ -553,6 +999,29 @@ class AcademyRepository(
         )
         if (!guard.allowed) {
             return Result.failure(Exception(guard.message))
+        }
+
+        // Capacity enforcement: reload the course fresh from the DAO so a stale
+        // in-memory copy can never bypass a just-filled capacity.
+        val freshCourse = courseDao.getCourseById(course.id) ?: course
+        if (freshCourse.finalStatus == Course.FINAL_FINALIZED) {
+            return Result.failure(Exception("این دوره پایان کامل تأیید شده و ثبت‌نام جدید نمی‌پذیرد."))
+        }
+        if (freshCourse.enrollmentStatus == Course.ENROLLMENT_CLOSED) {
+            return Result.failure(Exception("ثبت‌نام این دوره توسط مدیر بسته شده است."))
+        }
+        val validEnrollmentCount = enrollmentDao.countValidEnrollments(freshCourse.id)
+        val isOverCapacity = freshCourse.capacity > 0 && validEnrollmentCount >= freshCourse.capacity
+        if (isOverCapacity && !allowOverCapacity) {
+            return Result.failure(Exception("ظرفیت این دوره تکمیل است."))
+        }
+        // An over-capacity registration is only possible with an explicit
+        // manager override — it is always recorded on the enrollment, never hidden.
+        val overrideNote = "[ثبت‌نام استثنایی با تأیید مدیر — سرریز ظرفیت]"
+        val effectiveNotes = if (isOverCapacity) {
+            if (notes.isNotBlank()) "$notes\n$overrideNote" else overrideNote
+        } else {
+            notes
         }
 
         // Validate installment amounts sum == finalFee
@@ -598,11 +1067,15 @@ class AcademyRepository(
             firstInstallmentDateShamsi = firstInstallmentDateShamsi,
             firstInstallmentDateEpoch = System.currentTimeMillis(),
             status = "ACTIVE",
-            notes = notes
+            notes = effectiveNotes,
+            enrolledViaOverride = isOverCapacity
         )
 
         enrollmentDao.insertEnrollment(enrollment)
         firebaseManager.saveEnrollmentToFirestore(enrollment)
+
+        // Capacity status must stay truthful right after the new seat is taken.
+        recomputeCourseEnrollmentStatus(freshCourse.id)
 
         // Generate Installments
         val installments = FinanceUtil.buildInstallmentsSchedule(
@@ -661,7 +1134,8 @@ class AcademyRepository(
             actionType = "CREATE",
             previousValue = "",
             newValue = "${student.fullName} در ${course.title}",
-            description = "ثبت‌نام هنرجو ${student.fullName} در دوره ${course.title} با $count قسط"
+            description = "ثبت‌نام هنرجو ${student.fullName} در دوره ${course.title} با $count قسط" +
+                if (isOverCapacity) " (سرریز ظرفیت با تأیید مدیر)" else ""
         )
 
         return Result.success(enrollment)
@@ -681,6 +1155,9 @@ class AcademyRepository(
         )
         enrollmentDao.updateEnrollment(updatedEnrollment)
         firebaseManager.saveEnrollmentToFirestore(updatedEnrollment)
+
+        // A freed seat re-opens the capacity state of the course.
+        recomputeCourseEnrollmentStatus(enrollment.courseId)
 
         // Cancel unpaid or pending installments for this enrollment
         val installments = installmentDao.getInstallmentsForEnrollment(enrollmentId).firstOrNull() ?: emptyList()
@@ -1721,7 +2198,7 @@ class AcademyRepository(
         val root = JSONObject()
         root.put("exportDateShamsi", PersianDateUtil.currentShamsiString())
         root.put("exportEpoch", System.currentTimeMillis())
-        root.put("version", "3.0")
+        root.put("version", "4.0")
         root.put("includesSecrets", includeSensitiveSecrets)
 
         // 1. Students
@@ -1836,6 +2313,20 @@ class AcademyRepository(
             templatesArray.put(JSONObject(tmpl.toMap()))
         }
         root.put("messageTemplates", templatesArray)
+
+        // 13. Archive Courses (isolated historical data, v4.0 sections)
+        val archiveCoursesArray = JSONArray()
+        archiveDao.getAllArchiveCourses().firstOrNull()?.forEach { ac ->
+            archiveCoursesArray.put(JSONObject(ac.toMap()))
+        }
+        root.put("archiveCourses", archiveCoursesArray)
+
+        // 14. Archive Students (nullable amounts stay absent = نامشخص)
+        val archiveStudentsArray = JSONArray()
+        archiveDao.getAllArchiveStudents().firstOrNull()?.forEach { archiveStudent ->
+            archiveStudentsArray.put(JSONObject(archiveStudent.toMap()))
+        }
+        root.put("archiveStudents", archiveStudentsArray)
 
         root.toString(2)
     }
@@ -2031,6 +2522,37 @@ class AcademyRepository(
                 expenseCategoryDao.insertCategories(categories)
             }
 
+            // 13. Archive Courses (optional section: v3 backups restore unchanged)
+            var archiveRestoredCount = 0
+            if (root.has("archiveCourses")) {
+                val array = root.getJSONArray("archiveCourses")
+                val archiveCourses = mutableListOf<ArchiveCourse>()
+                for (i in 0 until array.length()) {
+                    val obj = array.getJSONObject(i)
+                    val map = mutableMapOf<String, Any?>()
+                    obj.keys().forEach { key -> map[key] = obj.get(key) }
+                    archiveCourses.add(ArchiveCourse.fromMap(map))
+                }
+                archiveDao.insertArchiveCourses(archiveCourses)
+                restoredCount += archiveCourses.size
+                archiveRestoredCount += archiveCourses.size
+            }
+
+            // 14. Archive Students (optional section: unknown amounts stay unknown)
+            if (root.has("archiveStudents")) {
+                val array = root.getJSONArray("archiveStudents")
+                val archiveStudents = mutableListOf<ArchiveStudent>()
+                for (i in 0 until array.length()) {
+                    val obj = array.getJSONObject(i)
+                    val map = mutableMapOf<String, Any?>()
+                    obj.keys().forEach { key -> map[key] = obj.get(key) }
+                    archiveStudents.add(ArchiveStudent.fromMap(map))
+                }
+                archiveDao.insertArchiveStudents(archiveStudents)
+                restoredCount += archiveStudents.size
+                archiveRestoredCount += archiveStudents.size
+            }
+
             logAction(
                 entityType = "SYSTEM",
                 entityId = "backup_restore",
@@ -2040,7 +2562,10 @@ class AcademyRepository(
                 description = "بازیابی موفقیت‌آمیز نسخه پشتیبان شامل $restoredCount رکورد"
             )
 
-            Result.success("بازیابی اطلاعات با موفقیت انجام شد ($restoredCount رکورد).")
+            val archiveMessage = if (archiveRestoredCount > 0) {
+                " (شامل $archiveRestoredCount رکورد بایگانی)"
+            } else ""
+            Result.success("بازیابی اطلاعات با موفقیت انجام شد ($restoredCount رکورد)$archiveMessage.")
         } catch (e: Exception) {
             Log.e("AcademyRepository", "Restore failed", e)
             Result.failure(Exception("خطا در خواندن فایل پشتیبان: ${e.message}"))
@@ -2122,28 +2647,30 @@ class AcademyRepository(
             pushedCount += mergedStudents.size
             pulledCount += remoteStudents.size
 
-            // 2. Courses
+            // 2. Courses (LWW on updatedAt: the new mutable status groups must
+            //    survive sync; legacy rows were backfilled updatedAt = createdAt)
             val localCourses = courseDao.getAllCourses().firstOrNull() ?: emptyList()
             val remoteCourses = firebaseManager.fetchCoursesFromFirestore()
             val mergedCourses = mergeEntities(
                 local = localCourses,
                 remote = remoteCourses,
                 idSelector = { it.id },
-                timestampSelector = { it.createdAt }
+                timestampSelector = { it.updatedAt }
             )
             courseDao.insertCourses(mergedCourses)
             firebaseManager.saveCoursesBatch(mergedCourses)
             pushedCount += mergedCourses.size
             pulledCount += remoteCourses.size
 
-            // 3. Enrollments
+            // 3. Enrollments (LWW on updatedAt: certificate status / override flag
+            //    are mutable now; legacy rows were backfilled updatedAt = createdAt)
             val localEnrollments = enrollmentDao.getAllEnrollments().firstOrNull() ?: emptyList()
             val remoteEnrollments = firebaseManager.fetchEnrollmentsFromFirestore()
             val mergedEnrollments = mergeEntities(
                 local = localEnrollments,
                 remote = remoteEnrollments,
                 idSelector = { it.id },
-                timestampSelector = { it.createdAt }
+                timestampSelector = { it.updatedAt }
             )
             enrollmentDao.insertEnrollments(mergedEnrollments)
             firebaseManager.saveEnrollmentsBatch(mergedEnrollments)
@@ -2284,6 +2811,35 @@ class AcademyRepository(
                 firebaseManager.saveSettingsToFirestore(localSettings)
             }
 
+            // 13. Archive Courses (same mechanical merge pattern as courses)
+            val localArchiveCourses = archiveDao.getAllArchiveCourses().firstOrNull() ?: emptyList()
+            val remoteArchiveCourses = firebaseManager.fetchArchiveCoursesFromFirestore()
+            val mergedArchiveCourses = mergeEntities(
+                local = localArchiveCourses,
+                remote = remoteArchiveCourses,
+                idSelector = { it.id },
+                timestampSelector = { it.createdAt }
+            )
+            archiveDao.insertArchiveCourses(mergedArchiveCourses)
+            firebaseManager.saveArchiveCoursesBatch(mergedArchiveCourses)
+            pushedCount += mergedArchiveCourses.size
+            pulledCount += remoteArchiveCourses.size
+
+            // 14. Archive Students (same mechanical merge pattern; nullable money
+            //     amounts ride along untouched — unknown stays unknown)
+            val localArchiveStudents = archiveDao.getAllArchiveStudents().firstOrNull() ?: emptyList()
+            val remoteArchiveStudents = firebaseManager.fetchArchiveStudentsFromFirestore()
+            val mergedArchiveStudents = mergeEntities(
+                local = localArchiveStudents,
+                remote = remoteArchiveStudents,
+                idSelector = { it.id },
+                timestampSelector = { it.createdAt }
+            )
+            archiveDao.insertArchiveStudents(mergedArchiveStudents)
+            firebaseManager.saveArchiveStudentsBatch(mergedArchiveStudents)
+            pushedCount += mergedArchiveStudents.size
+            pulledCount += remoteArchiveStudents.size
+
             val summary = SyncResultSummary(
                 isSuccess = true,
                 pushedCount = pushedCount,
@@ -2325,6 +2881,9 @@ class AcademyRepository(
         )
         enrollmentDao.updateEnrollment(updatedEnrollment)
         firebaseManager.saveEnrollmentToFirestore(updatedEnrollment)
+
+        // A freed seat re-opens the capacity state of the course.
+        recomputeCourseEnrollmentStatus(enrollment.courseId)
 
         // Cancel unpaid installments
         val installments = installmentDao.getInstallmentsForEnrollment(enrollmentId).firstOrNull() ?: emptyList()

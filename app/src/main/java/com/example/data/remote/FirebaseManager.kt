@@ -3,6 +3,8 @@ package com.example.data.remote
 import android.util.Log
 import com.example.data.model.AcademyNotification
 import com.example.data.model.AcademySettings
+import com.example.data.model.ArchiveCourse
+import com.example.data.model.ArchiveStudent
 import com.example.data.model.AuditLog
 import com.example.data.model.BankAccount
 import com.example.data.model.Course
@@ -35,6 +37,8 @@ import kotlinx.coroutines.tasks.await
  * 10. notifications
  * 11. auditLogs
  * 12. settings
+ * 13. archive_courses (isolated historical courses)
+ * 14. archive_students (isolated historical students)
  */
 class FirebaseManager {
 
@@ -82,6 +86,8 @@ class FirebaseManager {
     fun auditLogsCollection() = if (isReady()) firestore?.collection("auditLogs") else null
     fun settingsCollection() = if (isReady()) firestore?.collection("settings") else null
     fun remindersCollection() = if (isReady()) firestore?.collection("reminders") else null
+    fun archiveCoursesCollection() = if (isReady()) firestore?.collection("archive_courses") else null
+    fun archiveStudentsCollection() = if (isReady()) firestore?.collection("archive_students") else null
 
     // --- Students Operations ---
     suspend fun saveStudentToFirestore(student: Student): Boolean {
@@ -625,6 +631,116 @@ class FirebaseManager {
             true
         } catch (e: Exception) {
             Log.w(tag, "Firestore saveReminder skipped: ${e.message}")
+            false
+        }
+    }
+
+    // --- Archive Courses Operations ---
+    suspend fun saveArchiveCourseToFirestore(course: ArchiveCourse): Boolean {
+        if (!isReady()) return false
+        return try {
+            archiveCoursesCollection()?.document(course.id)?.set(course.toMap(), SetOptions.merge())?.await()
+            true
+        } catch (e: Exception) {
+            Log.w(tag, "Firestore saveArchiveCourse skipped: ${e.message}")
+            false
+        }
+    }
+
+    suspend fun saveArchiveCoursesBatch(courses: List<ArchiveCourse>): Boolean {
+        if (courses.isEmpty() || !isReady()) return true
+        val db = firestore ?: return false
+        return try {
+            courses.chunked(400).forEach { chunk ->
+                val batch = db.batch()
+                val col = db.collection("archive_courses")
+                chunk.forEach { item ->
+                    batch.set(col.document(item.id), item.toMap(), SetOptions.merge())
+                }
+                batch.commit().await()
+            }
+            true
+        } catch (e: Exception) {
+            Log.w(tag, "Firestore saveArchiveCoursesBatch skipped: ${e.message}")
+            false
+        }
+    }
+
+    suspend fun fetchArchiveCoursesFromFirestore(): List<ArchiveCourse> {
+        if (!isReady()) return emptyList()
+        return try {
+            val snapshot = archiveCoursesCollection()?.get()?.await() ?: return emptyList()
+            snapshot.documents.mapNotNull { doc ->
+                doc.data?.let { ArchiveCourse.fromMap(it) }
+            }
+        } catch (e: Exception) {
+            Log.w(tag, "Firestore fetchArchiveCourses skipped: ${e.message}")
+            emptyList()
+        }
+    }
+
+    suspend fun deleteArchiveCourseFromFirestore(courseId: String): Boolean {
+        if (!isReady()) return false
+        return try {
+            archiveCoursesCollection()?.document(courseId)?.delete()?.await()
+            true
+        } catch (e: Exception) {
+            Log.w(tag, "Firestore deleteArchiveCourse skipped: ${e.message}")
+            false
+        }
+    }
+
+    // --- Archive Students Operations ---
+    suspend fun saveArchiveStudentToFirestore(student: ArchiveStudent): Boolean {
+        if (!isReady()) return false
+        return try {
+            archiveStudentsCollection()?.document(student.id)?.set(student.toMap(), SetOptions.merge())?.await()
+            true
+        } catch (e: Exception) {
+            Log.w(tag, "Firestore saveArchiveStudent skipped: ${e.message}")
+            false
+        }
+    }
+
+    suspend fun saveArchiveStudentsBatch(students: List<ArchiveStudent>): Boolean {
+        if (students.isEmpty() || !isReady()) return true
+        val db = firestore ?: return false
+        return try {
+            students.chunked(400).forEach { chunk ->
+                val batch = db.batch()
+                val col = db.collection("archive_students")
+                chunk.forEach { item ->
+                    batch.set(col.document(item.id), item.toMap(), SetOptions.merge())
+                }
+                batch.commit().await()
+            }
+            true
+        } catch (e: Exception) {
+            Log.w(tag, "Firestore saveArchiveStudentsBatch skipped: ${e.message}")
+            false
+        }
+    }
+
+    suspend fun fetchArchiveStudentsFromFirestore(): List<ArchiveStudent> {
+        if (!isReady()) return emptyList()
+        return try {
+            val snapshot = archiveStudentsCollection()?.get()?.await() ?: return emptyList()
+            snapshot.documents.mapNotNull { doc ->
+                doc.data?.let { ArchiveStudent.fromMap(it) }
+            }
+        } catch (e: Exception) {
+            Log.w(tag, "Firestore fetchArchiveStudents skipped: ${e.message}")
+            emptyList()
+        }
+    }
+
+    suspend fun deleteArchiveStudentFromFirestore(studentId: String): Boolean {
+        if (!isReady()) return false
+        return try {
+            archiveStudentsCollection()?.document(studentId)?.delete()?.await()
+            true
+        } catch (e: Exception) {
+            Log.w(tag, "Firestore deleteArchiveStudent skipped: ${e.message}")
             false
         }
     }

@@ -26,6 +26,9 @@ interface InstallmentDao {
     @Query("SELECT * FROM installments WHERE studentId = :studentId ORDER BY dueDateEpoch")
     suspend fun getInstallmentsForStudentDirect(studentId: String): List<Installment>
 
+    @Query("SELECT * FROM installments WHERE courseId = :courseId ORDER BY installmentNumber ASC")
+    suspend fun getInstallmentsForCourseDirect(courseId: String): List<Installment>
+
     @Query("SELECT * FROM installments WHERE id = :id LIMIT 1")
     suspend fun getInstallmentById(id: String): Installment?
 
@@ -38,7 +41,9 @@ interface InstallmentDao {
     @Query("SELECT COUNT(*) FROM installments WHERE status = 'OVERDUE' OR (status != 'PAID' AND dueDateEpoch < :startOfDayEpoch)")
     fun getOverdueInstallmentsCount(startOfDayEpoch: Long): Flow<Int>
 
-    @Query("SELECT SUM(amount - paidAmount) FROM installments WHERE status != 'PAID'")
+    // Bug fix: CANCELLED installments are no longer counted as debt (the
+    // dashboard is the only consumer, and it never pre-filters them itself).
+    @Query("SELECT SUM(amount - paidAmount) FROM installments WHERE status != 'PAID' AND status != 'CANCELLED'")
     fun getTotalPendingDebt(): Flow<Long?>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)

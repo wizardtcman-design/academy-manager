@@ -6,6 +6,8 @@ import androidx.room.Room
 import androidx.room.RoomDatabase
 import com.example.data.model.AcademyNotification
 import com.example.data.model.AcademySettings
+import com.example.data.model.ArchiveCourse
+import com.example.data.model.ArchiveStudent
 import com.example.data.model.AuditLog
 import com.example.data.model.BankAccount
 import com.example.data.model.Course
@@ -39,9 +41,11 @@ import com.example.data.model.Student
         ExpenseCategory::class,
         com.example.data.model.PendingDeletion::class,
         com.example.data.model.PendingStudentDeletion::class,
-        com.example.data.model.Contract::class
+        com.example.data.model.Contract::class,
+        ArchiveCourse::class,
+        ArchiveStudent::class
     ],
-    version = 7,
+    version = 8,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -62,6 +66,10 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun expenseCategoryDao(): ExpenseCategoryDao
     abstract fun pendingDeletionDao(): PendingDeletionDao
     abstract fun contractDao(): ContractDao
+
+    /** Room allows a DAO interface only ONCE per database: both archive
+     *  tables are served by this single [ArchiveDao]. */
+    abstract fun archiveDao(): ArchiveDao
 
     companion object {
         @Volatile
@@ -147,6 +155,78 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * v8 (course management mission): courses gain academic year, exact
+         * start/end, capacity and THREE separate status groups; enrollments
+         * gain certificate status + capacity-override flag; both gain an
+         * `updatedAt` LWW timestamp (backfilled from `createdAt` so legacy
+         * rows behave identically in sync). Two new ISOLATED archive tables
+         * store historical courses/students with nullable (unknown) money —
+         * additive only, nothing is rewritten or deleted.
+         */
+        val MIGRATION_7_8 = object : androidx.room.migration.Migration(7, 8) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                // Courses: text columns (defaults match the Kotlin defaults).
+                db.execSQL("ALTER TABLE `courses` ADD COLUMN `academicYear` TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE `courses` ADD COLUMN `startShamsi` TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE `courses` ADD COLUMN `startTime` TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE `courses` ADD COLUMN `endShamsi` TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE `courses` ADD COLUMN `endTime` TEXT NOT NULL DEFAULT ''")
+                db.execSQL("ALTER TABLE `courses` ADD COLUMN `enrollmentStatus` TEXT NOT NULL DEFAULT 'OPEN'")
+                db.execSQL("ALTER TABLE `courses` ADD COLUMN `holdingStatus` TEXT NOT NULL DEFAULT 'ONGOING'")
+                db.execSQL("ALTER TABLE `courses` ADD COLUMN `finalStatus` TEXT NOT NULL DEFAULT 'INCOMPLETE'")
+                db.execSQL("ALTER TABLE `courses` ADD COLUMN `endedAtShamsi` TEXT NOT NULL DEFAULT ''")
+                // Courses: numeric columns (0 = not registered / unlimited capacity).
+                db.execSQL("ALTER TABLE `courses` ADD COLUMN `startEpoch` INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE `courses` ADD COLUMN `endEpoch` INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE `courses` ADD COLUMN `endedAtEpoch` INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE `courses` ADD COLUMN `updatedAt` INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE `courses` ADD COLUMN `capacity` INTEGER NOT NULL DEFAULT 0")
+                // Legacy courses never had an update timestamp: backfill so LWW sync
+                // keeps working exactly as before (createdAt as the tiebreaker).
+                db.execSQL("UPDATE `courses` SET `updatedAt` = `createdAt` WHERE `updatedAt` = 0")
+
+                // Enrollments: certificate tracking + override flag + LWW timestamp.
+                db.execSQL("ALTER TABLE `enrollments` ADD COLUMN `certificateStatus` TEXT NOT NULL DEFAULT 'PENDING'")
+                db.execSQL("ALTER TABLE `enrollments` ADD COLUMN `enrolledViaOverride` INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE `enrollments` ADD COLUMN `updatedAt` INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("UPDATE `enrollments` SET `updatedAt` = `createdAt` WHERE `updatedAt` = 0")
+
+                // Isolated archive tables: historical data never feeds the live
+                // installments/debt/reminder systems.
+                db.execSQL(
+                    """CREATE TABLE IF NOT EXISTS `archive_courses` (
+                        `id` TEXT NOT NULL,
+                        `title` TEXT NOT NULL,
+                        `academicYear` TEXT NOT NULL,
+                        `startShamsi` TEXT NOT NULL,
+                        `notes` TEXT NOT NULL,
+                        `isSampleData` INTEGER NOT NULL,
+                        `createdAt` INTEGER NOT NULL,
+                        PRIMARY KEY(`id`))"""
+                )
+                db.execSQL(
+                    """CREATE TABLE IF NOT EXISTS `archive_students` (
+                        `id` TEXT NOT NULL,
+                        `archiveCourseId` TEXT NOT NULL,
+                        `fullName` TEXT NOT NULL,
+                        `mobile` TEXT NOT NULL,
+                        `tuitionAmount` INTEGER,
+                        `receivedAmount` INTEGER,
+                        `paymentDatesNote` TEXT NOT NULL,
+                        `notes` TEXT NOT NULL,
+                        `hasUnknownInfo` INTEGER NOT NULL,
+                        `isSampleData` INTEGER NOT NULL,
+                        `createdAt` INTEGER NOT NULL,
+                        PRIMARY KEY(`id`))"""
+                )
+                db.execSQL(
+                    "CREATE INDEX IF NOT EXISTS `index_archive_students_archiveCourseId` " +
+                        "ON `archive_students` (`archiveCourseId`)"
+                )
+            }
+        }
+
         fun getDatabase(context: Context): AppDatabase {
             return INSTANCE ?: synchronized(this) {
                 val instance = Room.databaseBuilder(
@@ -156,7 +236,7 @@ abstract class AppDatabase : RoomDatabase() {
                 )
                     // Real migrations only. Never wipe the academy data silently:
                     // a missing migration is a build-time bug, not a user problem.
-                    .addMigrations(MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7)
+                    .addMigrations(MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8)
                     .build()
                 INSTANCE = instance
                 instance

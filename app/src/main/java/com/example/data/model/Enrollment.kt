@@ -26,7 +26,13 @@ data class Enrollment(
     val notes: String = "",
     val contractNumber: String = "",
     val isSampleData: Boolean = false,
-    val createdAt: Long = System.currentTimeMillis()
+    val createdAt: Long = System.currentTimeMillis(),
+    // Certificate tracking (مدرک): PENDING / ISSUED / DELIVERED / NOT_REQUIRED.
+    val certificateStatus: String = CERTIFICATE_PENDING,
+    // Explicit manager capacity-override record (true = enrolled over capacity with consent).
+    val enrolledViaOverride: Boolean = false,
+    // LWW timestamp for cloud sync of mutable fields (certificate status, ...).
+    val updatedAt: Long = System.currentTimeMillis()
 ) {
     fun toMap(): Map<String, Any> = mapOf(
         "id" to id,
@@ -48,10 +54,19 @@ data class Enrollment(
         "status" to status,
         "notes" to notes,
         "isSampleData" to isSampleData,
-        "createdAt" to createdAt
+        "createdAt" to createdAt,
+        "certificateStatus" to certificateStatus,
+        "enrolledViaOverride" to enrolledViaOverride,
+        "updatedAt" to updatedAt
     )
 
     companion object {
+        // Certificate status values
+        const val CERTIFICATE_PENDING = "PENDING"
+        const val CERTIFICATE_ISSUED = "ISSUED"
+        const val CERTIFICATE_DELIVERED = "DELIVERED"
+        const val CERTIFICATE_NOT_REQUIRED = "NOT_REQUIRED"
+
         fun fromMap(map: Map<String, Any?>): Enrollment {
             return Enrollment(
                 id = map["id"] as? String ?: UUID.randomUUID().toString(),
@@ -74,7 +89,11 @@ data class Enrollment(
                 notes = map["notes"] as? String ?: "",
                 contractNumber = map["contractNumber"] as? String ?: "",
                 isSampleData = map["isSampleData"] as? Boolean ?: false,
-                createdAt = (map["createdAt"] as? Number)?.toLong() ?: System.currentTimeMillis()
+                createdAt = (map["createdAt"] as? Number)?.toLong() ?: System.currentTimeMillis(),
+                certificateStatus = map["certificateStatus"] as? String ?: CERTIFICATE_PENDING,
+                enrolledViaOverride = map["enrolledViaOverride"] as? Boolean ?: false,
+                updatedAt = (map["updatedAt"] as? Number)?.toLong()
+                    ?: ((map["createdAt"] as? Number)?.toLong() ?: System.currentTimeMillis())
             )
         }
     }

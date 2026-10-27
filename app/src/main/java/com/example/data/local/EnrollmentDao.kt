@@ -26,6 +26,16 @@ interface EnrollmentDao {
     @Query("SELECT * FROM enrollments WHERE courseId = :courseId")
     suspend fun getEnrollmentsForCourse(courseId: String): List<Enrollment>
 
+    @Query("SELECT * FROM enrollments WHERE courseId = :courseId ORDER BY createdAt ASC")
+    fun getEnrollmentsForCourseFlow(courseId: String): Flow<List<Enrollment>>
+
+    /** Capacity counter: every non-cancelled enrollment occupies one seat. */
+    @Query("SELECT COUNT(*) FROM enrollments WHERE courseId = :courseId AND status != 'CANCELLED'")
+    suspend fun countValidEnrollments(courseId: String): Int
+
+    @Query("SELECT COUNT(*) FROM enrollments WHERE courseId = :courseId AND status != 'CANCELLED'")
+    fun getValidEnrollmentCountFlow(courseId: String): Flow<Int>
+
     @Query("SELECT COUNT(*) FROM enrollments")
     fun getEnrollmentsCount(): Flow<Int>
 
