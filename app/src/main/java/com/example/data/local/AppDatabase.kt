@@ -215,7 +215,6 @@ abstract class AppDatabase : RoomDatabase() {
                         `receivedAmount` INTEGER,
                         `paymentDatesNote` TEXT NOT NULL,
                         `notes` TEXT NOT NULL,
-                        `hasUnknownInfo` INTEGER NOT NULL,
                         `isSampleData` INTEGER NOT NULL,
                         `createdAt` INTEGER NOT NULL,
                         PRIMARY KEY(`id`))"""

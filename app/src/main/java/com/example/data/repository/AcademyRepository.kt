@@ -902,7 +902,6 @@ class AcademyRepository(
             receivedAmount = receivedAmount,
             paymentDatesNote = paymentDatesNote.trim(),
             notes = notes.trim(),
-            hasUnknownInfo = (tuitionAmount == null || receivedAmount == null)
         )
 
         archiveDao.insertArchiveStudent(student)
@@ -921,7 +920,7 @@ class AcademyRepository(
     }
 
     suspend fun updateArchiveStudent(student: ArchiveStudent): Result<Unit> {
-        val updated = student.copy(hasUnknownInfo = (student.tuitionAmount == null || student.receivedAmount == null))
+        val updated = student
         archiveDao.updateArchiveStudent(updated)
         firebaseManager.saveArchiveStudentToFirestore(updated)
 

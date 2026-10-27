@@ -27,11 +27,15 @@ data class ArchiveStudent(
     // Free-text payment dates, e.g. "۱۴۰۲/۰۷ و ۱۴۰۲/۱۰".
     val paymentDatesNote: String = "",
     val notes: String = "",
-    // True when any money amount is unknown (kept for fast filtering).
-    val hasUnknownInfo: Boolean = false,
     val isSampleData: Boolean = false,
     val createdAt: Long = System.currentTimeMillis()
 ) {
+    /**
+     * Derived single source of truth: true when any money amount is unknown.
+     * Stored nowhere — a stored flag could drift from the real amounts.
+     */
+    val hasUnknownInfo: Boolean
+        get() = tuitionAmount == null || receivedAmount == null
     fun toMap(): Map<String, Any> {
         // Nullable Longs are only put into the map when present; an absent key
         // decodes back to null (Firestore returns nothing for null numbers).
@@ -42,7 +46,6 @@ data class ArchiveStudent(
             "mobile" to mobile,
             "paymentDatesNote" to paymentDatesNote,
             "notes" to notes,
-            "hasUnknownInfo" to hasUnknownInfo,
             "isSampleData" to isSampleData,
             "createdAt" to createdAt
         )
@@ -62,7 +65,6 @@ data class ArchiveStudent(
                 receivedAmount = (map["receivedAmount"] as? Number)?.toLong(),
                 paymentDatesNote = map["paymentDatesNote"] as? String ?: "",
                 notes = map["notes"] as? String ?: "",
-                hasUnknownInfo = map["hasUnknownInfo"] as? Boolean ?: false,
                 isSampleData = map["isSampleData"] as? Boolean ?: false,
                 createdAt = (map["createdAt"] as? Number)?.toLong() ?: System.currentTimeMillis()
             )

@@ -257,7 +257,7 @@ class DatabaseAndSyncTest {
             firstName = "سهراب",
             lastName = "سپهری",
             phone = "09121112233",
-            nationalCode = "0078965412",
+            nationalCode = "0078965411", // valid check digit (pre-existing test-data bug: 0078965412 fails the real checksum)
             address = "کاشان، خیابان سهراب",
             notes = "هنرجوی دوره طراحی مقدماتی"
         )
