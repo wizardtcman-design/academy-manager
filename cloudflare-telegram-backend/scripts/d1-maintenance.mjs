@@ -97,7 +97,9 @@ const PRESERVED_TABLES = ['academies', 'academy_settings', 'd1_migrations'];
 const PURGE_ORDER = [...STUDENT_TABLES, ...BACKUP_HISTORY_TABLES, 'students'];
 
 function inventory() {
-    const tables = d1("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name").map(r => r.name);
+    // _cf_KV is a Cloudflare-internal D1 table that cannot be queried directly
+    // (APIError on COUNT) — exclude it (and sqlite_*) from the user inventory.
+    const tables = d1("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name != '_cf_KV' ORDER BY name").map(r => r.name);
     const counts = {};
     for (const t of tables) counts[t] = count(t);
     const unknown = tables.filter(t => !PURGE_ORDER.includes(t) && !PRESERVED_TABLES.includes(t));
