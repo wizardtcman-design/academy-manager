@@ -33,10 +33,20 @@ jobs:
 
       - name: Query Worker Logs (read-only, redacted paths)
         working-directory: cloudflare-telegram-backend
+        continue-on-error: true
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: node scripts/diagnose-worker-logs.mjs --hours "${{ github.event.inputs.hours || '6' }}" --service academy-manager1
+
+      - name: test_cleanup report metadata (read-only, no PII)
+        working-directory: cloudflare-telegram-backend
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          echo "== rows in academy_settings for test_cleanup (metadata only) =="
+          npx wrangler d1 execute academy-contracts-dev --remote --json --command "SELECT key, updated_at_epoch, LENGTH(value) AS value_len, json_extract(value,'\$.mode') AS mode, json_extract(value,'\$.ranAtEpoch') AS ran_at, json_extract(value,'\$.deletedTotal') AS deleted_total, json_extract(value,'\$.remainingClean') AS remaining_clean FROM academy_settings WHERE key LIKE '%test_cleanup%'" 2>&1 | tail -60
 
       - name: D1 schema + migration ledger (read-only)
         working-directory: cloudflare-telegram-backend
