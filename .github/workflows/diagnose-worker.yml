@@ -1,0 +1,52 @@
+name: Diagnose Worker (read-only: logs + schema)
+
+# Read-only evidence gathering for the test-data cleanup investigation.
+# It queries Workers Logs (observability) and reads the D1 schema + ledger.
+# It NEVER writes to D1, NEVER deploys, NEVER purges data.
+# Deliberately NOT in the production-worker-deploy concurrency group.
+
+on:
+  workflow_dispatch:
+    inputs:
+      hours:
+        description: 'Look-back window in hours (1-72)'
+        default: '6'
+        required: false
+
+concurrency: diagnose-worker-read-only
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        working-directory: cloudflare-telegram-backend
+        run: npm ci
+
+      - name: Query Worker Logs (read-only, redacted paths)
+        working-directory: cloudflare-telegram-backend
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: node scripts/diagnose-worker-logs.mjs --hours "${{ github.event.inputs.hours || '6' }}" --service academy-manager1
+
+      - name: D1 schema + migration ledger (read-only)
+        working-directory: cloudflare-telegram-backend
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          echo "== tables on production D1 =="
+          npx wrangler d1 execute academy-contracts-dev --remote --json --command "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name" 2>&1 | tail -100
+          echo "== d1_migrations ledger =="
+          npx wrangler d1 execute academy-contracts-dev --remote --json --command "SELECT id, name FROM d1_migrations ORDER BY id" 2>&1 | tail -60
+          echo "== students columns =="
+          npx wrangler d1 execute academy-contracts-dev --remote --json --command "PRAGMA table_info(students)" 2>&1 | tail -80
