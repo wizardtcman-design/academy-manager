@@ -118,9 +118,31 @@ async function listScripts() {
     }
 }
 
+/** Lists secret NAMES + last-modified dates for the worker (never values). */
+async function secretsMeta(service) {
+    const res = await fetch(
+        `https://api.cloudflare.com/client/v4/accounts/${ACCOUNT}/workers/scripts/${encodeURIComponent(service)}/secrets`,
+        { headers: { 'Authorization': `Bearer ${TOKEN}` } }
+    );
+    const json = await res.json().catch(() => null);
+    console.log(`== Secret metadata for ${service} (names + dates only, values are never returned) ==`);
+    if (!json?.success) {
+        console.log(`API error HTTP ${res.status}: ${JSON.stringify(json?.errors || json).slice(0, 300)}`);
+        return;
+    }
+    for (const s of json.result || []) {
+        console.log(`- ${s.name} | type: ${s.type} | modified: ${s.modified_on}`);
+    }
+}
+
 async function main() {
     if (process.argv.includes('--list-scripts')) {
         await listScripts();
+        return;
+    }
+    const svc = process.argv.indexOf('--secrets-meta');
+    if (svc > 0) {
+        await secretsMeta(process.argv[svc + 1] || service);
         return;
     }
     console.log(`Window: last ${hours}h  service=${service}  limit=${limit}`);

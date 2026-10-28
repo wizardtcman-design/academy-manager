@@ -1,0 +1,53 @@
+name: "Capture Worker traffic (live tail — read-only)"
+
+# Runs `wrangler tail` against the production Worker for a bounded window and
+# prints every invocation: method, PATH ONLY (query strings are dropped, so
+# sign/pay/one-time tokens never appear), outcome, logs and exceptions.
+#
+# PURPOSE: the API token lacks the Workers-Observability read scope, so this
+# live tail is the only way to capture what a device request actually got.
+#
+# USAGE: Run this workflow, then within the chosen window perform the action
+# on the device (e.g. the test-data cleanup in the app). The evidence lands
+# in this workflow's log. Nothing is modified; tail is passive.
+#
+# SAFETY: no deploy, no D1 access, no data changes. Output is redacted.
+
+on:
+  workflow_dispatch:
+    inputs:
+      minutes:
+        description: 'Capture window in minutes (1-30)'
+        default: '10'
+        required: false
+
+concurrency: worker-tail-capture
+
+jobs:
+  tail:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        working-directory: cloudflare-telegram-backend
+        run: npm ci
+
+      - name: Tail worker invocations (bounded window, redacted)
+        working-directory: cloudflare-telegram-backend
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          MINUTES="${{ github.event.inputs.minutes || '10' }}"
+          echo "Capturing worker traffic for ${MINUTES} minute(s) — perform the device action NOW."
+          echo "UTC start: $(date -u +%FT%TZ)"
+          timeout "${MINUTES}" npx wrangler tail academy-manager1 --format json 2>&1 \
+            | python3 -u scripts/tail-pretty.py
+          echo "UTC end: $(date -u +%FT%TZ) — capture window closed."
