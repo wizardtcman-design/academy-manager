@@ -69,10 +69,12 @@ jobs:
 
       - name: Inspect (read-only inventory + counts)
         run: |
+          INSPECT_OUT="$(node scripts/d1-maintenance.mjs inspect "${{ steps.resolve.outputs.db_name }}")"
+          echo "$INSPECT_OUT"
           {
             echo "### Inspect (قبل از هر تغییر)"
             echo '```'
-            node scripts/d1-maintenance.mjs inspect "${{ steps.resolve.outputs.db_name }}"
+            echo "$INSPECT_OUT"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -117,10 +119,12 @@ jobs:
 
       - name: Purge student data (ordered, reported per table)
         run: |
+          PURGE_OUT="$(node scripts/d1-maintenance.mjs purge "${{ needs.inspect-and-backup.outputs.db_name }}")"
+          echo "$PURGE_OUT"
           {
             echo "### Purge (اجرا: ${{ inputs.reason }})"
             echo '```'
-            node scripts/d1-maintenance.mjs purge "${{ needs.inspect-and-backup.outputs.db_name }}"
+            echo "$PURGE_OUT"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -146,10 +150,12 @@ jobs:
 
       - name: Verify (read-only post-purge assertions)
         run: |
+          VERIFY_OUT="$(node scripts/d1-maintenance.mjs verify "${{ needs.inspect-and-backup.outputs.db_name }}")"
+          echo "$VERIFY_OUT"
           {
             echo "### Verify (بعد از حذف)"
             echo '```'
-            node scripts/d1-maintenance.mjs verify "${{ needs.inspect-and-backup.outputs.db_name }}"
+            echo "$VERIFY_OUT"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 

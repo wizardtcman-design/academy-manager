@@ -212,8 +212,13 @@ if (cmd === 'purge') {
 // ---------- verify ----------
 if (cmd === 'verify') {
     const inv = inventory();
-    const zeroTargets = [...PURGE_ORDER];
+    // The Worker cron (every minute) writes fresh daily-backup run rows, so the
+    // backup-history tables refill with snapshots of the ALREADY-CLEAN database.
+    // They are reported as information, never asserted to be zero. Only student
+    // tables are hard-asserted to be empty.
+    const zeroTargets = [...STUDENT_TABLES, 'students'];
     const nonzero = zeroTargets.filter(t => (inv.counts[t] ?? 0) !== 0);
+    const backupHistoryNow = Object.fromEntries(BACKUP_HISTORY_TABLES.map(t => [t, inv.counts[t] ?? 0]));
     const residue = cleanupResidue();
     const now = {
         academies: inv.counts.academies ?? 0,
@@ -221,11 +226,11 @@ if (cmd === 'verify') {
         migrations: inv.counts.d1_migrations ?? 0,
         botConfiguredAcademies: botPresence()
     };
-    console.log(JSON.stringify({ nonzeroLeft: nonzero, removedFeatureResidueRows: residue, preservedNow: now, unknown: inv.unknown, counts: inv.counts }, null, 2));
+    console.log(JSON.stringify({ nonzeroLeft: nonzero, removedFeatureResidueRows: residue, preservedNow: now, backupHistoryNow: backupHistoryNow, unknown: inv.unknown, counts: inv.counts }, null, 2));
     if (nonzero.length > 0) fail('این جدول‌ها هنوز ردیف دارند: ' + nonzero.join(', '));
     if (now.academies < 1) fail('جدول academies خالی است — انتظار حداقل یک آموزشگاه.');
     if (now.migrations < 12) fail(`سابقه مهاجرت‌ها ناقص است (${now.migrations} ردیف).`);
     if (residue !== 0) fail('ردپای قابلیت حذف‌شده در academy_settings باقی است.');
-    ok(`تأیید نهایی: همهٔ جدول‌های وابسته به هنرجو خالی‌اند؛ academies=${now.academies}, academy_settings=${now.academySettings}, d1_migrations=${now.migrations}, آموزشگاه‌های با ربات فعال=${now.botConfiguredAcademies}.`);
+    ok(`تأیید نهایی: همهٔ جدول‌های وابسته به هنرجو خالی‌اند؛ academies=${now.academies}, academy_settings=${now.academySettings}, d1_migrations=${now.migrations}, آموزشگاه‌های با ربات فعال=${now.botConfiguredAcademies}. تاریخچهٔ بکاپ سرور (پس از پاک‌سازی، از دیتابیس تمیز): ` + JSON.stringify(backupHistoryNow));
     process.exit(0);
 }
