@@ -2,9 +2,16 @@ name: Build APK
 
 # Every push to main builds a signed installable APK and publishes it as a
 # GitHub Release, so a new version no longer depends on the AI Studio builder.
+# Server/CI/doc-only pushes (no app or version change) must NOT create a
+# duplicate release — hence paths-ignore below.
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - '.github/**'
+      - 'cloudflare-telegram-backend/**'
+      - 'docs/**'
+      - '**.md'
   workflow_dispatch:
 
 permissions:

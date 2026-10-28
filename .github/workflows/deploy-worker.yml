@@ -78,8 +78,17 @@ jobs:
 
       - name: Backup D1 before any change (rollback asset)
         run: |
-          npx wrangler d1 export "$PROD_DB_NAME" --output="$RUNNER_TEMP/d1-pre-deploy-backup.sql"
+          npx wrangler d1 export "$PROD_DB_NAME" --remote --output="$RUNNER_TEMP/d1-pre-deploy-backup.sql"
           ls -l "$RUNNER_TEMP/d1-pre-deploy-backup.sql"
+          # Sanity gate: a remote export of THIS database must contain the
+          # schema (17 tables). Without --remote wrangler silently exports the
+          # empty LOCAL runner database — exactly the silent failure this
+          # gate exists to stop (it produced a 31-byte backup once).
+          if ! grep -q "CREATE TABLE" "$RUNNER_TEMP/d1-pre-deploy-backup.sql"; then
+            echo "FAIL: بکاپ فاقد CREATE TABLE است؛ export به‌جای دیتابیس تولیدی، دیتابیس محلیِ خالی را گرفته است. deploy متوقف شد."
+            exit 1
+          fi
+          echo "OK: بکاپ واقعیِ تولیدی شامل اسکیما است ($(grep -c 'CREATE TABLE' "$RUNNER_TEMP/d1-pre-deploy-backup.sql") جدول)."
 
       - name: Upload D1 backup artifact
         uses: actions/upload-artifact@v4
