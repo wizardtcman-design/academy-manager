@@ -1,0 +1,165 @@
+name: Maintenance — student data purge (backup-gated)
+
+# حذف داده‌های هنرجوی آزمایشی از D1 تولیدی — جایگزینِ قابلیت حذف‌شده از اپ (v3.2.2).
+#
+# دو حالت اجرا (workflow_dispatch):
+#   * confirm_purge = false  → فقط inspect + بکاپ واقعی (خروجی: artifact) — بدون هیچ حذفی.
+#   * confirm_purge = true   → ابتدا بکاپِ تازهٔ تأییدشده، سپس حذف کامل ردیف‌های
+#                              وابسته به هنرجو، سپس verify فقط-خواندنی + بررسی ربات.
+#
+# حفاظت‌ها:
+#   * حذف هرگز بدون بکاپ موفق انجام نمی‌شود (وابستگی jobها + if-no-files-found: error).
+#   * اسکریپت purge بدون PURGE_CONFIRM=yes اجرا نمی‌شود (قفل دوم).
+#   * تنظیمات آموزشگاه، اتصال ربات، سابقه مهاجرت‌ها و جدول‌های ناشناخته حذف نمی‌شوند.
+#   * هیچ مقدار محرمانه یا PII در لاگ‌ها چاپ نمی‌شود (فقط نام جدول‌ها و تعدادها).
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_purge:
+        description: 'true = واقعاً حذف کن (ابتدا بکاپ تازه گرفته می‌شود) / false = فقط بررسی + بکاپ'
+        type: boolean
+        default: false
+      reason:
+        description: 'دلیل اجرا (ثبت در گزارش، اختیاری)'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-worker-deploy
+  cancel-in-progress: false
+
+jobs:
+  inspect-and-backup:
+    runs-on: ubuntu-latest
+    outputs:
+      db_name: ${{ steps.resolve.outputs.db_name }}
+    defaults:
+      run:
+        working-directory: cloudflare-telegram-backend
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Resolve production D1 database name (never trust wrangler.toml)
+        id: resolve
+        run: |
+          curl -sSf -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/scripts/academy-manager1/settings" \
+            > "$RUNNER_TEMP/prod-settings.json"
+          PROD_DB_ID="$(node -e 'const s=require(process.env.RUNNER_TEMP+"/prod-settings.json");const b=(s.result?.bindings||[]).find(x=>x.type==="d1");if(!b)process.exit(1);console.log(b.id)')"
+          if [ -z "$PROD_DB_ID" ]; then echo "FAIL: PROD_DB_ID خوانده نشد"; exit 1; fi
+          RESP="$(curl -sSf -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/d1/database/$PROD_DB_ID")"
+          PROD_DB_NAME="$(printf '%s' "$RESP" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{try{console.log(JSON.parse(d).result.name)}catch(e){process.exit(1)}})')"
+          if [ -z "$PROD_DB_NAME" ]; then echo "FAIL: نام دیتابیس تولیدی خوانده نشد"; exit 1; fi
+          echo "db_name=$PROD_DB_NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Inspect (read-only inventory + counts)
+        run: |
+          {
+            echo "### Inspect (قبل از هر تغییر)"
+            echo '```'
+            node scripts/d1-maintenance.mjs inspect "${{ steps.resolve.outputs.db_name }}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Export production D1 (schema + data, --remote, integrity-checked)
+        run: |
+          node scripts/d1-maintenance.mjs backup "${{ steps.resolve.outputs.db_name }}" --output "$RUNNER_TEMP/d1-backup.sql" | tee "$RUNNER_TEMP/backup-report.json"
+          {
+            echo "### Backup (تأییدشده)"
+            echo '```'
+            cat "$RUNNER_TEMP/backup-report.json"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload verified backup artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: d1-backup-${{ github.run_number }}
+          path: ${{ runner.temp }}/d1-backup.sql
+          retention-days: 90
+          if-no-files-found: error
+
+  purge:
+    if: ${{ inputs.confirm_purge == true }}
+    needs: inspect-and-backup
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: cloudflare-telegram-backend
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      PURGE_CONFIRM: 'yes'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Purge student data (ordered, reported per table)
+        run: |
+          {
+            echo "### Purge (اجرا: ${{ inputs.reason }})"
+            echo '```'
+            node scripts/d1-maintenance.mjs purge "${{ needs.inspect-and-backup.outputs.db_name }}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  verify:
+    if: ${{ inputs.confirm_purge == true }}
+    needs: [inspect-and-backup, purge]
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: cloudflare-telegram-backend
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify (read-only post-purge assertions)
+        run: |
+          {
+            echo "### Verify (بعد از حذف)"
+            echo '```'
+            node scripts/d1-maintenance.mjs verify "${{ needs.inspect-and-backup.outputs.db_name }}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Bot connection status (public endpoint, no secrets)
+        run: |
+          STATUS="$(curl -sSf -m 20 https://academy-manager1.wizard-tcman.workers.dev/api/status)"
+          echo "$STATUS" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{const j=JSON.parse(d).data;console.log("isBotConfigured="+j.isBotConfigured+" academyBotConnected="+j.academyBotConnected);if(j.academyBotConnected!==true)process.exit(1)})'
+          {
+            echo "### Bot connection"
+            echo '```'
+            echo "$STATUS" | node -e 'let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{const j=JSON.parse(d).data;console.log("isBotConfigured="+j.isBotConfigured+" academyBotConnected="+j.academyBotConnected)})'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

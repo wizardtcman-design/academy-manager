@@ -52,10 +52,4 @@ interface ReminderDao {
     @Query("UPDATE reminders SET status = 'CANCELLED', errorMessage = :error, isCompleted = 1 WHERE installmentId = :installmentId AND status = 'SCHEDULED'")
     suspend fun cancelScheduledForInstallment(installmentId: String, error: String): Int
 
-    // --- Test-data cleanup (temporary admin tool) ---
-    @Query("DELETE FROM reminders WHERE studentId = :studentId")
-    suspend fun deleteForStudent(studentId: String)
-
-    @Query("SELECT COUNT(*) FROM reminders WHERE studentId = :studentId")
-    suspend fun countForStudent(studentId: String): Int
 }

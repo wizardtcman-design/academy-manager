@@ -1085,11 +1085,6 @@ fun SettingsScreen(
                             Text("بازیابی", fontSize = 11.sp)
                         }
                     }
-
-                    // Temporary admin tool: full test-data cleanup for fresh
-                    // registration/contract test cycles (see the section).
-                    HorizontalDivider(modifier = Modifier.padding(vertical = 2.dp))
-                    TestDataCleanupSection(viewModel = viewModel)
                 }
             }
 

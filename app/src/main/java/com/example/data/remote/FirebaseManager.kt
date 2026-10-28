@@ -145,33 +145,6 @@ class FirebaseManager {
         }
     }
 
-    /**
-     * Test-data cleanup helper: deletes every document of [collection] whose
-     * [field] equals [value] (e.g. enrollments where studentId = X). Deletes
-     * are best-effort and counted; a failed document never aborts the loop so
-     * one bad row cannot leave the rest of the test data behind.
-     */
-    suspend fun deleteDocsWhereEqualTo(collection: String, field: String, value: String): Int {
-        if (!isReady() || value.isBlank()) return 0
-        val db = firestore ?: return 0
-        return try {
-            val snapshot = db.collection(collection).whereEqualTo(field, value).get().await()
-            var deleted = 0
-            for (doc in snapshot.documents) {
-                try {
-                    doc.reference.delete().await()
-                    deleted++
-                } catch (e: Exception) {
-                    Log.w(tag, "Firestore deleteWhere($collection,$field) doc skipped: ${e.message}")
-                }
-            }
-            deleted
-        } catch (e: Exception) {
-            Log.w(tag, "Firestore deleteWhere($collection,$field) skipped: ${e.message}")
-            0
-        }
-    }
-
     // --- Courses Operations ---
     suspend fun saveCourseToFirestore(course: Course): Boolean {
         if (!isReady()) return false

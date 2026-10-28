@@ -603,9 +603,7 @@ export async function handleApiRequest(
             // manager-API config — a settings push must never be able to
             // silently swap the active panel or overwrite its credentials.
             const entries = Object.entries(body);
-            // ":test_cleanup" keys are the worker-owned test-cleanup reports —
-            // an app push must never be able to forge or erase that audit trail.
-            const RESERVED_KEY = /^(backup:|sms_provider$|smsir_|rysesms_|[A-Za-z0-9_-]+:test_cleanup)/;
+            const RESERVED_KEY = /^(backup:|sms_provider$|smsir_|rysesms_)/;
             const reserved = entries.find(([k]) => RESERVED_KEY.test(k));
             if (reserved) {
                 return jsonResponse({ success: false, message: `کلید «${reserved[0]}» مدیریت‌شدۀ سرور است و از طریق همگام‌سازی تنظیمات قابل‌نوشتن نیست (پنل پیامکی/پشتیبان‌گیری).` }, 400);

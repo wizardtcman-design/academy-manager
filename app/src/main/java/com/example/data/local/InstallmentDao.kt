@@ -64,10 +64,4 @@ interface InstallmentDao {
     @Query("DELETE FROM installments WHERE isSampleData = 1")
     suspend fun deleteSampleInstallments()
 
-    // --- Test-data cleanup (temporary admin tool) ---
-    @Query("DELETE FROM installments WHERE studentId = :studentId")
-    suspend fun deleteForStudent(studentId: String)
-
-    @Query("SELECT COUNT(*) FROM installments WHERE studentId = :studentId")
-    suspend fun countForStudent(studentId: String): Int
 }
