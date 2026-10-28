@@ -12,6 +12,7 @@ on:
       - 'cloudflare-telegram-backend/**'
       - 'docs/**'
       - '**.md'
+      - '.gitignore'
   workflow_dispatch:
 
 permissions:
