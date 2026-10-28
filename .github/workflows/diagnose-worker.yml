@@ -1,4 +1,4 @@
-name: Diagnose Worker (read-only: logs + schema)
+name: "Diagnose Worker (read-only logs + schema)"
 
 # Read-only evidence gathering for the test-data cleanup investigation.
 # It queries Workers Logs (observability) and reads the D1 schema + ledger.
