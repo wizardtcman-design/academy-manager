@@ -100,7 +100,29 @@ async function queryEvents() {
     return Array.isArray(payload) ? payload : (Array.isArray(payload?.events) ? payload.events : []);
 }
 
+/** Lists Worker script names + dates (no code, no secrets). */
+async function listScripts() {
+    const res = await fetch(
+        `https://api.cloudflare.com/client/v4/accounts/${ACCOUNT}/workers/scripts`,
+        { headers: { 'Authorization': `Bearer ${TOKEN}` } }
+    );
+    const json = await res.json().catch(() => null);
+    if (!json?.success) {
+        console.log('== Workers Scripts inventory ==');
+        console.log(`API error HTTP ${res.status}: ${JSON.stringify(json?.errors || json).slice(0, 300)}`);
+        return;
+    }
+    console.log('== Workers Scripts in this account (names only, no code/secrets) ==');
+    for (const s of json.result || []) {
+        console.log(`- ${s.id} | modified: ${s.modified_on} | created: ${s.created_on}`);
+    }
+}
+
 async function main() {
+    if (process.argv.includes('--list-scripts')) {
+        await listScripts();
+        return;
+    }
     console.log(`Window: last ${hours}h  service=${service}  limit=${limit}`);
     console.log(`(UTC now: ${new Date(to).toISOString()})`);
     let events;

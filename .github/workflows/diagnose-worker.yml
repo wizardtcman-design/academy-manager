@@ -48,6 +48,24 @@ jobs:
           echo "== rows in academy_settings for test_cleanup (metadata only) =="
           npx wrangler d1 execute academy-contracts-dev --remote --json --command "SELECT key, updated_at_epoch, LENGTH(value) AS value_len, json_extract(value,'\$.mode') AS mode, json_extract(value,'\$.ranAtEpoch') AS ran_at, json_extract(value,'\$.deletedTotal') AS deleted_total, json_extract(value,'\$.remainingClean') AS remaining_clean FROM academy_settings WHERE key LIKE '%test_cleanup%'" 2>&1 | tail -60
 
+      - name: Worker script inventory (names + dates only)
+        working-directory: cloudflare-telegram-backend
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: node scripts/diagnose-worker-logs.mjs --list-scripts
+
+      - name: Activity recency markers (numbers only, no PII)
+        working-directory: cloudflare-telegram-backend
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          echo "== recency + counts (aggregates only) =="
+          npx wrangler d1 execute academy-contracts-dev --remote --json --command "SELECT (SELECT COUNT(*) FROM students) AS students_count, (SELECT MAX(created_at_epoch) FROM students) AS students_max_created, (SELECT MAX(updated_at_epoch) FROM students) AS students_max_updated, (SELECT COUNT(*) FROM contracts) AS contracts_count, (SELECT MAX(created_at_epoch) FROM contracts) AS contracts_max_created, (SELECT MAX(timestamp_epoch) FROM message_logs) AS logs_max_ts, (SELECT MAX(created_at_epoch) FROM deliveries) AS deliveries_max_created, (SELECT MAX(updated_at_epoch) FROM academy_settings) AS settings_max_updated" 2>&1 | tail -50
+          echo "== UTC now for comparison =="
+          date -u +"%Y-%m-%dT%H:%M:%SZ (%s000)"
+
       - name: D1 schema + migration ledger (read-only)
         working-directory: cloudflare-telegram-backend
         env:
