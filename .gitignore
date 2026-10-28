@@ -24,3 +24,4 @@ academy-release.jks
 *.jks
 !debug.keystore
 .wrangler/
+__pycache__/
