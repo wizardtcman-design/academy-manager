@@ -46,8 +46,13 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
           MINUTES="${{ github.event.inputs.minutes || '10' }}"
+          RAW="$RUNNER_TEMP/tail-raw.json"
           echo "Capturing worker traffic for ${MINUTES} minute(s) — perform the device action NOW."
           echo "UTC start: $(date -u +%FT%TZ)"
-          timeout "${MINUTES}m" npx wrangler tail academy-manager1 --format json 2>&1 \
-            | python3 -u scripts/tail-pretty.py
+          timeout "${MINUTES}m" npx wrangler tail academy-manager1 --format json > "$RAW" 2> "$RUNNER_TEMP/tail-err.txt" || true
           echo "UTC end: $(date -u +%FT%TZ) — capture window closed."
+          echo "--- wrangler connection messages ---"
+          tail -15 "$RUNNER_TEMP/tail-err.txt" || true
+          echo "--- captured invocations (path only, query strings dropped) ---"
+          python3 -u scripts/tail-pretty.py < "$RAW" | head -300 || true
+          echo "--- end of capture ---"
