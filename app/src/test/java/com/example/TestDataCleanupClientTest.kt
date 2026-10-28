@@ -90,4 +90,19 @@ class TestDataCleanupClientTest {
         assertEquals("قراردادها", ContractCloudClient.countLabelFa("contracts", mapOf("contracts" to "قراردادها")))
         assertEquals("mystery_key", ContractCloudClient.countLabelFa("mystery_key", emptyMap()))
     }
+
+    @Test
+    fun errorHintsExplainTheRealServerStatusInPersian() {
+        val h404 = ContractCloudClient.testDataErrorHint(404)
+        assertTrue(h404.contains("نصب نیست") && h404.contains("Worker"))
+        val h401 = ContractCloudClient.testDataErrorHint(401)
+        assertTrue(h401.contains("کلید API"))
+        val h403 = ContractCloudClient.testDataErrorHint(403)
+        assertTrue(h403.contains("آموزشگاه"))
+        val h500 = ContractCloudClient.testDataErrorHint(517)
+        assertTrue(h500.contains("خطای داخلی سرور"))
+        // Unknown/2xx codes must not append anything (no misleading text).
+        assertEquals("", ContractCloudClient.testDataErrorHint(200))
+        assertEquals("", ContractCloudClient.testDataErrorHint(418))
+    }
 }

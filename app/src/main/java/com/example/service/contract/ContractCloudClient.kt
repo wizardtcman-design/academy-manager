@@ -290,16 +290,30 @@ class ContractCloudClient(
                 if (res.isSuccessful && json?.optBoolean("success") == true) {
                     Result(true, json?.optJSONObject("data"), json?.optString("message").orEmpty(), res.code)
                 } else {
-                    Result(false, error = json?.optString("message").orEmpty().ifBlank { "HTTP ${res.code}" }, code = res.code)
+                    val base = json?.optString("message").orEmpty().ifBlank { "HTTP ${res.code}" }
+                    Result(false, error = base + testDataErrorHint(res.code), code = res.code)
                 }
             }
         } catch (e: Exception) {
             Log.w(tag, "test-data request failed: ${e.message}")
-            Result(false, error = e.message ?: "خطای شبکه")
+            Result(false, error = "اتصال به سرور برقرار نشد (${e.message ?: "خطای شبکه"}). آدرس Worker و اینترنت را بررسی کنید.")
         }
     }
 
     companion object {
+        /**
+         * Persian, actionable hint for a failed test-data call (JVM-testable).
+         * The server's own message is always shown first; this only explains
+         * WHAT the status code means for this feature. No secrets, no PII.
+         */
+        fun testDataErrorHint(code: Int): String = when (code) {
+            404 -> " (قابلیت پاک‌سازی روی این سرور نصب نیست؛ نسخهٔ Worker سرور قدیمی است و باید به‌روزرسانی و منتشر شود.)"
+            401 -> " (کلید API با سرور مطابقت ندارد؛ «اتصال به سرور» را در تنظیمات بررسی کنید.)"
+            403 -> " (شناسهٔ آموزشگاه روی سرور پذیرفته نشد؛ تنظیمات اتصال سرور را بررسی کنید.)"
+            in 500..599 -> " (خطای داخلی سرور؛ کمی بعد دوباره تلاش کنید یا وضعیت Worker را بررسی کنید.)"
+            else -> ""
+        }
+
         /** Pure JSON payload for the Worker test-data endpoints (JVM-testable). */
         fun buildTestDataPayload(studentIds: List<String>, confirm: Boolean): org.json.JSONObject =
             org.json.JSONObject()
